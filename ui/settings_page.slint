@@ -75,6 +75,16 @@ export component SettingsPage inherits Rectangle {
                                 spacing: Tokens.space-2;
                                 alignment: start;
                                 if Settings.installed: Button { text: "Check for updates"; kind: ButtonKind.primary; clicked => { Settings.check-updates(); } }
+                            }
+                            if Settings.installed: Toggle {
+                                text: "Desktop shortcut";
+                                detail: "The Start menu shortcut is in the Rimelight folder.";
+                                checked <=> Settings.desktop-shortcut;
+                                toggled => { Settings.changed(); }
+                            }
+                            HorizontalLayout {
+                                spacing: Tokens.space-2;
+                                alignment: start;
                                 Button { text: "Releases page"; has-icon: true; icon: Icons.external; clicked => { Settings.open-releases(); } }
                             }
                             Rectangle { height: 1px; background: Tokens.border-subtle; }
@@ -104,6 +114,12 @@ export component SettingsPage inherits Rectangle {
                             Toggle {
                                 text: "Keep running in the tray and start with Windows";
                                 checked <=> Settings.background;
+                                toggled => { Settings.changed(); }
+                            }
+                            Toggle {
+                                text: "Use Print Screen for Rimelight Media";
+                                detail: "Turns off Windows' own Print Screen snipping, which takes the key first.";
+                                checked <=> Settings.printscreen-ours;
                                 toggled => { Settings.changed(); }
                             }
                             Rectangle { height: Tokens.space-1; }

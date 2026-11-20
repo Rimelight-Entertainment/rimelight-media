@@ -24,6 +24,8 @@ pub struct App {
     pub hotkeys: RefCell<Option<crate::hotkeys::Hotkeys>>,
     /// A downloaded update waiting to be applied.
     pub update: RefCell<Option<Box<velopack::UpdateInfo>>>,
+    /// The setup window of the installer's first run, while it is open.
+    pub setup: RefCell<Option<ui::SetupWindow>>,
     /// True when started with --background (no window until asked for).
     pub background_start: Cell<bool>,
     pub toast_timer: slint::Timer,
@@ -76,6 +78,7 @@ pub fn build(background: bool) -> Result<Rc<App>, slint::PlatformError> {
         tray: RefCell::new(None),
         hotkeys: RefCell::new(None),
         update: RefCell::new(None),
+        setup: RefCell::new(None),
         background_start: Cell::new(background),
         toast_timer: slint::Timer::default(),
         tick: slint::Timer::default(),
@@ -336,4 +339,11 @@ pub fn check_updates(app: &Rc<App>, manual: bool) {
             }
         });
     });
+}
+/// (Re)registers the global Print Screen keys and refreshes their status in Settings.
+pub fn start_hotkeys(app: &Rc<App>) {
+    app.hotkeys.borrow_mut().take();
+    let keys = crate::hotkeys::start(|action| with_app(|a| capturectl::hotkey(a, action)));
+    *app.hotkeys.borrow_mut() = keys;
+    settingsctl::refresh(app);
 }

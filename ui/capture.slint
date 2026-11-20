@@ -29,7 +29,12 @@ export component SnipWindow inherits Window {
     title: "Rimelight Media snip";
     background: #000000;
 
-    property <int> hovered: -1;
+    // The window under the pointer (window mode); set from Rust at first, then on every pointer move.
+    in-out property <int> hovered: -1;
+    // The monitor the pointer was on, as fractions of the overlay: the mode bar goes there.
+    in property <float> mon-x: 0;
+    in property <float> mon-y: 0;
+    in property <float> mon-w: 1;
     property <bool> dragging: false;
     property <float> ax;
     property <float> ay;
@@ -108,6 +113,10 @@ export component SnipWindow inherits Window {
             }
         }
         pointer-event(e) => {
+            if e.kind == PointerEventKind.move && root.mode == "window" {
+                root.hovered = root.hit(self.mouse-x / root.width, self.mouse-y / root.height);
+                return;
+            }
             if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
                 root.cancel();
             }
@@ -137,8 +146,8 @@ export component SnipWindow inherits Window {
 
     // Mode bar.
     Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: 16px;
+        x: root.mon-x * root.width + (root.mon-w * root.width - self.width) / 2;
+        y: root.mon-y * root.height + 16px;
         width: bar.preferred-width;
         height: 48px;
         border-radius: 10px;

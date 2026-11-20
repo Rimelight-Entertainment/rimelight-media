@@ -109,6 +109,7 @@ pub fn wire(app: &Rc<App>) {
     v.on_anim_toggle(|| with_app(anim_toggle));
     v.on_anim_step(|d| with_app(move |a| anim_step(a, d)));
     v.on_save_frame(|| with_app(save_frame));
+    v.on_delete_current(|| with_app(delete_current));
     v.on_open_folder(|| {
         with_app(|a| {
             if let Some(p) = a.view.borrow().path.clone() {
@@ -629,7 +630,9 @@ pub fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool) -> bool {
         }
         return false;
     }
-    if k(Key::LeftArrow) || k(Key::PageUp) {
+    if k(Key::Delete) {
+        delete_current(app);
+    } else if k(Key::LeftArrow) || k(Key::PageUp) {
         step(app, -1);
     } else if k(Key::RightArrow) || k(Key::PageDown) || text == " " {
         step(app, 1);
@@ -791,4 +794,61 @@ fn save_frame(app: &Rc<App>) {
         Ok(()) => toast(app, format!("Frame saved: {}", files::file_name(&out))),
         Err(e) => toast(app, format!("Could not save the frame: {e}")),
     }
+}
+/// Delete: a file goes to the Recycle Bin and the next picture in the folder opens; a snip that was never saved is
+/// discarded.
+fn delete_current(app: &Rc<App>) {
+    let (path, next) = {
+        let s = app.view.borrow();
+        let next = s
+            .folder
+            .get(s.index + 1)
+            .or_else(|| s.index.checked_sub(1).and_then(|i| s.folder.get(i)))
+            .cloned();
+        (s.path.clone(), next)
+    };
+    match path {
+        Some(p) => {
+            if !crate::platform::recycle(&p) {
+                toast(app, "Could not delete it (is it open in another app?)");
+                return;
+            }
+            toast(app, format!("{} moved to the Recycle Bin", files::file_name(&p)));
+            app.recents.borrow_mut().retain(|r| r != &p);
+            crate::prefs::save_recents(&app.recents.borrow());
+            crate::app::refresh_recents(app);
+            viewer(app).set_dirty(false);
+            match next.filter(|n| n.exists()) {
+                Some(n) => open(app, &n),
+                None => close(app),
+            }
+        }
+        None => {
+            toast(app, "Snip discarded");
+            close(app);
+        }
+    }
+}
+
+/// Clears the picture page and goes home.
+fn close(app: &Rc<App>) {
+    {
+        let mut s = app.view.borrow_mut();
+        stop_anim(&mut s);
+        s.generation += 1;
+        s.path = None;
+        s.pic = None;
+        s.original = None;
+        s.folder.clear();
+        s.marks.clear();
+        s.redo.clear();
+    }
+    let v = viewer(app);
+    v.set_animated(false);
+    v.set_dirty(false);
+    v.set_mode(SharedString::new());
+    v.set_picture(slint::Image::default());
+    v.set_info_name(SharedString::new());
+    v.set_position(SharedString::new());
+    go(app, "home");
 }

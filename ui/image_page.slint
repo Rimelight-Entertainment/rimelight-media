@@ -101,6 +101,7 @@ export component ImagePage inherits Rectangle {
                     IconButton { icon: Icons.resize; label: "Resize"; clicked => { Viewer.set-mode("resize"); } }
                     Divider { }
                     IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; clicked => { Viewer.copy(); } }
+                    IconButton { icon: Icons.trash; label: "Delete (Del)"; clicked => { Viewer.delete-current(); } }
                     IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: Viewer.dirty; clicked => { Viewer.save(); } }
                     Button { text: "Save as"; kind: ButtonKind.ghost; clicked => { Viewer.save-as(); } }
                     if Viewer.dirty: Button { text: "Undo all"; kind: ButtonKind.ghost; clicked => { Viewer.revert(); } }

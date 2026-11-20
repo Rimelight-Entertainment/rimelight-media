@@ -23,6 +23,7 @@ mod picture;
 mod platform;
 mod prefs;
 mod settingsctl;
+mod setupctl;
 mod ui;
 mod update;
 mod viewer;
@@ -179,9 +180,7 @@ fn main() -> ExitCode {
     };
 
     if !checking {
-        let keys = hotkeys::start(|action| app::with_app(|a| capturectl::hotkey(a, action)));
-        *app.hotkeys.borrow_mut() = keys;
-        settingsctl::refresh(&app);
+        app::start_hotkeys(&app);
         let keep = app.prefs.borrow().background;
         capturectl::ensure_tray(&app, keep);
     }
@@ -189,7 +188,9 @@ fn main() -> ExitCode {
     if let Some(file) = &args.file {
         app::open_path(&app, file);
     }
-    if !(args.background && !checking) {
+    // The installer's first run: the setup window instead of the app.
+    let first_run = !checking && update::FIRST_RUN.load(std::sync::atomic::Ordering::Relaxed) && setupctl::show(&app);
+    if !(args.background && !checking) && !first_run {
         if let Err(e) = app.ui.show() {
             eprintln!("{TOOL}: {e}");
             return ExitCode::FAILURE;

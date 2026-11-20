@@ -22,7 +22,7 @@ pub fn wire(app: &Rc<App>) {
         }
     });
     s.on_register_defaults(|| {
-        with_app(|a| match install::register_file_types() {
+        with_app(|a| match install::register_file_types(a.prefs.borrow().file_types) {
             Ok(()) => {
                 toast(a, "File types registered. Now pick Rimelight Media in Windows' default apps.");
                 install::open_default_apps_settings();
@@ -58,6 +58,8 @@ pub fn refresh(app: &Rc<App>) {
     let p = app.prefs.borrow();
     s.set_theme(p.theme);
     s.set_background(p.background);
+    s.set_desktop_shortcut(p.desktop_shortcut);
+    s.set_printscreen_ours(!install::windows_printscreen_on());
     s.set_snip_copy(p.snip_copy);
     s.set_snip_save(p.snip_save);
     s.set_snip_open(p.snip_open);
@@ -108,13 +110,27 @@ fn save_from_ui(app: &Rc<App>) {
         p.rec_system_audio = s.get_rec_system_audio();
         p.rec_mic = s.get_rec_mic();
         p.rec_fps = s.get_rec_fps();
+        p.desktop_shortcut = s.get_desktop_shortcut();
         p.save();
         before != p.background
     };
     apply_theme(app);
+    if crate::update::installed_version().is_some() {
+        install::set_shortcuts(app.prefs.borrow().desktop_shortcut);
+    }
+    let ours = s.get_printscreen_ours();
+    if ours == install::windows_printscreen_on() {
+        install::set_windows_printscreen(!ours);
+        {
+            let mut p = app.prefs.borrow_mut();
+            p.printscreen_changed = ours;
+            p.save();
+        }
+        crate::app::start_hotkeys(app);
+    }
     if background_changed {
         let on = app.prefs.borrow().background;
-        install::set_run_at_login(on.then(install::current_exe).as_deref());
+        install::set_run_at_login(on.then(install::launcher_path).as_deref());
         crate::capturectl::ensure_tray(app, on);
         toast(app, if on { "Rimelight Media now starts with Windows and stays in the tray." } else { "Rimelight Media no longer starts with Windows." });
     }

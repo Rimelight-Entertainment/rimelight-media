@@ -1,6 +1,6 @@
-//! Windows integration around the Velopack install (src/update.rs): file types and default-app capabilities, and the
-//! optional start-with-Windows entry. All per user, no admin. Velopack itself adds the Start menu shortcut, the
-//! Installed apps entry and removes the files on uninstall.
+//! Windows integration around the Velopack install (src/update.rs): the shortcuts (Start menu > Rimelight, Desktop),
+//! file types and default-app capabilities, the start-with-Windows entry and Windows' own Print Screen setting. All per
+//! user, no admin. Velopack itself adds the Installed apps entry and removes the program files on uninstall.
 
 use std::path::{Path, PathBuf};
 
@@ -45,11 +45,15 @@ mod reg {
         key.set_value(name, &value)
     }
 
-    pub fn register_file_types(exe: &Path, icon: &Path) -> std::io::Result<()> {
+    pub fn register_file_types(exe: &Path, icon: &Path, kinds: [bool; 3]) -> std::io::Result<()> {
+        unregister_file_types();
         let exe_s = exe.display().to_string();
         let open = format!("\"{exe_s}\" \"%1\"");
         let icon_s = if icon.exists() { icon.display().to_string() } else { format!("{exe_s},0") };
-        for (progid, (name, exts)) in PROGIDS.iter().zip([("Picture", IMAGE_EXTS), ("Video", VIDEO_EXTS), ("Music", AUDIO_EXTS)]) {
+        for ((progid, (name, exts)), on) in PROGIDS.iter().zip([("Picture", IMAGE_EXTS), ("Video", VIDEO_EXTS), ("Music", AUDIO_EXTS)]).zip(kinds) {
+            if !on {
+                continue;
+            }
             let base = format!(r"Software\Classes\{progid}");
             set(&base, "", &format!("{name} ({APP_NAME})"))?;
             set(&format!(r"{base}\DefaultIcon"), "", &icon_s)?;
@@ -94,6 +98,20 @@ mod reg {
         hkcu().open_subkey(format!(r"Software\Classes\{}\shell\open\command", PROGIDS[0])).is_ok()
     }
 
+    /// Windows' own "Use the Print screen key to open screen capture" (on when the value is missing, Windows 11).
+    pub fn windows_printscreen_on() -> bool {
+        hkcu()
+            .open_subkey(r"Control Panel\Keyboard")
+            .and_then(|k| k.get_value::<u32, _>("PrintScreenKeyForSnippingEnabled"))
+            .map_or(true, |v| v != 0)
+    }
+
+    pub fn set_windows_printscreen(on: bool) {
+        if let Ok((k, _)) = hkcu().create_subkey(r"Control Panel\Keyboard") {
+            let _ = k.set_value("PrintScreenKeyForSnippingEnabled", &u32::from(on));
+        }
+    }
+
     pub fn set_run_at_login(exe: Option<&Path>) {
         let Ok((key, _)) = hkcu().create_subkey(RUN_KEY) else { return };
         match exe {
@@ -110,7 +128,11 @@ mod reg {
 #[cfg(not(windows))]
 mod reg {
     use std::path::Path;
-    pub fn register_file_types(_: &Path, _: &Path) -> std::io::Result<()> {
+    pub fn windows_printscreen_on() -> bool {
+        false
+    }
+    pub fn set_windows_printscreen(_: bool) {}
+    pub fn register_file_types(_: &Path, _: &Path, _: [bool; 3]) -> std::io::Result<()> {
         Ok(())
     }
     pub fn unregister_file_types() {}
@@ -120,20 +142,108 @@ mod reg {
     pub fn set_run_at_login(_: Option<&Path>) {}
 }
 
-pub use reg::{file_types_registered, set_run_at_login};
+pub use reg::{file_types_registered, set_run_at_login, set_windows_printscreen, windows_printscreen_on};
 
-/// Registers the file types for this exe (an installed copy keeps the same path across updates).
-pub fn register_file_types() -> Result<(), String> {
+/// Registers the chosen file types (pictures, video, music) for this exe; the others are removed. An installed copy keeps
+/// the same path across updates.
+pub fn register_file_types(kinds: [bool; 3]) -> Result<(), String> {
     let icon = icon_path();
     if !icon.exists() {
         write_icon(&icon);
     }
-    reg::register_file_types(&current_exe(), &icon).map_err(|e| e.to_string())
+    reg::register_file_types(&current_exe(), &icon, kinds).map_err(|e| e.to_string())
+}
+
+/// What shortcuts start: the installer's launcher ("Rimelight Media.exe" in the install folder, always the newest
+/// version), else this exe.
+pub fn launcher_path() -> PathBuf {
+    let exe = current_exe();
+    exe.parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("Rimelight Media.exe"))
+        .filter(|p| p.exists())
+        .unwrap_or(exe)
+}
+
+fn powershell(script: &str) {
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let _ = cmd.status();
+}
+
+fn quote(p: &Path) -> String {
+    p.display().to_string().replace('\'', "''")
+}
+
+/// The Start menu folder for every Rimelight app ("Rimelight", like JetBrains' folder).
+const START_FOLDER: &str = "$([Environment]::GetFolderPath('Programs'))\\Rimelight";
+const DESKTOP: &str = "$([Environment]::GetFolderPath('Desktop'))";
+
+fn shortcut_script(folder: &str) -> String {
+    format!(
+        "New-Item -ItemType Directory -Force \"{folder}\" | Out-Null; $s=(New-Object -ComObject WScript.Shell).CreateShortcut(\"{folder}\\{APP_NAME}.lnk\"); $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.IconLocation='{},0'; $s.Description='Pictures, video, music and screen capture'; $s.Save()",
+        quote(&launcher_path()),
+        quote(&current_exe().parent().map(Path::to_path_buf).unwrap_or_default()),
+        quote(&current_exe()),
+    )
+}
+
+/// Start menu > Rimelight > Rimelight Media, and the Desktop shortcut when desktop. Also removes the shortcut 0.1.0's
+/// installer put at the top of the Start menu.
+pub fn set_shortcuts(desktop: bool) {
+    let mut script = shortcut_script(START_FOLDER);
+    script.push_str("; Remove-Item -Force -ErrorAction SilentlyContinue \"$([Environment]::GetFolderPath('Programs'))\\Rimelight Media.lnk\"");
+    if desktop {
+        script.push_str("; ");
+        script.push_str(&shortcut_script(DESKTOP));
+    } else {
+        script.push_str(&format!("; Remove-Item -Force -ErrorAction SilentlyContinue \"{DESKTOP}\\{APP_NAME}.lnk\""));
+    }
+    powershell(&script);
+}
+
+/// Removes both shortcuts, and the Rimelight Start menu folder when nothing else is in it.
+fn remove_shortcuts() {
+    powershell(&format!(
+        "Remove-Item -Force -ErrorAction SilentlyContinue \"{START_FOLDER}\\{APP_NAME}.lnk\",\"{DESKTOP}\\{APP_NAME}.lnk\"; if ((Test-Path \"{START_FOLDER}\") -and -not (Get-ChildItem \"{START_FOLDER}\")) {{ Remove-Item -Force \"{START_FOLDER}\" }}"
+    ));
+}
+
+/// After install: the shortcuts, all file types, start with Windows (so the Print Screen keys work), using the choices
+/// saved in the settings (defaults on a first install). The first-run window then lets the person change them.
+pub fn after_install() {
+    let p = crate::prefs::Prefs::load();
+    set_shortcuts(p.desktop_shortcut);
+    let _ = register_file_types(p.file_types);
+    let mut p = p;
+    p.background = true;
+    p.save();
+    set_run_at_login(Some(&launcher_path()));
+}
+
+/// After an update: the same integration, kept as the person chose it.
+pub fn after_update() {
+    let p = crate::prefs::Prefs::load();
+    set_shortcuts(p.desktop_shortcut);
+    let _ = register_file_types(p.file_types);
+    if p.background {
+        set_run_at_login(Some(&launcher_path()));
+    }
 }
 
 /// Removes everything this module added, and the app's settings folder (the uninstall hook runs it). Pictures,
 /// recordings and voice notes the person made are theirs and stay.
 pub fn unregister_all() {
+    let p = crate::prefs::Prefs::load();
+    if p.printscreen_changed {
+        set_windows_printscreen(true);
+    }
+    remove_shortcuts();
     reg::unregister_file_types();
     set_run_at_login(None);
     let _ = std::fs::remove_dir_all(crate::prefs::data_dir());

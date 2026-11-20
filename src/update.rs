@@ -10,16 +10,17 @@ use velopack::{UpdateCheck, UpdateInfo, UpdateManager, VelopackApp};
 /// GITHUB_REPOSITORY when it builds; a local build without it doesn't check for updates.
 const REPO: Option<&str> = option_env!("RIMELIGHT_MEDIA_REPO");
 
+/// True on the run the installer starts right after installing.
+pub static FIRST_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Runs the Velopack install, update and uninstall hooks. Must be the first call in `main`: during a hook it does its
 /// work and exits the process.
 pub fn init() {
     VelopackApp::build()
-        .on_after_install_fast_callback(|_| {
-            let _ = crate::install::register_file_types();
-        })
-        .on_after_update_fast_callback(|_| {
-            let _ = crate::install::register_file_types();
-        })
+        .on_after_install_fast_callback(|_| crate::install::after_install())
+        .on_after_update_fast_callback(|_| crate::install::after_update())
+        // The installer starts the app once when it finishes: that run shows the setup window instead of the app.
+        .on_first_run(|_| FIRST_RUN.store(true, std::sync::atomic::Ordering::Relaxed))
         .on_before_uninstall_fast_callback(|_| crate::install::unregister_all())
         .run();
 }

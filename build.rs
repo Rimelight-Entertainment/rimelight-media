@@ -4,6 +4,11 @@ fn main() {
     let config = slint_build::CompilerConfiguration::new().with_style("fluent".into());
     slint_build::compile_with_config("ui/app.slint", config).expect("the Slint markup compiles");
     copy_ffmpeg_dlls();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rerun-if-changed=app.rc");
+        println!("cargo:rerun-if-changed=assets/rimelight-media.ico");
+        embed_resource::compile("app.rc", embed_resource::NONE).manifest_optional().expect("the icon resource compiles");
+    }
 }
 
 /// The FFmpeg libraries Rimelight Media uses (no avdevice, no avfilter).

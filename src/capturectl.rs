@@ -149,6 +149,15 @@ fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<Top
         })
         .collect();
     w.set_windows(ModelRc::new(VecModel::from(boxes.clone())));
+    // The mode bar on the pointer's monitor, and the window under the pointer highlighted from the start.
+    if let Some(((cx, cy), mon)) = platform::cursor_monitor() {
+        w.set_mon_x((mon.x - rect.x) as f32 / fw);
+        w.set_mon_y((mon.y - rect.y) as f32 / fh);
+        w.set_mon_w(mon.w as f32 / fw);
+        let (fx, fy) = ((cx - rect.x) as f32 / fw, (cy - rect.y) as f32 / fh);
+        let first = boxes.iter().position(|b| fx >= b.x && fx <= b.x + b.w && fy >= b.y && fy <= b.y + b.h);
+        w.set_hovered(first.map_or(-1, |i| i as i32));
+    }
     w.on_hit(move |fx, fy| {
         boxes
             .iter()

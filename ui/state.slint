@@ -117,6 +117,8 @@ export global Viewer {
     callback anim-toggle();
     callback anim-step(int);
     callback save-frame();
+    // Recycle Bin for a file, discard for a snip that was never saved.
+    callback delete-current();
 }
 
 export global Player {
@@ -189,6 +191,9 @@ export global Voice {
 export global Settings {
     in-out property <int> theme: 2; // 0 light, 1 dark, 2 system
     in-out property <bool> background: false;
+    in-out property <bool> desktop-shortcut: true;
+    // Print Screen goes to Rimelight Media (Windows' own Print Screen snipping is off).
+    in-out property <bool> printscreen-ours: false;
     in-out property <bool> snip-copy: true;
     in-out property <bool> snip-save: true;
     in-out property <bool> snip-open: true;

@@ -1,0 +1,2 @@
+// The app icon, embedded in rimelight-media.exe by build.rs. Shortcuts, the taskbar and the installer's launcher show it.
+1 ICON "assets/rimelight-media.ico"

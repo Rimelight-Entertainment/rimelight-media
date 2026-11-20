@@ -20,6 +20,11 @@ pub struct Prefs {
     pub screenshot_dir: PathBuf,
     pub recording_dir: PathBuf,
     pub voice_dir: PathBuf,
+    pub desktop_shortcut: bool,
+    /// File types offered to Windows: pictures, video, music.
+    pub file_types: [bool; 3],
+    /// True when Rimelight Media turned off Windows' own Print Screen snipping (uninstall turns it back on).
+    pub printscreen_changed: bool,
 }
 
 fn home() -> PathBuf {
@@ -47,6 +52,9 @@ impl Default for Prefs {
             screenshot_dir: home.join("Pictures").join("Screenshots"),
             recording_dir: home.join("Videos").join("Captures"),
             voice_dir: home.join("Documents").join("Sound Recordings"),
+            desktop_shortcut: true,
+            file_types: [true; 3],
+            printscreen_changed: false,
         }
     }
 }
@@ -75,6 +83,12 @@ impl Prefs {
                 "screenshot_dir" if !v.is_empty() => p.screenshot_dir = PathBuf::from(v),
                 "recording_dir" if !v.is_empty() => p.recording_dir = PathBuf::from(v),
                 "voice_dir" if !v.is_empty() => p.voice_dir = PathBuf::from(v),
+                "desktop_shortcut" => p.desktop_shortcut = flag(v),
+                "printscreen_changed" => p.printscreen_changed = flag(v),
+                "file_types" => {
+                    let mut it = v.chars().map(|c| c == '1');
+                    p.file_types = [it.next().unwrap_or(true), it.next().unwrap_or(true), it.next().unwrap_or(true)];
+                }
                 _ => {}
             }
         }
@@ -84,7 +98,7 @@ impl Prefs {
     pub fn save(&self) {
         let b = |v: bool| if v { "1" } else { "0" };
         let text = format!(
-            "theme={}\nbackground={}\nsnip_copy={}\nsnip_save={}\nsnip_open={}\nrec_system_audio={}\nrec_mic={}\nrec_fps={}\nvolume={}\nscreenshot_dir={}\nrecording_dir={}\nvoice_dir={}\n",
+            "theme={}\nbackground={}\nsnip_copy={}\nsnip_save={}\nsnip_open={}\nrec_system_audio={}\nrec_mic={}\nrec_fps={}\nvolume={}\nscreenshot_dir={}\nrecording_dir={}\nvoice_dir={}\ndesktop_shortcut={}\nprintscreen_changed={}\nfile_types={}{}{}\n",
             self.theme,
             b(self.background),
             b(self.snip_copy),
@@ -97,6 +111,11 @@ impl Prefs {
             self.screenshot_dir.display(),
             self.recording_dir.display(),
             self.voice_dir.display(),
+            b(self.desktop_shortcut),
+            b(self.printscreen_changed),
+            b(self.file_types[0]),
+            b(self.file_types[1]),
+            b(self.file_types[2]),
         );
         write(&data_dir().join("settings.txt"), &text);
     }

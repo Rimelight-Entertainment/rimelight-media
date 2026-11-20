@@ -256,6 +256,45 @@ mod imp {
         }
     }
 
+    pub fn cursor_monitor() -> Option<((i32, i32), ScreenRect)> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        // SAFETY: plain queries filling structs we own; cbSize is set as GetMonitorInfoW requires.
+        unsafe {
+            let mut p = POINT { x: 0, y: 0 };
+            if GetCursorPos(&mut p) == 0 {
+                return None;
+            }
+            let mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(mon, &mut info) == 0 {
+                return None;
+            }
+            let r = info.rcMonitor;
+            Some(((p.x, p.y), ScreenRect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top }))
+        }
+    }
+
+    pub fn recycle(path: &std::path::Path) -> bool {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows_sys::Win32::UI::Shell::{
+            FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW,
+        };
+        // Double-NUL-terminated list of one path.
+        let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+        from.extend_from_slice(&[0, 0]);
+        // SAFETY: `from` outlives the call and is double-NUL-terminated as SHFileOperationW requires.
+        unsafe {
+            let mut op: SHFILEOPSTRUCTW = std::mem::zeroed();
+            op.wFunc = FO_DELETE;
+            op.pFrom = from.as_ptr();
+            op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI) as u16;
+            SHFileOperationW(&mut op) == 0 && op.fAnyOperationsAborted == 0
+        }
+    }
+
     pub fn exclude_from_capture(hwnd: isize) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
         // SAFETY: hwnd is one of our own live windows (from winit); a stale handle only makes the call fail.
@@ -287,6 +326,12 @@ mod imp {
     }
     pub fn file_types_changed() {}
     pub fn exclude_from_capture(_: isize) {}
+    pub fn cursor_monitor() -> Option<((i32, i32), ScreenRect)> {
+        None
+    }
+    pub fn recycle(path: &std::path::Path) -> bool {
+        std::fs::remove_file(path).is_ok()
+    }
     pub struct ScreenGrabber;
     impl ScreenGrabber {
         pub fn new(_: ScreenRect) -> Option<ScreenGrabber> {
@@ -302,6 +347,16 @@ mod imp {
     pub fn local_time() -> [u16; 6] {
         [2000, 1, 1, 0, 0, 0]
     }
+}
+
+/// The pointer position and the rectangle of the monitor it is on (physical pixels).
+pub fn cursor_monitor() -> Option<((i32, i32), ScreenRect)> {
+    imp::cursor_monitor()
+}
+
+/// Moves a file to the Recycle Bin (undoable from there). True when it went.
+pub fn recycle(path: &std::path::Path) -> bool {
+    imp::recycle(path)
 }
 
 /// Keeps one of our windows (the recording bar) out of screenshots and recordings.
