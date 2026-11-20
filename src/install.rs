@@ -131,11 +131,12 @@ pub fn register_file_types() -> Result<(), String> {
     reg::register_file_types(&current_exe(), &icon).map_err(|e| e.to_string())
 }
 
-/// Removes everything this module added (the uninstall hook runs it).
+/// Removes everything this module added, and the app's settings folder (the uninstall hook runs it). Pictures,
+/// recordings and voice notes the person made are theirs and stay.
 pub fn unregister_all() {
     reg::unregister_file_types();
     set_run_at_login(None);
-    let _ = std::fs::remove_file(icon_path());
+    let _ = std::fs::remove_dir_all(crate::prefs::data_dir());
 }
 
 pub fn open_default_apps_settings() {

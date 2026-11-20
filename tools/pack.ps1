@@ -43,7 +43,8 @@ try {
     dotnet tool restore | Out-Null
     $out = Join-Path $root 'releases'
     dotnet vpk pack --packId RimelightMedia --packVersion $Version --packDir $publish --mainExe rimelight-media.exe `
-        --packTitle 'Rimelight Media' --packAuthors 'Rimelight Entertainment' --icon $icon --outputDir $out
+        --packTitle 'Rimelight Media' --packAuthors 'Rimelight Entertainment' --icon $icon --outputDir $out `
+        --shortcuts StartMenuRoot
     if ($LASTEXITCODE) { throw 'vpk pack failed' }
 
     $installed = [math]::Round(((Get-ChildItem $publish -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1)
