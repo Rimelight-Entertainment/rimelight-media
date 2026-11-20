@@ -44,9 +44,9 @@ try {
     $out = Join-Path $root 'releases'
     dotnet vpk pack --packId RimelightMedia --packVersion $Version --packDir $publish --mainExe rimelight-media.exe `
         --packTitle 'Rimelight Media' --packAuthors 'Rimelight Entertainment' --icon $icon --outputDir $out `
-        --% --shortcuts ""
+        --shortcuts None
     # No installer-made shortcuts: the app makes Start menu > Rimelight > Rimelight Media and the optional Desktop one
-    # (src/install.rs), so they follow the setup choices. --% passes the empty value as is, in every PowerShell.
+    # (src/install.rs), so they follow the setup choices.
     if ($LASTEXITCODE) { throw 'vpk pack failed' }
 
     $installed = [math]::Round(((Get-ChildItem $publish -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1)
