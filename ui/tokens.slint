@@ -1,0 +1,73 @@
+// Design tokens, taken from rimelight-space (crates/rimelight_ui/ui/generated/tokens.slint): the same surfaces, text,
+// accent and status colours, radii and 4 px spacing. Markup uses these names, never literal colours or sizes.
+import { Palette } from "std-widgets.slint";
+
+export enum ThemeChoice { light, dark, system }
+
+export global Tokens {
+    in-out property <ThemeChoice> theme: system;
+    out property <bool> dark: theme == ThemeChoice.dark || (theme == ThemeChoice.system && Palette.color-scheme == ColorScheme.dark);
+
+    out property <color> surface-base: dark ? #121316 : #F2F1EE;
+    out property <color> surface-raised: dark ? #1B1E24 : #FFFFFF;
+    out property <color> surface-sunken: dark ? #0A0C10 : #E8EDF3;
+    out property <color> surface-overlay: dark ? #1B1E24 : #FFFFFF;
+    out property <color> surface-hover: dark ? #252A33 : #E6ECF5;
+    out property <color> surface-pressed: dark ? #2F3540 : #D5DDE8;
+    // The stage behind pictures and video: dark in both themes, like every media viewer.
+    out property <color> stage: dark ? #0A0C10 : #1B1E24;
+    out property <color> text-primary: dark ? #F2F1EE : #101014;
+    out property <color> text-muted: dark ? #9AA4B2 : #5E6B7C;
+    out property <color> text-faint: dark ? #6B7587 : #969A9E;
+    out property <color> text-on-accent: dark ? #0B0B0C : #FFFFFF;
+    out property <color> text-on-stage: #F2F1EE;
+    out property <color> border-subtle: dark ? #2F3540 : #BDBFC4;
+    out property <color> border-strong: dark ? #7F8A9B : #7A8594;
+    out property <color> accent-default: dark ? #4DA0FF : #0D7FFF;
+    out property <color> accent-hover: dark ? #8DBBFF : #0968DA;
+    out property <color> accent-text: dark ? #4DA0FF : #0968DA;
+    out property <color> accent-fill: dark ? #4DA0FF : #1659C4;
+    out property <color> accent-fill-hover: dark ? #8DBBFF : #164FA8;
+    out property <color> focus-ring: dark ? #4DA0FF : #0D7FFF;
+    out property <color> status-success: dark ? #3FD6B8 : #0A7563;
+    out property <color> status-warning: dark ? #FFC14D : #8A5800;
+    out property <color> status-danger: dark ? #FF6259 : #B3261E;
+    out property <color> status-danger-surface: dark ? #3A1816 : #FCEBEA;
+    out property <color> status-info-surface: dark ? #18213D : #EAEFFA;
+    out property <color> selection: #0D7FFF99;
+    out property <color> scrim: dark ? #000000AA : #00000069;
+    out property <color> stage-bar: #121316E6;
+    out property <color> stage-control-hover: #FFFFFF22;
+    out property <color> record-red: #E5484D;
+
+    out property <length> radius-control: 5px;
+    out property <length> radius-surface: 6px;
+    out property <length> radius-r8: 8px;
+    out property <length> radius-pill: 9999px;
+
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-5: 20px;
+    out property <length> space-6: 24px;
+    out property <length> space-8: 32px;
+    out property <length> space-10: 40px;
+
+    out property <length> control-height: 32px;
+    out property <length> bar-height: 44px;
+    out property <length> icon-small: 16px;
+    out property <length> icon-medium: 20px;
+    out property <length> icon-large: 28px;
+
+    out property <duration> motion-fast: 120ms;
+}
+
+export global Type {
+    out property <string> family: "Segoe UI Variable Text";
+    out property <length> caption: 12px;
+    out property <length> body: 14px;
+    out property <length> subheading: 16px;
+    out property <length> heading: 20px;
+    out property <length> title: 28px;
+}

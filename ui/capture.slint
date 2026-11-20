@@ -1,0 +1,263 @@
+// Capture windows: the full-screen snip overlay, the small recording bar and the tray icon.
+import { Tokens, Type } from "tokens.slint";
+import { Icons } from "icons.slint";
+import { IconButton, Button, ButtonKind } from "widgets.slint";
+
+// A window on screen, as fractions of the frozen screenshot.
+export struct WindowBox {
+    title: string,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+}
+
+// Covers every monitor with a frozen screenshot. Drag for an area, or hover and click a window.
+export component SnipWindow inherits Window {
+    in property <image> shot;
+    in property <int> shot-w: 1;
+    in property <int> shot-h: 1;
+    in-out property <string> mode: "region"; // "region", "window", "screen"
+    // "snip" for a screenshot, "record" to choose what to record.
+    in property <string> purpose: "snip";
+    in property <[WindowBox]> windows;
+    callback done(float, float, float, float);
+    callback cancel();
+
+    no-frame: true;
+    always-on-top: true;
+    title: "Rimelight Media snip";
+    background: #000000;
+
+    property <int> hovered: -1;
+    property <bool> dragging: false;
+    property <float> ax;
+    property <float> ay;
+    property <float> bx;
+    property <float> by;
+    property <float> sel-x: mode == "window" ? (hovered >= 0 ? windows[hovered].x : 0) : mode == "screen" ? 0 : min(ax, bx);
+    property <float> sel-y: mode == "window" ? (hovered >= 0 ? windows[hovered].y : 0) : mode == "screen" ? 0 : min(ay, by);
+    property <float> sel-w: mode == "window" ? (hovered >= 0 ? windows[hovered].w : 0) : mode == "screen" ? 1 : abs(bx - ax);
+    property <float> sel-h: mode == "window" ? (hovered >= 0 ? windows[hovered].h : 0) : mode == "screen" ? 1 : abs(by - ay);
+    property <bool> has-sel: sel-w > 0.002 && sel-h > 0.002;
+
+    // The window under (fx, fy), front-most first; -1 for none. Answered in Rust.
+    callback hit(float, float) -> int;
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape { root.cancel(); return accept; }
+            if e.text == Key.Return && root.mode == "screen" { root.done(0, 0, 1, 1); return accept; }
+            reject
+        }
+    }
+
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.shot;
+        image-fit: fill;
+    }
+
+    property <length> sx: sel-x * self.width;
+    property <length> sy: sel-y * self.height;
+    property <length> sw: sel-w * self.width;
+    property <length> sh: sel-h * self.height;
+
+    // Dim everything outside the selection.
+    if !root.has-sel: Rectangle { background: #00000070; }
+    if root.has-sel: Rectangle { x: 0; y: 0; width: parent.width; height: root.sy; background: #00000070; }
+    if root.has-sel: Rectangle { x: 0; y: root.sy + root.sh; width: parent.width; height: max(0px, parent.height - root.sy - root.sh); background: #00000070; }
+    if root.has-sel: Rectangle { x: 0; y: root.sy; width: root.sx; height: root.sh; background: #00000070; }
+    if root.has-sel: Rectangle { x: root.sx + root.sw; y: root.sy; width: max(0px, parent.width - root.sx - root.sw); height: root.sh; background: #00000070; }
+    if root.has-sel: Rectangle {
+        x: root.sx;
+        y: root.sy;
+        width: root.sw;
+        height: root.sh;
+        border-width: 2px;
+        border-color: root.purpose == "record" ? Tokens.record-red : #4DA0FF;
+    }
+    if root.has-sel && root.mode != "screen": Rectangle {
+        x: root.sx;
+        y: root.sy + root.sh + 6px > root.height - 30px ? root.sy - 30px : root.sy + root.sh + 6px;
+        width: size-text.preferred-width + 16px;
+        height: 24px;
+        border-radius: 4px;
+        background: #000000C0;
+        size-text := Text {
+            text: (root.mode == "window" && root.hovered >= 0 ? root.windows[root.hovered].title + "  ·  " : "")
+                + round(root.sel-w * root.shot-w) + " × " + round(root.sel-h * root.shot-h);
+            color: #FFFFFF;
+            font-size: 12px;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: root.mode == "region" ? crosshair : pointer;
+        moved => {
+            let fx = self.mouse-x / root.width;
+            let fy = self.mouse-y / root.height;
+            if root.mode == "window" {
+                root.hovered = root.hit(fx, fy);
+            }
+            if root.mode == "region" && self.pressed {
+                root.bx = clamp(fx, 0, 1);
+                root.by = clamp(fy, 0, 1);
+            }
+        }
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                root.cancel();
+            }
+            if e.button != PointerEventButton.left { return; }
+            let fx = self.mouse-x / root.width;
+            let fy = self.mouse-y / root.height;
+            if e.kind == PointerEventKind.down && root.mode == "region" {
+                root.ax = fx;
+                root.ay = fy;
+                root.bx = fx;
+                root.by = fy;
+                root.dragging = true;
+            }
+            if e.kind == PointerEventKind.up {
+                if root.mode == "region" && root.dragging {
+                    root.dragging = false;
+                    if root.has-sel { root.done(root.sel-x, root.sel-y, root.sel-w, root.sel-h); }
+                } else if root.mode == "window" {
+                    root.hovered = root.hit(fx, fy);
+                    if root.hovered >= 0 { root.done(root.sel-x, root.sel-y, root.sel-w, root.sel-h); }
+                } else if root.mode == "screen" {
+                    root.done(0, 0, 1, 1);
+                }
+            }
+        }
+    }
+
+    // Mode bar.
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 16px;
+        width: bar.preferred-width;
+        height: 48px;
+        border-radius: 10px;
+        background: #1B1E24F0;
+        border-width: 1px;
+        border-color: #2F3540;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #00000080;
+        bar := HorizontalLayout {
+            padding: 8px;
+            spacing: 4px;
+            IconButton { on-stage: true; icon: Icons.scan; label: "Area"; active: root.mode == "region"; clicked => { root.mode = "region"; root.ax = 0; root.bx = 0; root.ay = 0; root.by = 0; } }
+            IconButton { on-stage: true; icon: Icons.app-window; label: "Window"; active: root.mode == "window"; clicked => { root.mode = "window"; } }
+            IconButton { on-stage: true; icon: Icons.monitor; label: "Whole screen"; active: root.mode == "screen"; clicked => { root.mode = "screen"; } }
+            Rectangle { width: 9px; Rectangle { width: 1px; height: 20px; background: #2F3540; } }
+            Text {
+                text: root.purpose == "record"
+                    ? (root.mode == "screen" ? "Click to record the whole screen" : root.mode == "window" ? "Click a window to record it" : "Drag over the area to record")
+                    : (root.mode == "screen" ? "Click anywhere to snip the whole screen" : root.mode == "window" ? "Click a window" : "Drag to snip an area");
+                color: #F2F1EE;
+                font-size: 13px;
+                vertical-alignment: center;
+            }
+            Rectangle { width: 4px; }
+            IconButton { on-stage: true; icon: Icons.x; label: "Cancel (Esc)"; clicked => { root.cancel(); } }
+        }
+    }
+}
+
+// The small bar shown while recording the screen.
+export component RecBar inherits Window {
+    in property <string> time-text: "00:00";
+    in property <string> what;
+    callback stop();
+    callback discard();
+
+    no-frame: true;
+    always-on-top: true;
+    title: "Rimelight Media recording";
+    width: 300px;
+    height: 44px;
+    background: #1B1E24;
+
+    property <bool> blink;
+    Timer {
+        interval: 600ms;
+        running: true;
+        triggered => { root.blink = !root.blink; }
+    }
+
+    // Drag the bar around by its body.
+    TouchArea {
+        moved => {
+            if self.pressed {
+                root.drag-by(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+            }
+        }
+    }
+    callback drag-by(length, length);
+
+    HorizontalLayout {
+        padding: 6px;
+        padding-left: 12px;
+        spacing: 8px;
+        Rectangle {
+            width: 12px;
+            Rectangle {
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: root.blink ? Tokens.record-red : Tokens.record-red.darker(0.5);
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Text { text: root.time-text; color: #F2F1EE; font-size: 14px; font-weight: 600; }
+            Text { text: root.what; color: #9AA4B2; font-size: 11px; overflow: elide; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        IconButton { on-stage: true; icon: Icons.trash; label: "Discard"; clicked => { root.discard(); } }
+        Rectangle {
+            width: 76px;
+            border-radius: 6px;
+            background: stop-ta.has-hover ? Tokens.record-red.brighter(0.1) : Tokens.record-red;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 6px;
+                Rectangle { width: 12px; Rectangle { width: 10px; height: 10px; border-radius: 2px; background: #FFFFFF; } }
+                Text { text: "Stop"; color: #FFFFFF; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+            }
+            stop-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.stop(); }
+            }
+        }
+    }
+}
+
+export component Tray inherits SystemTrayIcon {
+    in property <bool> recording;
+    callback open();
+    callback snip(string);
+    callback record();
+    callback voice();
+    callback quit();
+
+    icon: @image-url("../assets/icons/logo-color.svg");
+    tooltip: recording ? "Rimelight Media: recording" : "Rimelight Media";
+    title: "Rimelight Media";
+    clicked => { root.open(); }
+
+    Menu {
+        MenuItem { title: "Open Rimelight Media"; activated => { root.open(); } }
+        MenuItem { title: "Snip an area"; activated => { root.snip("region"); } }
+        MenuItem { title: "Snip a window"; activated => { root.snip("window"); } }
+        MenuItem { title: "Snip the whole screen"; activated => { root.snip("screen"); } }
+        MenuItem { title: recording ? "Stop recording" : "Record the screen"; activated => { root.record(); } }
+        MenuItem { title: "Record your voice"; activated => { root.voice(); } }
+        MenuSeparator { }
+        MenuItem { title: "Quit Rimelight Media"; activated => { root.quit(); } }
+    }
+}

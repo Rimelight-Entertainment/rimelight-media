@@ -1,0 +1,325 @@
+// The video and music player: seek bar, volume, audio and subtitle tracks, loop, frame snapshot and trimming.
+import { Tokens, Type } from "tokens.slint";
+import { Icons } from "icons.slint";
+import { IconButton, Button, ButtonKind, Slider, ChoicePopup, Choice } from "widgets.slint";
+
+// Subtitle panel: tracks, then delay and size. Stays open while adjusting.
+component SubtitlePopup inherits PopupWindow {
+    in property <[Choice]> choices;
+    close-policy: close-on-click-outside;
+
+    Rectangle {
+        background: Tokens.surface-overlay;
+        border-radius: Tokens.radius-r8;
+        border-width: 1px;
+        border-color: Tokens.border-subtle;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #00000060;
+        VerticalLayout {
+            padding: Tokens.space-1;
+            Text { text: "Subtitles"; color: Tokens.text-muted; font-size: Type.caption; height: 26px; vertical-alignment: center; x: Tokens.space-2; }
+            for c[i] in root.choices: Rectangle {
+                height: c.detail == "" ? 32px : 44px;
+                min-width: 260px;
+                border-radius: Tokens.radius-control;
+                background: row.has-hover ? Tokens.surface-hover : transparent;
+                HorizontalLayout {
+                    padding-left: Tokens.space-2;
+                    padding-right: Tokens.space-3;
+                    spacing: Tokens.space-2;
+                    Rectangle {
+                        width: Tokens.icon-small;
+                        if c.selected: Image { source: @image-url("../assets/icons/check.svg"); width: Tokens.icon-small; height: Tokens.icon-small; colorize: Tokens.accent-text; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: c.label; color: Tokens.text-primary; font-size: Type.body; overflow: elide; }
+                        if c.detail != "": Text { text: c.detail; color: Tokens.text-muted; font-size: Type.caption; overflow: elide; }
+                    }
+                }
+                row := TouchArea { clicked => { Player.pick-subtitle(i); } }
+            }
+            Rectangle { height: 1px; background: Tokens.border-subtle; }
+            HorizontalLayout {
+                padding: Tokens.space-2;
+                spacing: Tokens.space-1;
+                Text { text: "Delay"; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; width: 52px; }
+                Button { text: "−"; clicked => { Player.sub-delay(-100); } }
+                Text { text: Player.sub-delay-text; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; horizontal-alignment: center; min-width: 76px; }
+                Button { text: "+"; clicked => { Player.sub-delay(100); } }
+                Button { text: "Reset"; kind: ButtonKind.ghost; clicked => { Player.sub-delay(0); } }
+            }
+            HorizontalLayout {
+                padding: Tokens.space-2;
+                padding-top: 0;
+                spacing: Tokens.space-1;
+                Text { text: "Size"; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; width: 52px; }
+                Button { text: "−"; clicked => { Player.sub-size(-1); } }
+                Text { text: round(Player.sub-scale * 100) + "%"; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; horizontal-alignment: center; min-width: 76px; }
+                Button { text: "+"; clicked => { Player.sub-size(1); } }
+                Button { text: "Reset"; kind: ButtonKind.ghost; clicked => { Player.sub-size(0); } }
+            }
+            Text { text: "Keys: G / H delay, Shift+G / Shift+H size, V on/off"; color: Tokens.text-faint; font-size: Type.caption; x: Tokens.space-2; height: 22px; }
+        }
+    }
+}
+import { Player, Shell } from "state.slint";
+
+export component MediaPage inherits Rectangle {
+    background: Tokens.stage;
+
+    // Where the picture sits inside the stage (for picture subtitles).
+    property <length> area-h: Shell.full-screen ? root.height : root.height - bar.height;
+    property <float> aspect: Player.video-w * 1.0 / max(1, Player.video-h);
+    property <length> vw: min(root.width, root.area-h * root.aspect);
+    property <length> vh: root.vw / root.aspect;
+    property <length> vx: (root.width - root.vw) / 2;
+    property <length> vy: (root.area-h - root.vh) / 2;
+
+    property <bool> bars-visible: !Shell.full-screen || (stage-ta.has-hover && stage-ta.mouse-y > self.height - 160px) || !Player.playing;
+
+    stage-ta := TouchArea {
+        clicked => { Player.toggle-play(); }
+        double-clicked => { Shell.toggle-full-screen(); }
+    }
+
+    if Player.has-video: Image {
+        width: parent.width;
+        height: parent.height - (Shell.full-screen ? 0px : bar.height);
+        y: 0;
+        source: Player.frame;
+        image-fit: contain;
+    }
+
+    if !Player.has-video: VerticalLayout {
+        y: 0;
+        height: parent.height - bar.height;
+        alignment: center;
+        spacing: Tokens.space-4;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 200px;
+                height: 200px;
+                border-radius: 24px;
+                background: @linear-gradient(135deg, #1659C4 0%, #4DA0FF 100%);
+                Image {
+                    source: Player.playing ? Icons.audio-lines : Icons.music;
+                    width: 88px;
+                    height: 88px;
+                    colorize: #FFFFFF;
+                }
+            }
+        }
+        Text {
+            text: Player.media-title;
+            color: Tokens.text-on-stage;
+            font-size: Type.heading;
+            font-weight: 600;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: Player.media-detail;
+            color: #9AA4B2;
+            font-size: Type.body;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    if Player.has-video && Player.has-sub-picture: Image {
+        x: root.vx + Player.sub-x * root.vw;
+        y: root.vy + Player.sub-y * root.vh;
+        width: Player.sub-w * root.vw;
+        height: Player.sub-h * root.vh;
+        source: Player.sub-picture;
+        image-fit: fill;
+    }
+
+    // Subtitles.
+    if Player.subtitle != "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - (root.bars-visible ? bar.height : 0px) - self.height - Tokens.space-6;
+        width: min(parent.width - 64px, sub.preferred-width + 24px);
+        height: sub.preferred-height + 12px;
+        border-radius: Tokens.radius-control;
+        background: #000000A0;
+        sub := Text {
+            width: parent.width - 24px;
+            text: Player.subtitle;
+            color: #FFFFFF;
+            font-size: max(14px, root.height / 26 * Player.sub-scale);
+            font-weight: 600;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+
+    if Player.error != "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: Tokens.space-6;
+        width: min(parent.width - 64px, err.preferred-width + 24px);
+        height: err.preferred-height + 16px;
+        border-radius: Tokens.radius-control;
+        background: Tokens.status-danger-surface;
+        err := Text {
+            width: parent.width - 24px;
+            text: Player.error;
+            color: Tokens.status-danger;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+
+    if Player.buffering: Text {
+        text: "Opening…";
+        color: Tokens.text-on-stage;
+        font-size: Type.subheading;
+    }
+
+    bar := Rectangle {
+        y: parent.height - self.height;
+        height: layout.preferred-height;
+        background: Tokens.stage-bar;
+        opacity: root.bars-visible ? 1 : 0;
+        animate opacity { duration: 200ms; }
+
+        layout := VerticalLayout {
+            padding-left: Tokens.space-4;
+            padding-right: Tokens.space-4;
+            padding-top: Tokens.space-2;
+            padding-bottom: Tokens.space-2;
+            spacing: Tokens.space-1;
+
+            HorizontalLayout {
+                spacing: Tokens.space-3;
+                Text { text: Player.time-text; color: Tokens.text-on-stage; font-size: Type.caption; vertical-alignment: center; min-width: 52px; }
+                Slider {
+                    value: Player.position;
+                    show-range: Player.trim-mode;
+                    range-start: Player.trim-start;
+                    range-end: Player.trim-end;
+                    changed(v) => { Player.seek-preview(v); }
+                    released(v) => { Player.seek(v); }
+                }
+                Text { text: Player.length-text; color: Tokens.text-on-stage; font-size: Type.caption; vertical-alignment: center; min-width: 52px; horizontal-alignment: right; }
+            }
+
+            if Player.trim-mode: HorizontalLayout {
+                spacing: Tokens.space-2;
+                padding-top: Tokens.space-1;
+                padding-bottom: Tokens.space-1;
+                Image { source: Icons.scissors; width: Tokens.icon-medium; colorize: #FFC14D; }
+                Text { text: Player.trim-text; color: Tokens.text-on-stage; font-size: Type.body; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                Button { text: "Start here"; clicked => { Player.trim-set(true); } }
+                Button { text: "End here"; clicked => { Player.trim-set(false); } }
+                Button { text: "Cancel"; kind: ButtonKind.ghost; clicked => { Player.trim-mode = false; } }
+                Button {
+                    text: Player.exporting ? "Saving…" : "Save trimmed copy";
+                    kind: ButtonKind.primary;
+                    enabled: !Player.exporting;
+                    clicked => { Player.trim-save(); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Tokens.space-1;
+                IconButton {
+                    on-stage: true;
+                    size: 40px;
+                    icon-size: Tokens.icon-large;
+                    icon: Player.playing ? Icons.pause : Icons.play;
+                    label: Player.playing ? "Pause (Space)" : "Play (Space)";
+                    clicked => { Player.toggle-play(); }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        IconButton { on-stage: true; icon: Icons.undo; label: "Back 10 s (Left)"; clicked => { Player.skip(-10); } }
+                        IconButton { on-stage: true; icon: Icons.redo; label: "Forward 10 s (Right)"; clicked => { Player.skip(10); } }
+                        IconButton {
+                            on-stage: true;
+                            icon: Player.muted || Player.volume == 0 ? Icons.volume-x : Icons.volume;
+                            label: "Mute (M)";
+                            clicked => { Player.toggle-mute(); }
+                        }
+                        Rectangle {
+                            width: 96px;
+                            Slider {
+                                width: parent.width;
+                                value: Player.volume;
+                                changed(v) => { Player.set-volume(v); }
+                                released(v) => { Player.set-volume(v); }
+                            }
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: Player.media-title;
+                        color: #9AA4B2;
+                        font-size: Type.caption;
+                        overflow: elide;
+                        horizontal-alignment: center;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        Rectangle {
+                            width: speed-label.preferred-width + 16px;
+                            border-radius: Tokens.radius-control;
+                            background: speed-ta.has-hover ? Tokens.stage-control-hover : transparent;
+                            speed-label := Text { text: Player.speed-text; color: Player.speed-text == "1×" ? Tokens.text-on-stage : #FFC14D; font-size: Type.body; font-weight: 600; }
+                            speed-ta := TouchArea { mouse-cursor: pointer; clicked => { speed-popup.show(); } }
+                        }
+                        audio-btn := IconButton {
+                            on-stage: true;
+                            icon: Icons.languages;
+                            label: "Audio track";
+                            enabled: Player.audio-tracks.length > 0;
+                            clicked => { audio-popup.show(); }
+                        }
+                        sub-btn := IconButton {
+                            on-stage: true;
+                            icon: Icons.subtitles;
+                            label: "Subtitles";
+                            enabled: Player.has-video;
+                            clicked => { sub-popup.show(); }
+                        }
+                        IconButton { on-stage: true; icon: Icons.repeat; label: "Repeat"; active: Player.looping; clicked => { Player.toggle-loop(); } }
+                        if Player.has-video: IconButton { on-stage: true; icon: Icons.camera; label: "Save this frame as a picture"; clicked => { Player.snapshot(); } }
+                        IconButton { on-stage: true; icon: Icons.scissors; label: "Trim"; active: Player.trim-mode; clicked => { Player.trim-mode = !Player.trim-mode; } }
+                        IconButton { on-stage: true; icon: Icons.maximize; label: "Full screen (F)"; active: Shell.full-screen; clicked => { Shell.toggle-full-screen(); } }
+                    }
+                }
+            }
+        }
+
+        audio-popup := ChoicePopup {
+            x: root.width - 460px;
+            y: -self.preferred-height + 8px;
+            heading: "Audio track";
+            choices: Player.audio-tracks;
+            picked(i) => { Player.pick-audio(i); }
+        }
+        sub-popup := SubtitlePopup {
+            x: root.width - 440px;
+            y: -self.preferred-height + 8px;
+            choices: Player.subtitle-tracks;
+        }
+        speed-popup := ChoicePopup {
+            x: root.width - 500px;
+            y: -self.preferred-height + 8px;
+            heading: "Playback speed";
+            choices: Player.speeds;
+            picked(i) => { Player.pick-speed(i); }
+        }
+    }
+}

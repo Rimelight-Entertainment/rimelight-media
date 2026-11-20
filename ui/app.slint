@@ -1,0 +1,145 @@
+// Rimelight Media: one window for pictures, video, music, voice recording and settings. Snips and recordings use the windows in
+// capture.slint.
+import { Tokens, Type, ThemeChoice } from "tokens.slint";
+import { Icons } from "icons.slint";
+import { IconButton, Choice } from "widgets.slint";
+import { Shell, Viewer, Player, Voice, Settings, RecentItem, Mark } from "state.slint";
+import { HomePage } from "home.slint";
+import { ImagePage } from "image_page.slint";
+import { MediaPage } from "media_page.slint";
+import { VoicePage } from "voice_page.slint";
+import { SettingsPage } from "settings_page.slint";
+
+export { Shell, Viewer, Player, Voice, Settings, Tokens, ThemeChoice, RecentItem, Mark, Choice }
+export { SnipWindow, RecBar, Tray, WindowBox } from "capture.slint";
+
+component NavButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+    height: Tokens.control-height;
+    width: row.preferred-width + Tokens.space-4;
+    border-radius: Tokens.radius-control;
+    background: active ? Tokens.surface-pressed : ta.has-hover ? Tokens.surface-hover : transparent;
+    accessible-role: tab;
+    accessible-label: label;
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: Tokens.space-2;
+        Rectangle {
+            width: Tokens.icon-small;
+            Image { source: root.icon; width: Tokens.icon-small; height: Tokens.icon-small; colorize: root.active ? Tokens.accent-text : Tokens.text-muted; }
+        }
+        Text { text: root.label; color: root.active ? Tokens.text-primary : Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: Shell.title;
+    icon: Icons.logo;
+    preferred-width: 1200px;
+    preferred-height: 780px;
+    min-width: 640px;
+    min-height: 420px;
+    background: Tokens.surface-base;
+    default-font-family: Type.family;
+    default-font-size: Type.body;
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(e) => {
+            if Shell.key(e.text, e.modifiers.control, e.modifiers.shift, e.modifiers.alt) { return accept; }
+            reject
+        }
+
+        VerticalLayout {
+            // Top bar (hidden in full screen).
+            if !Shell.full-screen: Rectangle {
+                height: Tokens.bar-height;
+                background: Tokens.surface-raised;
+                HorizontalLayout {
+                    padding-left: Tokens.space-3;
+                    padding-right: Tokens.space-2;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: Tokens.space-1;
+                    Rectangle {
+                        width: 24px;
+                        Image { source: Icons.logo; width: 22px; height: 22px; }
+                    }
+                    Rectangle { width: Tokens.space-1; }
+                    NavButton { icon: Icons.house; label: "Home"; active: Shell.page == "home"; clicked => { Shell.go("home"); } }
+                    if Viewer.info-name != "": NavButton { icon: Icons.image; label: "Picture"; active: Shell.page == "image"; clicked => { Shell.go("image"); } }
+                    if Player.media-title != "": NavButton { icon: Player.has-video ? Icons.video : Icons.music; label: Player.has-video ? "Video" : "Music"; active: Shell.page == "media"; clicked => { Shell.go("media"); } }
+                    NavButton { icon: Icons.mic; label: "Voice"; active: Shell.page == "voice"; clicked => { Shell.go("voice"); } }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: Shell.title;
+                        color: Tokens.text-muted;
+                        font-size: Type.caption;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if Shell.recording: Rectangle {
+                        width: rec-row.preferred-width + Tokens.space-4;
+                        border-radius: Tokens.radius-control;
+                        background: Tokens.record-red.with-alpha(rec-ta.has-hover ? 0.3 : 0.18);
+                        rec-row := HorizontalLayout {
+                            alignment: center;
+                            spacing: Tokens.space-2;
+                            Rectangle { width: 10px; Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Tokens.record-red; } }
+                            Text { text: "Stop " + Shell.recording-time; color: Tokens.record-red; font-size: Type.body; font-weight: 600; vertical-alignment: center; }
+                        }
+                        rec-ta := TouchArea { mouse-cursor: pointer; clicked => { Shell.stop-recording(); } }
+                    }
+                    if Shell.update-ready != "": Rectangle {
+                        width: up-text.preferred-width + Tokens.space-4;
+                        border-radius: Tokens.radius-control;
+                        background: up-ta.has-hover ? Tokens.accent-fill-hover : Tokens.accent-fill;
+                        up-text := Text { text: "Restart to update (" + Shell.update-ready + ")"; color: Tokens.text-on-accent; font-size: Type.body; font-weight: 600; }
+                        up-ta := TouchArea { mouse-cursor: pointer; clicked => { Shell.apply-update(); } }
+                    }
+                    IconButton { icon: Icons.scan; label: "Snip (Print Screen)"; clicked => { Shell.snip("region"); } }
+                    IconButton {
+                        icon: Icons.record;
+                        tint: Tokens.record-red;
+                        label: Shell.recording ? "Stop recording" : "Record the screen";
+                        clicked => { if Shell.recording { Shell.stop-recording(); } else { Shell.record-screen("region"); } }
+                    }
+                    IconButton { icon: Icons.folder-open; label: "Open (Ctrl+O)"; clicked => { Shell.open-file(); } }
+                    IconButton { icon: Icons.settings; label: "Settings"; active: Shell.page == "settings"; clicked => { Shell.go("settings"); } }
+                }
+                Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.border-subtle; }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                if Shell.page == "home": HomePage { }
+                if Shell.page == "image": ImagePage { }
+                if Shell.page == "media": MediaPage { }
+                if Shell.page == "voice": VoicePage { }
+                if Shell.page == "settings": SettingsPage { }
+
+                if Shell.toast != "": Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height - self.height - 96px;
+                    width: toast-text.preferred-width + 32px;
+                    height: 40px;
+                    border-radius: 20px;
+                    background: Tokens.surface-overlay;
+                    border-width: 1px;
+                    border-color: Tokens.border-subtle;
+                    drop-shadow-blur: 12px;
+                    drop-shadow-color: #00000050;
+                    toast-text := Text { text: Shell.toast; color: Tokens.text-primary; font-size: Type.body; }
+                }
+            }
+        }
+    }
+}

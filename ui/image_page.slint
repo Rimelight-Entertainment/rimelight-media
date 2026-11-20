@@ -1,0 +1,491 @@
+// The picture viewer and editor: zoom and pan, folder browsing, crop, rotate, flip, resize and markup.
+import { LineEdit } from "std-widgets.slint";
+import { Tokens, Type } from "tokens.slint";
+import { Icons } from "icons.slint";
+import { IconButton, Button, ButtonKind, Card, Toggle } from "widgets.slint";
+import { Viewer, Shell } from "state.slint";
+
+component Divider inherits Rectangle {
+    width: 9px;
+    height: Tokens.control-height;
+    Rectangle {
+        width: 1px;
+        height: 20px;
+        background: Tokens.border-subtle;
+    }
+}
+
+component Swatch inherits Rectangle {
+    in property <color> colour;
+    width: 26px;
+    height: Tokens.control-height;
+    Rectangle {
+        width: 22px;
+        height: 22px;
+        border-radius: 11px;
+        background: root.colour;
+        border-width: Viewer.ink == root.colour ? 3px : 1px;
+        border-color: Viewer.ink == root.colour ? Tokens.accent-default : Tokens.border-subtle;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Viewer.ink = root.colour; }
+    }
+}
+
+component Handle inherits Rectangle {
+    callback drag(length, length);
+    callback start();
+    in property <MouseCursor> cursor: move;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    background: #FFFFFF;
+    border-width: 1px;
+    border-color: #00000080;
+    ta := TouchArea {
+        mouse-cursor: root.cursor;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down { root.start(); }
+        }
+        moved => {
+            if self.pressed { root.drag(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y); }
+        }
+    }
+}
+
+export component ImagePage inherits Rectangle {
+    background: Tokens.stage;
+
+    VerticalLayout {
+        // Top toolbar: changes with the edit mode.
+        Rectangle {
+            height: Tokens.bar-height;
+            background: Tokens.surface-raised;
+            HorizontalLayout {
+                padding-left: Tokens.space-2;
+                padding-right: Tokens.space-2;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                spacing: Tokens.space-1;
+                alignment: start;
+
+                if Viewer.mode == "": HorizontalLayout {
+                    spacing: Tokens.space-1;
+                    IconButton { icon: Icons.zoom-out; label: "Zoom out (-)"; clicked => { Shell.key("-", false, false, false); } }
+                    Text {
+                        text: Viewer.fit ? "Fit" : round(Viewer.scale * 100) + "%";
+                        color: Tokens.text-muted;
+                        font-size: Type.caption;
+                        width: 44px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    IconButton { icon: Icons.zoom-in; label: "Zoom in (+)"; clicked => { Shell.key("+", false, false, false); } }
+                    IconButton { icon: Icons.maximize; label: "Fit (0)"; active: Viewer.fit; clicked => { Viewer.fit = true; Viewer.pan-x = 0; Viewer.pan-y = 0; } }
+                    if Viewer.animated: HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        Divider { }
+                        IconButton { icon: Icons.chevron-left; label: "Previous frame (,)"; clicked => { Viewer.anim-step(-1); } }
+                        IconButton { icon: Viewer.anim-playing ? Icons.pause : Icons.play; label: Viewer.anim-playing ? "Pause (Space)" : "Play (Space)"; clicked => { Viewer.anim-toggle(); } }
+                        IconButton { icon: Icons.chevron-right; label: "Next frame (.)"; clicked => { Viewer.anim-step(1); } }
+                        Text { text: Viewer.frame-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; min-width: 120px; horizontal-alignment: center; }
+                        IconButton { icon: Icons.camera; label: "Save this frame as PNG"; clicked => { Viewer.save-frame(); } }
+                    }
+                    Divider { }
+                    IconButton { icon: Icons.rotate; label: "Rotate (R)"; clicked => { Viewer.rotate(); } }
+                    IconButton { icon: Icons.flip-h; label: "Flip left-right"; clicked => { Viewer.flip(true); } }
+                    IconButton { icon: Icons.flip-v; label: "Flip upside down"; clicked => { Viewer.flip(false); } }
+                    IconButton { icon: Icons.crop; label: "Crop (C)"; clicked => { Viewer.set-mode("crop"); } }
+                    IconButton { icon: Icons.pen; label: "Markup (M)"; clicked => { Viewer.set-mode("markup"); } }
+                    IconButton { icon: Icons.resize; label: "Resize"; clicked => { Viewer.set-mode("resize"); } }
+                    Divider { }
+                    IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; clicked => { Viewer.copy(); } }
+                    IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: Viewer.dirty; clicked => { Viewer.save(); } }
+                    Button { text: "Save as"; kind: ButtonKind.ghost; clicked => { Viewer.save-as(); } }
+                    if Viewer.dirty: Button { text: "Undo all"; kind: ButtonKind.ghost; clicked => { Viewer.revert(); } }
+                }
+
+                if Viewer.mode == "crop": HorizontalLayout {
+                    spacing: Tokens.space-1;
+                    Text { text: "Crop"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; vertical-alignment: center; }
+                    Rectangle { width: Tokens.space-3; }
+                    Button { text: "Free"; kind: Viewer.crop-aspect == 0 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.crop-preset(0); } }
+                    Button { text: "Original"; kind: ButtonKind.ghost; clicked => { Viewer.crop-preset(-1); } }
+                    Button { text: "Square"; kind: Viewer.crop-aspect == 1 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.crop-preset(1); } }
+                    Button { text: "4:3"; kind: ButtonKind.ghost; clicked => { Viewer.crop-preset(4 / 3); } }
+                    Button { text: "3:2"; kind: ButtonKind.ghost; clicked => { Viewer.crop-preset(3 / 2); } }
+                    Button { text: "16:9"; kind: ButtonKind.ghost; clicked => { Viewer.crop-preset(16 / 9); } }
+                    Button { text: "9:16"; kind: ButtonKind.ghost; clicked => { Viewer.crop-preset(9 / 16); } }
+                    Text {
+                        text: round(Viewer.crop-w * Viewer.pic-w) + " × " + round(Viewer.crop-h * Viewer.pic-h);
+                        color: Tokens.text-muted;
+                        font-size: Type.caption;
+                        vertical-alignment: center;
+                        width: 100px;
+                        horizontal-alignment: center;
+                    }
+                    Button { text: "Cancel"; clicked => { Viewer.set-mode(""); } }
+                    Button { text: "Apply crop"; kind: ButtonKind.primary; clicked => { Viewer.apply-crop(); } }
+                }
+
+                if Viewer.mode == "markup": HorizontalLayout {
+                    spacing: Tokens.space-1;
+                    IconButton { icon: Icons.pen; label: "Pen"; active: Viewer.tool == 0; clicked => { Viewer.tool = 0; } }
+                    IconButton { icon: Icons.highlighter; label: "Highlighter"; active: Viewer.tool == 1; clicked => { Viewer.tool = 1; } }
+                    IconButton { icon: Icons.arrow; label: "Arrow"; active: Viewer.tool == 2; clicked => { Viewer.tool = 2; } }
+                    IconButton { icon: Icons.square; label: "Box"; active: Viewer.tool == 3; clicked => { Viewer.tool = 3; } }
+                    IconButton { icon: Icons.text; label: "Text"; active: Viewer.tool == 4; clicked => { Viewer.tool = 4; } }
+                    IconButton { icon: Icons.eraser; label: "Eraser (click a mark)"; active: Viewer.tool == 5; clicked => { Viewer.tool = 5; } }
+                    Divider { }
+                    HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        alignment: center;
+                        Swatch { colour: #E5484D; }
+                        Swatch { colour: #FFC14D; }
+                        Swatch { colour: #3FD6B8; }
+                        Swatch { colour: #0D7FFF; }
+                        Swatch { colour: #101014; }
+                        Swatch { colour: #FFFFFF; }
+                    }
+                    Divider { }
+                    Button { text: "Thin"; kind: Viewer.ink-width == 3 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.ink-width = 3; } }
+                    Button { text: "Medium"; kind: Viewer.ink-width == 6 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.ink-width = 6; } }
+                    Button { text: "Thick"; kind: Viewer.ink-width == 12 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.ink-width = 12; } }
+                    Divider { }
+                    IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: Viewer.can-undo; clicked => { Viewer.undo(); } }
+                    IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: Viewer.can-redo; clicked => { Viewer.redo(); } }
+                    IconButton { icon: Icons.trash; label: "Clear all marks"; enabled: Viewer.marks.length > 0; clicked => { Viewer.clear-marks(); } }
+                    Rectangle { width: Tokens.space-2; }
+                    Button { text: "Cancel"; clicked => { Viewer.set-mode(""); } }
+                    Button { text: "Done"; kind: ButtonKind.primary; clicked => { Viewer.apply-marks(); } }
+                }
+
+                if Viewer.mode == "resize": HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Text { text: "Resize"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; vertical-alignment: center; }
+                    LineEdit {
+                        width: 90px;
+                        text <=> Viewer.resize-w;
+                        input-type: number;
+                        edited => { Viewer.resize-edited(true); }
+                    }
+                    Text { text: "×"; color: Tokens.text-muted; vertical-alignment: center; }
+                    LineEdit {
+                        width: 90px;
+                        text <=> Viewer.resize-h;
+                        input-type: number;
+                        edited => { Viewer.resize-edited(false); }
+                    }
+                    Text { text: "pixels"; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
+                    Toggle { width: 200px; text: "Keep proportions"; checked <=> Viewer.resize-keep; }
+                    Button { text: "Cancel"; clicked => { Viewer.set-mode(""); } }
+                    Button { text: "Apply"; kind: ButtonKind.primary; clicked => { Viewer.apply-resize(); } }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+                IconButton { icon: Icons.folder-open; label: "Show in folder"; clicked => { Viewer.open-folder(); } }
+                IconButton { icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; clicked => { Viewer.toggle-info(); } }
+            }
+        }
+
+        HorizontalLayout {
+            stage := Rectangle {
+                background: Tokens.stage;
+                clip: true;
+
+                property <float> fit-scale: min((self.width - 48px) / 1px / Viewer.pic-w, (self.height - 48px) / 1px / Viewer.pic-h, 1.0);
+                property <float> s: Viewer.fit || Viewer.mode != "" ? fit-scale : Viewer.scale;
+                property <length> pw: Viewer.pic-w * s * 1px;
+                property <length> ph: Viewer.pic-h * s * 1px;
+                property <length> px: (self.width - pw) / 2 + (Viewer.fit || Viewer.mode != "" ? 0px : Viewer.pan-x);
+                property <length> py: (self.height - ph) / 2 + (Viewer.fit || Viewer.mode != "" ? 0px : Viewer.pan-y);
+
+                // Pan with a drag, zoom with the wheel around the pointer, double-click for 100 % / fit.
+                pan := TouchArea {
+                    property <length> start-x;
+                    property <length> start-y;
+                    mouse-cursor: Viewer.fit ? default : (self.pressed ? grabbing : grab);
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down {
+                            self.start-x = Viewer.pan-x;
+                            self.start-y = Viewer.pan-y;
+                        }
+                    }
+                    moved => {
+                        if self.pressed && !Viewer.fit {
+                            Viewer.pan-x = self.start-x + (self.mouse-x - self.pressed-x);
+                            Viewer.pan-y = self.start-y + (self.mouse-y - self.pressed-y);
+                        }
+                    }
+                    double-clicked => {
+                        if Viewer.fit {
+                            Viewer.scale = 1;
+                            Viewer.pan-x = 0;
+                            Viewer.pan-y = 0;
+                            Viewer.fit = false;
+                        } else {
+                            Viewer.fit = true;
+                        }
+                    }
+                    scroll-event(e) => {
+                        if Viewer.mode != "" { return reject; }
+                        let old = stage.s;
+                        let new = clamp(old * (e.delta-y > 0 ? 1.2 : 1 / 1.2), 0.02, 40);
+                        let u = (self.mouse-x - stage.px) / old;
+                        let v = (self.mouse-y - stage.py) / old;
+                        Viewer.pan-x = self.mouse-x - u * new - (stage.width - Viewer.pic-w * new * 1px) / 2;
+                        Viewer.pan-y = self.mouse-y - v * new - (stage.height - Viewer.pic-h * new * 1px) / 2;
+                        Viewer.scale = new;
+                        Viewer.fit = false;
+                        return accept;
+                    }
+                }
+
+                Image {
+                    x: stage.px;
+                    y: stage.py;
+                    width: stage.pw;
+                    height: stage.ph;
+                    source: Viewer.picture;
+                    image-rendering: stage.s > 2 ? pixelated : smooth;
+                }
+
+                // Marks, drawn over the picture in picture pixels.
+                Rectangle {
+                    x: stage.px;
+                    y: stage.py;
+                    width: stage.pw;
+                    height: stage.ph;
+                    clip: true;
+                    for m in Viewer.marks: Rectangle {
+                        if m.kind != 4: Path {
+                            width: stage.pw;
+                            height: stage.ph;
+                            viewbox-x: 0;
+                            viewbox-y: 0;
+                            viewbox-width: Viewer.pic-w;
+                            viewbox-height: Viewer.pic-h;
+                            commands: m.commands;
+                            stroke: m.colour;
+                            stroke-width: m.width * stage.s * 1px;
+                            stroke-line-cap: round;
+                            fill: transparent;
+                        }
+                        if m.kind == 4: Text {
+                            x: m.x * stage.s * 1px;
+                            y: m.y * stage.s * 1px;
+                            text: m.text;
+                            color: m.colour;
+                            font-size: max(1px, m.width * stage.s * 1px);
+                            font-weight: 600;
+                        }
+                    }
+                }
+
+                // Markup input.
+                if Viewer.mode == "markup": TouchArea {
+                    x: stage.px;
+                    y: stage.py;
+                    width: stage.pw;
+                    height: stage.ph;
+                    mouse-cursor: crosshair;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.left {
+                            if e.kind == PointerEventKind.down {
+                                Viewer.mark-begin(self.mouse-x / stage.s / 1px, self.mouse-y / stage.s / 1px);
+                            } else if e.kind == PointerEventKind.up {
+                                Viewer.mark-end();
+                            }
+                        }
+                    }
+                    moved => {
+                        if self.pressed { Viewer.mark-move(self.mouse-x / stage.s / 1px, self.mouse-y / stage.s / 1px); }
+                    }
+                }
+                if Viewer.mode == "markup" && Viewer.text-x >= 0: Rectangle {
+                    x: stage.px + Viewer.text-x * stage.s * 1px;
+                    y: stage.py + Viewer.text-y * stage.s * 1px;
+                    width: max(160px, ti.preferred-width + 16px);
+                    height: ti.preferred-height + 8px;
+                    background: #00000040;
+                    border-width: 1px;
+                    border-color: Tokens.accent-default;
+                    ti := TextInput {
+                        x: 4px;
+                        color: Viewer.ink;
+                        font-size: max(12px, Viewer.ink-width * 4 * stage.s * 1px);
+                        font-weight: 600;
+                        single-line: true;
+                        init => { self.focus(); }
+                        accepted => { Viewer.mark-text(self.text); }
+                    }
+                }
+
+                // Crop box with its handles.
+                if Viewer.mode == "crop": Rectangle {
+                    x: stage.px;
+                    y: stage.py;
+                    width: stage.pw;
+                    height: stage.ph;
+                    property <float> sx;
+                    property <float> sy;
+                    property <float> sw;
+                    property <float> sh;
+                    property <float> ratio: Viewer.crop-aspect == 0 ? 0 : self.width / self.height / Viewer.crop-aspect;
+                    function remember() {
+                        self.sx = Viewer.crop-x;
+                        self.sy = Viewer.crop-y;
+                        self.sw = Viewer.crop-w;
+                        self.sh = Viewer.crop-h;
+                    }
+                    // Moves a corner by (dx, dy) fractions of the picture, keeping the opposite corner still.
+                    function corner(left: bool, top: bool, dx: float, dy: float) {
+                        let right-edge = self.sx + self.sw;
+                        let bottom-edge = self.sy + self.sh;
+                        let nx = left ? clamp(self.sx + dx, 0, right-edge - 0.02) : self.sx;
+                        let nw = left ? right-edge - nx : clamp(self.sw + dx, 0.02, 1 - self.sx);
+                        let ny = top ? clamp(self.sy + dy, 0, bottom-edge - 0.02) : self.sy;
+                        let nh = top ? bottom-edge - ny : clamp(self.sh + dy, 0.02, 1 - self.sy);
+                        // With a fixed shape the height follows the width, and both shrink to stay inside.
+                        let room = top ? bottom-edge : 1 - self.sy;
+                        let fh = min(nw * self.ratio, room);
+                        let fw = self.ratio > 0 ? fh / self.ratio : nw;
+                        Viewer.crop-x = self.ratio > 0 ? (left ? right-edge - fw : self.sx) : nx;
+                        Viewer.crop-y = self.ratio > 0 ? (top ? bottom-edge - fh : self.sy) : ny;
+                        Viewer.crop-w = fw;
+                        Viewer.crop-h = self.ratio > 0 ? fh : nh;
+                    }
+
+                    property <length> cx: Viewer.crop-x * self.width;
+                    property <length> cy: Viewer.crop-y * self.height;
+                    property <length> cw: Viewer.crop-w * self.width;
+                    property <length> ch: Viewer.crop-h * self.height;
+
+                    // Dim outside the box.
+                    Rectangle { x: 0; y: 0; width: parent.width; height: parent.cy; background: Tokens.scrim; }
+                    Rectangle { x: 0; y: parent.cy + parent.ch; width: parent.width; height: parent.height - parent.cy - parent.ch; background: Tokens.scrim; }
+                    Rectangle { x: 0; y: parent.cy; width: parent.cx; height: parent.ch; background: Tokens.scrim; }
+                    Rectangle { x: parent.cx + parent.cw; y: parent.cy; width: parent.width - parent.cx - parent.cw; height: parent.ch; background: Tokens.scrim; }
+
+                    Rectangle {
+                        x: parent.cx;
+                        y: parent.cy;
+                        width: parent.cw;
+                        height: parent.ch;
+                        border-width: 2px;
+                        border-color: #FFFFFF;
+                        // Rule of thirds.
+                        Rectangle { x: parent.width / 3; width: 1px; background: #FFFFFF60; }
+                        Rectangle { x: parent.width * 2 / 3; width: 1px; background: #FFFFFF60; }
+                        Rectangle { y: parent.height / 3; height: 1px; background: #FFFFFF60; }
+                        Rectangle { y: parent.height * 2 / 3; height: 1px; background: #FFFFFF60; }
+                        body := TouchArea {
+                            mouse-cursor: move;
+                            pointer-event(e) => {
+                                if e.kind == PointerEventKind.down {
+                                    remember();
+                                }
+                            }
+                            moved => {
+                                if self.pressed {
+                                    Viewer.crop-x = clamp(sx + (self.mouse-x - self.pressed-x) / stage.pw, 0, 1 - sw);
+                                    Viewer.crop-y = clamp(sy + (self.mouse-y - self.pressed-y) / stage.ph, 0, 1 - sh);
+                                }
+                            }
+                        }
+                    }
+                    Handle {
+                        x: parent.cx - 8px;
+                        y: parent.cy - 8px;
+                        cursor: nwse-resize;
+                        start => { remember(); }
+                        drag(dx, dy) => { corner(true, true, dx / stage.pw, dy / stage.ph); }
+                    }
+                    Handle {
+                        x: parent.cx + parent.cw - 8px;
+                        y: parent.cy - 8px;
+                        cursor: nesw-resize;
+                        start => { remember(); }
+                        drag(dx, dy) => { corner(false, true, dx / stage.pw, dy / stage.ph); }
+                    }
+                    Handle {
+                        x: parent.cx - 8px;
+                        y: parent.cy + parent.ch - 8px;
+                        cursor: nesw-resize;
+                        start => { remember(); }
+                        drag(dx, dy) => { corner(true, false, dx / stage.pw, dy / stage.ph); }
+                    }
+                    Handle {
+                        x: parent.cx + parent.cw - 8px;
+                        y: parent.cy + parent.ch - 8px;
+                        cursor: nwse-resize;
+                        start => { remember(); }
+                        drag(dx, dy) => { corner(false, false, dx / stage.pw, dy / stage.ph); }
+                    }
+                }
+
+                // Previous and next in the folder.
+                if Viewer.mode == "" && Viewer.has-prev: IconButton {
+                    x: Tokens.space-3;
+                    y: (parent.height - self.height) / 2;
+                    size: 44px;
+                    icon-size: Tokens.icon-large;
+                    on-stage: true;
+                    icon: Icons.chevron-left;
+                    label: "Previous (Left)";
+                    background: #00000060;
+                    clicked => { Viewer.prev(); }
+                }
+                if Viewer.mode == "" && Viewer.has-next: IconButton {
+                    x: parent.width - self.width - Tokens.space-3;
+                    y: (parent.height - self.height) / 2;
+                    size: 44px;
+                    icon-size: Tokens.icon-large;
+                    on-stage: true;
+                    icon: Icons.chevron-right;
+                    label: "Next (Right)";
+                    background: #00000060;
+                    clicked => { Viewer.next(); }
+                }
+                if Viewer.position != "" && Viewer.mode == "": Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height - self.height - Tokens.space-3;
+                    width: pos.preferred-width + 20px;
+                    height: 26px;
+                    border-radius: 13px;
+                    background: #00000080;
+                    pos := Text { text: Viewer.position; color: Tokens.text-on-stage; font-size: Type.caption; }
+                }
+                if Viewer.loading: Text {
+                    text: "Opening…";
+                    color: Tokens.text-on-stage;
+                    font-size: Type.subheading;
+                }
+                if Viewer.error != "": Text {
+                    text: Viewer.error;
+                    color: Tokens.text-on-stage;
+                    font-size: Type.subheading;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    width: parent.width - 64px;
+                }
+            }
+
+            if Viewer.show-info: Rectangle {
+                width: 280px;
+                background: Tokens.surface-raised;
+                border-width: 1px;
+                border-color: Tokens.border-subtle;
+                VerticalLayout {
+                    padding: Tokens.space-4;
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; }
+                    Text { text: Viewer.info-name; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
+                    Text { text: Viewer.info-detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,187 @@
+// Settings: default apps, install, background keys, capture folders and sound sources, theme.
+import { ScrollView, AboutSlint } from "std-widgets.slint";
+import { Tokens, Type, ThemeChoice } from "tokens.slint";
+import { Icons } from "icons.slint";
+import { Button, ButtonKind, Card, Toggle } from "widgets.slint";
+import { Settings } from "state.slint";
+
+component Section inherits VerticalLayout {
+    in property <string> title;
+    in property <string> detail;
+    spacing: Tokens.space-2;
+    Text { text: root.title; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
+    if root.detail != "": Text { text: root.detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+    @children
+}
+
+component KeyRow inherits HorizontalLayout {
+    in property <string> keys;
+    in property <string> action;
+    spacing: Tokens.space-3;
+    height: 28px;
+    Rectangle {
+        width: 190px;
+        Rectangle {
+            x: 0;
+            width: k.preferred-width + 16px;
+            height: 24px;
+            border-radius: Tokens.radius-control;
+            background: Tokens.surface-sunken;
+            border-width: 1px;
+            border-color: Tokens.border-subtle;
+            k := Text { text: root.keys; color: Tokens.text-primary; font-size: Type.caption; }
+        }
+    }
+    Text { text: root.action; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
+}
+
+component FolderRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> path;
+    callback change();
+    spacing: Tokens.space-3;
+    VerticalLayout {
+        alignment: center;
+        Text { text: root.label; color: Tokens.text-primary; font-size: Type.body; }
+        Text { text: root.path; color: Tokens.text-muted; font-size: Type.caption; overflow: elide; }
+    }
+    Button { text: "Change"; clicked => { root.change(); } }
+}
+
+export component SettingsPage inherits Rectangle {
+    background: Tokens.surface-base;
+
+    ScrollView {
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                max-width: 760px;
+                padding: Tokens.space-8;
+                spacing: Tokens.space-6;
+                alignment: start;
+
+                Text { text: "Settings"; color: Tokens.text-primary; font-size: Type.title; font-weight: 600; }
+
+                Section {
+                    title: "Install, updates and default apps";
+                    detail: "The installer puts Rimelight Media in your user folder, the Start menu and Apps > Installed apps (uninstall it there). Installed copies update themselves from the GitHub releases. Then pick Rimelight Media as the default for pictures, video and music.";
+                    Card {
+                        VerticalLayout {
+                            padding: Tokens.space-4;
+                            spacing: Tokens.space-3;
+                            Text { text: Settings.install-state; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
+                            if Settings.update-state != "": Text { text: Settings.update-state; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: Tokens.space-2;
+                                alignment: start;
+                                if Settings.installed: Button { text: "Check for updates"; kind: ButtonKind.primary; clicked => { Settings.check-updates(); } }
+                                Button { text: "Releases page"; has-icon: true; icon: Icons.external; clicked => { Settings.open-releases(); } }
+                            }
+                            Rectangle { height: 1px; background: Tokens.border-subtle; }
+                            Text { text: Settings.defaults-state; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: Tokens.space-2;
+                                alignment: start;
+                                Button { text: "Register file types"; clicked => { Settings.register-defaults(); } }
+                                Button {
+                                    text: "Open Windows default apps";
+                                    has-icon: true;
+                                    icon: Icons.external;
+                                    clicked => { Settings.open-default-settings(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Keys and background";
+                    detail: "Rimelight Media listens for these keys while it is open. Turn on \"Keep running\" so they also work after you close the window; Rimelight Media then starts with Windows and waits in the system tray.";
+                    Card {
+                        VerticalLayout {
+                            padding: Tokens.space-4;
+                            spacing: Tokens.space-2;
+                            Toggle {
+                                text: "Keep running in the tray and start with Windows";
+                                checked <=> Settings.background;
+                                toggled => { Settings.changed(); }
+                            }
+                            Rectangle { height: Tokens.space-1; }
+                            KeyRow { keys: "Print Screen"; action: "Snip an area (or a window, or the whole screen)"; }
+                            KeyRow { keys: "Alt + Print Screen"; action: "Snip a window"; }
+                            KeyRow { keys: "Ctrl + Print Screen"; action: "Save the whole screen at once"; }
+                            KeyRow { keys: "Shift + Print Screen"; action: "Start or stop a screen recording"; }
+                            Text { text: Settings.hotkeys-status; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                            HorizontalLayout {
+                                alignment: start;
+                                Button {
+                                    text: "Windows Print Screen setting";
+                                    has-icon: true;
+                                    icon: Icons.external;
+                                    clicked => { Settings.open-printscreen-settings(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Screenshots";
+                    Card {
+                        VerticalLayout {
+                            padding: Tokens.space-4;
+                            spacing: Tokens.space-2;
+                            Toggle { text: "Copy each snip to the clipboard"; checked <=> Settings.snip-copy; toggled => { Settings.changed(); } }
+                            Toggle { text: "Save each snip as a PNG"; checked <=> Settings.snip-save; toggled => { Settings.changed(); } }
+                            Toggle { text: "Open each snip for markup"; checked <=> Settings.snip-open; toggled => { Settings.changed(); } }
+                            FolderRow { label: "Screenshots folder"; path: Settings.screenshot-folder; change => { Settings.pick-folder(true); } }
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Screen recording";
+                    Card {
+                        VerticalLayout {
+                            padding: Tokens.space-4;
+                            spacing: Tokens.space-2;
+                            Toggle { text: "Record the computer's sound"; checked <=> Settings.rec-system-audio; toggled => { Settings.changed(); } }
+                            Toggle { text: "Record the microphone"; checked <=> Settings.rec-mic; toggled => { Settings.changed(); } }
+                            HorizontalLayout {
+                                spacing: Tokens.space-2;
+                                alignment: start;
+                                Text { text: "Frames per second"; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; }
+                                Button { text: "30"; kind: Settings.rec-fps == 30 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.rec-fps = 30; Settings.changed(); } }
+                                Button { text: "60"; kind: Settings.rec-fps == 60 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.rec-fps = 60; Settings.changed(); } }
+                            }
+                            FolderRow { label: "Recordings folder"; path: Settings.recording-folder; change => { Settings.pick-folder(false); } }
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Look";
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        alignment: start;
+                        Button { text: "Light"; has-icon: true; icon: Icons.sun; kind: Settings.theme == 0 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.theme = 0; Settings.changed(); } }
+                        Button { text: "Dark"; has-icon: true; icon: Icons.moon; kind: Settings.theme == 1 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.theme = 1; Settings.changed(); } }
+                        Button { text: "Like Windows"; has-icon: true; icon: Icons.monitor; kind: Settings.theme == 2 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.theme = 2; Settings.changed(); } }
+                    }
+                }
+
+                Section {
+                    title: "About";
+                    Text { text: Settings.about; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                    // Required by the Slint royalty-free licence (as in rimelight-space's About screen).
+                    Rectangle {
+                        height: 200px;
+                        background: #FFFFFF;
+                        border-radius: Tokens.radius-r8;
+                        AboutSlint { }
+                    }
+                }
+            }
+        }
+    }
+}

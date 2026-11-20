@@ -1,0 +1,4 @@
+# The stable pin rimelight-space has committed (its nightly switch is still an uncommitted experiment there).
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]

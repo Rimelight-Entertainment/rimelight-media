@@ -1,0 +1,214 @@
+// The state Rust drives, as globals so every page reads it without passing properties down.
+import { Choice } from "widgets.slint";
+
+export struct RecentItem {
+    name: string,
+    detail: string,
+    kind: string, // "image", "video", "audio"
+}
+
+// One markup mark, in picture pixels. kind: 0 pen, 1 highlighter, 2 arrow, 3 box, 4 text.
+export struct Mark {
+    kind: int,
+    colour: color,
+    width: float,
+    commands: string,
+    x: float,
+    y: float,
+    text: string,
+}
+
+export global Shell {
+    // "home", "image", "media", "voice", "settings"
+    in-out property <string> page: "home";
+    in property <string> title: "Rimelight Media";
+    // A downloaded update waiting for a restart (its version), or empty.
+    in property <string> update-ready;
+    in property <string> toast;
+    in property <bool> full-screen;
+    in property <[RecentItem]> recents;
+    in property <bool> recording;
+    in property <string> recording-time;
+    in property <bool> drop-hover;
+
+    callback open-file();
+    callback open-recent(int);
+    callback clear-recents();
+    callback go(string);
+    callback snip(string); // "region", "window", "screen"
+    callback record-screen(string); // "region", "window", "screen"
+    callback stop-recording();
+    callback toggle-full-screen();
+    callback apply-update();
+    callback key(string, bool, bool, bool) -> bool; // text, ctrl, shift, alt
+}
+
+export global Viewer {
+    in property <image> picture;
+    in property <int> pic-w: 1;
+    in property <int> pic-h: 1;
+    in property <bool> loading;
+    in property <string> error;
+    in property <string> position; // "3 / 27"
+    in property <bool> has-prev;
+    in property <bool> has-next;
+    in property <bool> dirty;
+    in property <bool> show-info;
+    in property <string> info-name;
+    in property <string> info-detail;
+
+    // Zoom: fit to the window, or `scale` picture pixels per logical pixel.
+    in-out property <bool> fit: true;
+    in-out property <float> scale: 1;
+    in-out property <length> pan-x;
+    in-out property <length> pan-y;
+
+    // "", "crop", "markup", "resize"
+    in-out property <string> mode;
+    in-out property <float> crop-x: 0;
+    in-out property <float> crop-y: 0;
+    in-out property <float> crop-w: 1;
+    in-out property <float> crop-h: 1;
+    // Width over height of the crop box; 0 means free.
+    in-out property <float> crop-aspect: 0;
+
+    in property <[Mark]> marks;
+    in-out property <int> tool: 0;
+    in-out property <color> ink: #E5484D;
+    in-out property <float> ink-width: 6;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    // Where the text tool is typing (picture pixels); -1 when not typing.
+    in property <float> text-x: -1;
+    in property <float> text-y: -1;
+
+    in-out property <string> resize-w;
+    in-out property <string> resize-h;
+    in-out property <bool> resize-keep: true;
+
+    callback prev();
+    callback next();
+    callback rotate();
+    callback flip(bool); // true: left-right
+    callback set-mode(string);
+    callback apply-crop();
+    callback crop-preset(float);
+    callback apply-resize();
+    callback resize-edited(bool); // true: width changed
+    callback mark-begin(float, float);
+    callback mark-move(float, float);
+    callback mark-end();
+    callback mark-text(string);
+    callback undo();
+    callback redo();
+    callback clear-marks();
+    callback apply-marks();
+    callback save();
+    callback save-as();
+    callback copy();
+    callback revert();
+    callback toggle-info();
+    callback open-folder();
+
+    // Animated GIF / WebP.
+    in property <bool> animated;
+    in property <bool> anim-playing;
+    in property <string> frame-text;
+    callback anim-toggle();
+    callback anim-step(int);
+    callback save-frame();
+}
+
+export global Player {
+    in property <image> frame;
+    in property <bool> has-video;
+    in property <bool> playing;
+    in property <float> position; // 0..1
+    in property <string> time-text;
+    in property <string> length-text;
+    in-out property <float> volume: 1;
+    in property <bool> muted;
+    in property <bool> looping;
+    in property <string> subtitle;
+    in property <[Choice]> audio-tracks;
+    in property <[Choice]> subtitle-tracks;
+    in property <string> media-title;
+    in property <string> media-detail;
+    in property <string> error;
+    in property <bool> buffering;
+    in-out property <bool> trim-mode;
+    in property <float> trim-start: 0;
+    in property <float> trim-end: 1;
+    in property <string> trim-text;
+    in property <bool> exporting;
+
+    in property <int> video-w: 16;
+    in property <int> video-h: 9;
+    in property <string> speed-text: "1×";
+    in property <[Choice]> speeds;
+    // Subtitle controls: delay, size, and a picture subtitle placed as fractions of the video.
+    in property <string> sub-delay-text: "0 ms";
+    in property <float> sub-scale: 1;
+    in property <bool> has-sub-picture;
+    in property <image> sub-picture;
+    in property <float> sub-x;
+    in property <float> sub-y;
+    in property <float> sub-w;
+    in property <float> sub-h;
+
+    callback toggle-play();
+    callback seek(float);
+    callback seek-preview(float);
+    callback skip(int); // seconds
+    callback set-volume(float);
+    callback toggle-mute();
+    callback toggle-loop();
+    callback pick-audio(int);
+    callback pick-subtitle(int);
+    callback load-subtitle-file();
+    callback snapshot();
+    callback trim-set(bool); // true: start
+    callback trim-save();
+    callback pick-speed(int);
+    callback speed-step(int);
+    callback sub-delay(int); // change in ms; 0 resets
+    callback sub-size(int); // -1 smaller, +1 larger, 0 resets
+}
+
+export global Voice {
+    in property <bool> recording;
+    in property <string> time-text: "00:00";
+    in property <float> level;
+    in property <[RecentItem]> takes;
+    in property <string> folder;
+    callback toggle();
+    callback open-take(int);
+    callback open-folder();
+}
+
+export global Settings {
+    in-out property <int> theme: 2; // 0 light, 1 dark, 2 system
+    in-out property <bool> background: false;
+    in-out property <bool> snip-copy: true;
+    in-out property <bool> snip-save: true;
+    in-out property <bool> snip-open: true;
+    in-out property <bool> rec-system-audio: true;
+    in-out property <bool> rec-mic: false;
+    in-out property <int> rec-fps: 30;
+    in property <string> hotkeys-status;
+    in property <string> screenshot-folder;
+    in property <string> recording-folder;
+    in property <bool> installed;
+    in property <string> install-state;
+    in property <string> update-state;
+    in property <string> defaults-state;
+    in property <string> about;
+
+    callback changed();
+    callback check-updates();
+    callback open-releases();
+    callback register-defaults();
+    callback open-default-settings();
+    callback open-printscreen-settings();
+    callback pick-folder(bool); // true: screenshots
+}

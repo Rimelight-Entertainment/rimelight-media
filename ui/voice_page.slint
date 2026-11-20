@@ -1,0 +1,114 @@
+// Voice recorder: one big button, a level meter and the list of takes.
+import { ScrollView } from "std-widgets.slint";
+import { Tokens, Type } from "tokens.slint";
+import { Icons } from "icons.slint";
+import { Button, ButtonKind, Card } from "widgets.slint";
+import { Voice } from "state.slint";
+
+export component VoicePage inherits Rectangle {
+    background: Tokens.surface-base;
+
+    HorizontalLayout {
+        alignment: center;
+        VerticalLayout {
+            max-width: 720px;
+            padding: Tokens.space-8;
+            spacing: Tokens.space-5;
+            alignment: start;
+
+            Text { text: "Voice recorder"; color: Tokens.text-primary; font-size: Type.title; font-weight: 600; }
+            Card {
+                height: 260px;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: Tokens.space-4;
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 96px;
+                            height: 96px;
+                            border-radius: 48px;
+                            background: Voice.recording ? Tokens.record-red : (rec-ta.has-hover ? Tokens.surface-hover : Tokens.surface-sunken);
+                            border-width: 3px;
+                            border-color: Tokens.record-red;
+                            Image {
+                                source: Voice.recording ? Icons.stop : Icons.mic;
+                                width: 40px;
+                                height: 40px;
+                                colorize: Voice.recording ? #FFFFFF : Tokens.record-red;
+                            }
+                            rec-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Voice.toggle(); }
+                            }
+                        }
+                    }
+                    Text {
+                        text: Voice.time-text;
+                        color: Tokens.text-primary;
+                        font-size: Type.title;
+                        horizontal-alignment: center;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 280px;
+                            height: 6px;
+                            border-radius: 3px;
+                            background: Tokens.surface-sunken;
+                            Rectangle {
+                                x: 0;
+                                width: parent.width * clamp(Voice.level, 0, 1);
+                                border-radius: 3px;
+                                background: Voice.level > 0.9 ? Tokens.status-danger : Tokens.status-success;
+                            }
+                        }
+                    }
+                    Text {
+                        text: Voice.recording ? "Recording from the microphone. Press Stop when you're done." : "Press the button to start recording.";
+                        color: Tokens.text-muted;
+                        font-size: Type.caption;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+            HorizontalLayout {
+                Text { text: "Recordings"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; vertical-alignment: center; }
+                Rectangle { }
+                Button { text: "Open folder"; kind: ButtonKind.ghost; has-icon: true; icon: Icons.folder-open; clicked => { Voice.open-folder(); } }
+            }
+            Text { text: Voice.folder; color: Tokens.text-faint; font-size: Type.caption; overflow: elide; }
+            if Voice.takes.length == 0: Text { text: "No recordings yet."; color: Tokens.text-muted; font-size: Type.body; }
+            if Voice.takes.length > 0: Card {
+                ScrollView {
+                    min-height: 160px;
+                    VerticalLayout {
+                        padding: Tokens.space-1;
+                        for t[i] in Voice.takes: Rectangle {
+                            height: 44px;
+                            border-radius: Tokens.radius-control;
+                            background: take-ta.has-hover ? Tokens.surface-hover : transparent;
+                            HorizontalLayout {
+                                padding-left: Tokens.space-3;
+                                spacing: Tokens.space-3;
+                                Rectangle {
+                                    width: Tokens.icon-medium;
+                                    Image { source: Icons.play; width: Tokens.icon-small; height: Tokens.icon-small; colorize: Tokens.accent-text; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text { text: t.name; color: Tokens.text-primary; font-size: Type.body; overflow: elide; }
+                                    Text { text: t.detail; color: Tokens.text-muted; font-size: Type.caption; }
+                                }
+                            }
+                            take-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Voice.open-take(i); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

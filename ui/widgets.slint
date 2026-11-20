@@ -1,0 +1,331 @@
+// Small controls drawn from Tokens (the rimelight-space rule: no std-widget colours, no literal colours).
+import { Tokens, Type } from "tokens.slint";
+
+export struct Choice {
+    label: string,
+    detail: string,
+    selected: bool,
+}
+
+// An icon button. `on-stage` uses the light-on-dark look of the media stage.
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> on-stage: false;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <length> size: Tokens.control-height;
+    in property <length> icon-size: Tokens.icon-medium;
+    in property <color> tint: on-stage ? Tokens.text-on-stage : Tokens.text-primary;
+    callback clicked();
+
+    width: size;
+    height: size;
+    border-radius: Tokens.radius-control;
+    background: !enabled ? transparent
+        : active ? (on-stage ? #FFFFFF33 : Tokens.surface-pressed)
+        : ta.pressed ? (on-stage ? #FFFFFF2A : Tokens.surface-pressed)
+        : ta.has-hover ? (on-stage ? Tokens.stage-control-hover : Tokens.surface-hover) : transparent;
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { if enabled { root.clicked(); } }
+
+    Image {
+        source: root.icon;
+        width: root.icon-size;
+        height: root.icon-size;
+        colorize: root.enabled ? (root.active && !root.on-stage ? Tokens.accent-text : root.tint) : Tokens.text-faint;
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    if ta.has-hover && root.label != "": Rectangle {
+        y: root.height + 6px;
+        x: (root.width - self.width) / 2;
+        width: tip.preferred-width + 16px;
+        height: 24px;
+        background: Tokens.surface-overlay;
+        border-radius: Tokens.radius-control;
+        border-width: 1px;
+        border-color: Tokens.border-subtle;
+        z: 100;
+        tip := Text {
+            text: root.label;
+            color: Tokens.text-primary;
+            font-size: Type.caption;
+        }
+    }
+}
+
+export enum ButtonKind { primary, secondary, ghost, danger }
+
+export component Button inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    in property <ButtonKind> kind: secondary;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: Tokens.control-height;
+    min-width: layout.preferred-width;
+    border-radius: Tokens.radius-control;
+    border-width: kind == ButtonKind.secondary ? 1px : 0px;
+    border-color: Tokens.border-subtle;
+    background: !enabled ? Tokens.surface-sunken
+        : kind == ButtonKind.primary ? (ta.has-hover ? Tokens.accent-fill-hover : Tokens.accent-fill)
+        : kind == ButtonKind.danger ? (ta.has-hover ? Tokens.status-danger.darker(0.1) : Tokens.status-danger)
+        : kind == ButtonKind.secondary ? (ta.pressed ? Tokens.surface-pressed : ta.has-hover ? Tokens.surface-hover : Tokens.surface-raised)
+        : (ta.pressed ? Tokens.surface-pressed : ta.has-hover ? Tokens.surface-hover : transparent);
+    accessible-role: button;
+    accessible-label: text;
+    accessible-action-default => { if enabled { root.clicked(); } }
+
+    property <color> fg: !enabled ? Tokens.text-faint
+        : (kind == ButtonKind.primary || kind == ButtonKind.danger) ? Tokens.text-on-accent : Tokens.text-primary;
+
+    layout := HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        spacing: Tokens.space-2;
+        alignment: center;
+        if root.has-icon: Rectangle {
+            width: Tokens.icon-small;
+            Image {
+                source: root.icon;
+                width: Tokens.icon-small;
+                height: Tokens.icon-small;
+                colorize: root.fg;
+            }
+        }
+        Text {
+            text: root.text;
+            color: root.fg;
+            font-size: Type.body;
+            font-weight: kind == ButtonKind.primary ? 600 : 400;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> text;
+    in property <string> detail;
+    callback toggled(bool);
+
+    min-height: 32px;
+    accessible-role: checkbox;
+    accessible-checkable: true;
+    accessible-checked: checked;
+    accessible-label: text;
+
+    HorizontalLayout {
+        spacing: Tokens.space-3;
+        VerticalLayout {
+            alignment: center;
+            Text { text: root.text; color: Tokens.text-primary; font-size: Type.body; }
+            if root.detail != "": Text { text: root.detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+        }
+        Rectangle {
+            width: 40px;
+            Rectangle {
+                width: 40px;
+                height: 22px;
+                border-radius: 11px;
+                background: root.checked ? Tokens.accent-fill : Tokens.surface-sunken;
+                border-width: root.checked ? 0px : 1px;
+                border-color: Tokens.border-strong;
+                Rectangle {
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    x: root.checked ? parent.width - 19px : 3px;
+                    background: root.checked ? Tokens.text-on-accent : Tokens.border-strong;
+                    animate x { duration: Tokens.motion-fast; }
+                }
+            }
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+// A horizontal slider (0..1). Seeks while dragging; `marks` draws trim handles' range when used by the player.
+export component Slider inherits Rectangle {
+    in-out property <float> value;
+    in property <bool> on-stage: true;
+    in property <float> range-start: 0;
+    in property <float> range-end: 1;
+    in property <bool> show-range: false;
+    callback changed(float);
+    callback released(float);
+
+    height: 20px;
+    accessible-role: slider;
+    accessible-value: round(value * 100) + "%";
+
+    property <float> shown: ta.pressed ? clamp(ta.mouse-x / self.width, 0, 1) : value;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: root.on-stage ? #FFFFFF40 : Tokens.surface-pressed;
+    }
+    if root.show-range: Rectangle {
+        x: root.range-start * root.width;
+        width: (root.range-end - root.range-start) * root.width;
+        y: (parent.height - self.height) / 2;
+        height: 8px;
+        border-radius: 2px;
+        background: #FFC14D80;
+    }
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: root.shown * root.width;
+        x: 0;
+        height: 4px;
+        border-radius: 2px;
+        background: Tokens.accent-default;
+    }
+    Rectangle {
+        x: root.shown * root.width - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        width: ta.has-hover || ta.pressed ? 14px : 10px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: #FFFFFF;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        moved => {
+            if self.pressed {
+                root.changed(clamp(self.mouse-x / root.width, 0, 1));
+            }
+        }
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                root.value = clamp(self.mouse-x / root.width, 0, 1);
+                root.released(root.value);
+            }
+        }
+    }
+}
+
+// A drop-down list of choices (tracks, speeds, tools). The caller places it with x and y.
+export component ChoicePopup inherits PopupWindow {
+    in property <[Choice]> choices;
+    in property <string> heading;
+    callback picked(int);
+
+    Rectangle {
+        background: Tokens.surface-overlay;
+        border-radius: Tokens.radius-r8;
+        border-width: 1px;
+        border-color: Tokens.border-subtle;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #00000060;
+        VerticalLayout {
+            padding: Tokens.space-1;
+            if root.heading != "": Text {
+                text: root.heading;
+                color: Tokens.text-muted;
+                font-size: Type.caption;
+                height: 26px;
+                vertical-alignment: center;
+                x: Tokens.space-2;
+            }
+            for c[i] in root.choices: Rectangle {
+                height: c.detail == "" ? 32px : 44px;
+                min-width: 220px;
+                border-radius: Tokens.radius-control;
+                background: row.has-hover ? Tokens.surface-hover : transparent;
+                HorizontalLayout {
+                    padding-left: Tokens.space-2;
+                    padding-right: Tokens.space-3;
+                    spacing: Tokens.space-2;
+                    Rectangle {
+                        width: Tokens.icon-small;
+                        if c.selected: Image {
+                            source: @image-url("../assets/icons/check.svg");
+                            width: Tokens.icon-small;
+                            height: Tokens.icon-small;
+                            colorize: Tokens.accent-text;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: c.label; color: Tokens.text-primary; font-size: Type.body; overflow: elide; }
+                        if c.detail != "": Text { text: c.detail; color: Tokens.text-muted; font-size: Type.caption; overflow: elide; }
+                    }
+                }
+                row := TouchArea {
+                    clicked => { root.picked(i); }
+                }
+            }
+        }
+    }
+}
+
+export component Card inherits Rectangle {
+    background: Tokens.surface-raised;
+    border-radius: Tokens.radius-r8;
+    border-width: 1px;
+    border-color: Tokens.border-subtle;
+}
+
+// A big tile on the home page.
+export component Tile inherits Rectangle {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> detail;
+    in property <string> keys;
+    in property <color> accent: Tokens.accent-default;
+    callback clicked();
+
+    min-height: 112px;
+    border-radius: Tokens.radius-r8;
+    background: ta.pressed ? Tokens.surface-pressed : ta.has-hover ? Tokens.surface-hover : Tokens.surface-raised;
+    border-width: 1px;
+    border-color: ta.has-hover ? Tokens.border-strong : Tokens.border-subtle;
+    accessible-role: button;
+    accessible-label: title;
+    accessible-action-default => { root.clicked(); }
+
+    VerticalLayout {
+        padding: Tokens.space-4;
+        spacing: Tokens.space-1;
+        alignment: start;
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: Tokens.radius-r8;
+            background: root.accent.with-alpha(0.16);
+            Image { source: root.icon; width: Tokens.icon-medium; height: Tokens.icon-medium; colorize: root.accent; }
+        }
+        Rectangle { height: Tokens.space-1; }
+        Text { text: root.title; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; }
+        Text { text: root.detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+        if root.keys != "": Text { text: root.keys; color: Tokens.text-faint; font-size: Type.caption; }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
