@@ -13,6 +13,8 @@
 --enable-swresample
 --enable-w32threads
 --enable-mediafoundation
+# The Media Foundation encoder (h264_mf) uses FFmpeg's Direct3D 11 frame support.
+--enable-d3d11va
 --enable-libdav1d
 --enable-protocol=file
 
