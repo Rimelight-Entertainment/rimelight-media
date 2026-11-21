@@ -34,6 +34,8 @@ try {
         Get-ChildItem (Join-Path $root 'ffmpeg\current\bin') -Filter "$lib*.dll" | Copy-Item -Destination $publish
     }
     Copy-Item (Join-Path $root 'ffmpeg\current\LICENSE.txt') (Join-Path $publish 'licenses\FFmpeg-LICENSE.txt')
+    Copy-Item (Join-Path $root 'ffmpeg\current\dav1d-LICENSE.txt') (Join-Path $publish 'licenses\dav1d-LICENSE.txt')
+    Copy-Item (Join-Path $root 'ffmpeg\current\BUILD-INFO.txt') (Join-Path $publish 'licenses\FFmpeg-BUILD-INFO.txt')
     Copy-Item (Join-Path $root 'assets\icons\LICENSE') (Join-Path $publish 'licenses\Lucide-LICENSE.txt')
     Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.md') $publish
 

@@ -20,6 +20,8 @@ fn copy_ffmpeg_dlls() {
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     let Some(dir) = std::env::var_os("FFMPEG_DIR").map(PathBuf::from) else { return };
     let bin = dir.join("bin");
+    // A new FFmpeg (tools/get-ffmpeg.ps1) must replace the DLLs next to the exe.
+    println!("cargo:rerun-if-changed={}", bin.display());
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default());
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
     let Some(target) = out.ancestors().find(|a| a.file_name().is_some_and(|n| n == profile.as_str())) else { return };

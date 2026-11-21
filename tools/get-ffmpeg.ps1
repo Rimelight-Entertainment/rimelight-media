@@ -1,10 +1,11 @@
-# Downloads the FFmpeg build Lumen links against (the same pinned LGPL shared build as rimelight-space's
-# `cargo xtask ffmpeg`), checks its SHA-256 and unpacks it to app/ffmpeg/current. Run once per machine:
+# Downloads the trimmed FFmpeg Rimelight Media links against (built by tools/ffmpeg/build.sh in the FFmpeg workflow and
+# published as a release asset of this repository), checks its SHA-256 and unpacks it to ffmpeg/current. Run once per
+# machine (tools/pack.ps1 runs it too):
 #   powershell -ExecutionPolicy Bypass -File tools/get-ffmpeg.ps1
 $ErrorActionPreference = 'Stop'
-$Release = 'autobuild-2026-11-19-12-39'
-$Asset = 'ffmpeg-n9.0.2-58-g8c7ef49002-win64-lgpl-shared-9.0.zip'
-$Sha256 = '1fdb837def412ad7cc019874b6310156f40179bd30df58d041a82413f800a331'
+$Release = 'ffmpeg-n9.0.2-r1'
+$Asset = 'rimelight-ffmpeg-n9.0.2-r1-win64-lgpl-shared.zip'
+$Sha256 = '013136dbfe3ae75d6f2eadcd6bec35f7a2fc49d2163996f01625ef5a912d0de0'
 
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root 'ffmpeg'
@@ -18,7 +19,7 @@ if (Test-Path (Join-Path $current 'lib')) {
 New-Item -ItemType Directory -Force $dest | Out-Null
 $zip = Join-Path $dest $Asset
 if (-not (Test-Path $zip)) {
-    $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/$Release/$Asset"
+    $url = "https://github.com/Rimelight-Entertainment/rimelight-media/releases/download/$Release/$Asset"
     Write-Host "Downloading $url"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
@@ -36,5 +37,5 @@ if (Test-Path $current) { Remove-Item -Recurse -Force $current }
 Move-Item $inner.FullName $current
 Remove-Item -Recurse -Force $tmp
 Remove-Item $zip
-Set-Content -Path (Join-Path $current 'PINNED_RELEASE.txt') -Value "$Release/$Asset"
+Set-Content -Path (Join-Path $current 'PINNED_RELEASE.txt') -Value "$Release/$Asset" # read by the up-to-date check above
 Write-Host "FFmpeg is set up in $current"

@@ -101,6 +101,26 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
             println!("speed: failed: {e}")
         }
     }
+    // Every file in codecs/: video gives a frame, sound gives decoded samples.
+    let mut codec_files: Vec<_> = std::fs::read_dir(dir.join("codecs")).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    codec_files.sort();
+    for f in codec_files {
+        let name = files::file_name(&f);
+        let result = media::player::probe(&f).and_then(|info| {
+            if info.video.is_some() {
+                media::player::frame_at(&f, 1000).map(|p| format!("video {}x{}", p.w, p.h))
+            } else {
+                decode_some_audio(&f).map(|n| format!("audio, {n} samples decoded"))
+            }
+        });
+        match result {
+            Ok(what) => println!("codec {name}: ok, {what}"),
+            Err(e) => {
+                ok = false;
+                println!("codec {name}: FAILED: {e}")
+            }
+        }
+    }
     match picture::load_animation(&dir.join("sample.gif")) {
         Some(a) => println!("gif: ok, {} frames, first {} ms", a.frames.len(), a.frames[0].1),
         None => {
@@ -136,6 +156,32 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         }
     }
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// Decodes the start of a file's sound track (self-test).
+fn decode_some_audio(path: &std::path::Path) -> Result<usize, String> {
+    use ffmpeg_next as ff;
+    let mut ictx = media::player::open_input(path)?;
+    let (idx, ctx) = {
+        let st = ictx.streams().best(ff::media::Type::Audio).ok_or("no sound track")?;
+        (st.index(), ff::codec::context::Context::from_parameters(st.parameters()).map_err(|e| e.to_string())?)
+    };
+    let mut dec = ctx.decoder().audio().map_err(|e| e.to_string())?;
+    let mut frame = ff::frame::Audio::empty();
+    let mut samples = 0;
+    for (st, pkt) in ictx.packets() {
+        if st.index() != idx {
+            continue;
+        }
+        dec.send_packet(&pkt).map_err(|e| e.to_string())?;
+        while dec.receive_frame(&mut frame).is_ok() {
+            samples += frame.samples();
+        }
+        if samples > 48_000 {
+            break;
+        }
+    }
+    if samples == 0 { Err("no samples".into()) } else { Ok(samples) }
 }
 
 fn main() -> ExitCode {

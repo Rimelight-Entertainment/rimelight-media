@@ -43,8 +43,9 @@ no GitHub repository baked in, so it doesn't check for updates (pass `-Repo owne
 
 ## Size
 
-What ships: `rimelight-media.exe` plus five FFmpeg libraries (avcodec, avformat, avutil, swresample, swscale). The
-FFmpeg device and filter libraries are not used (screen grabbing uses Windows' own calls; playback speed is done in
-the app), which saves 37 MB. avcodec (90 MB) is most of what's left: the prebuilt FFmpeg includes every encoder and
-decoder. A custom FFmpeg build with only the codecs needed would bring the whole app to roughly 20-30 MB; that needs an
-MSYS2 toolchain and is the next size step.
+What ships: `rimelight-media.exe` (about 12 MB, the C runtime and the icon inside) plus five FFmpeg libraries, about 16 MB:
+FFmpeg is built by the **FFmpeg** workflow (`tools/ffmpeg/build.sh`) with only the formats the app plays, trims and
+records (`tools/ffmpeg/options.txt`), plus dav1d for AV1. To support another format, add it to `options.txt`, bump
+`REVISION` in `build.sh` and push: the workflow publishes `ffmpeg-n9.0.2-rN`; then update the tag and SHA-256 in
+`tools/get-ffmpeg.ps1`. The test files used to check a new build: every format in `shots/codecs` must decode
+(`RIMELIGHT_MEDIA_SELFTEST=<folder> rimelight-media.exe`).
