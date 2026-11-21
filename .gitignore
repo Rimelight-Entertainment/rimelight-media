@@ -3,3 +3,5 @@ shots/
 target/
 publish/
 releases/
+dist/
+ffmpeg-work/
