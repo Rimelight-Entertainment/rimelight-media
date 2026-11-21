@@ -338,6 +338,25 @@ impl Mark {
             let dy = (ty - y).max(y - (ty + h)).max(0.0);
             return dx.hypot(dy);
         }
+        // The real ellipse: |(dx/rx)^2 + (dy/ry)^2 - 1| is the normalised distance; dividing by its gradient gives
+        // pixels. An outline counts within half its stroke; a filled one counts inside.
+        if self.kind == 6 && self.points.len() >= 2 {
+            let (x0, y0) = self.points[0];
+            let (x1, y1) = *self.points.last().unwrap_or(&self.points[0]);
+            let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            let (rx, ry) = ((x1 - x0).abs() / 2.0, (y1 - y0).abs() / 2.0);
+            if rx > 0.0 && ry > 0.0 {
+                let (dx, dy) = (x - cx, y - cy);
+                let k = (dx / rx).powi(2) + (dy / ry).powi(2);
+                if self.filled && k <= 1.0 {
+                    return 0.0;
+                }
+                let grad = 2.0 * ((dx / (rx * rx)).powi(2) + (dy / (ry * ry)).powi(2)).sqrt();
+                let pixels = if grad > 1e-6 { (k - 1.0).abs() / grad } else { rx.min(ry) };
+                return if self.filled { pixels } else { (pixels - self.stroke_width() / 2.0).max(0.0) };
+            }
+        }
+        // A line is its segment (its two points); a box is its outline.
         let pts: Vec<(f32, f32)> = if (self.kind == 3 || self.kind == 6) && self.points.len() >= 2 {
             let (x0, y0) = self.points[0];
             let (x1, y1) = *self.points.last().unwrap_or(&self.points[0]);

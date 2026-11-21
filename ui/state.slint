@@ -217,6 +217,17 @@ export global Viewer {
     callback crop-selection();
     callback cut-selection();
     callback delete-selection();
+
+    // The colour picker: hue (0 to 360), saturation and value (0 to 1); the colour and pure hue it shows; the hex text.
+    in-out property <float> picker-h: 0;
+    in-out property <float> picker-s: 1;
+    in-out property <float> picker-v: 1;
+    in property <color> picker-rgb;
+    in property <color> picker-hue;
+    in-out property <string> picker-hex;
+    callback picker-sync();
+    callback picker-changed();
+    callback picker-use();
 }
 
 export global Player {

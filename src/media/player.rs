@@ -19,7 +19,9 @@ type Input = ff::format::context::Input;
 type Scaler = ff::software::scaling::Context;
 type Resampler = ff::software::resampling::Context;
 
-const MAX_QUEUED_FRAMES: usize = 8;
+// Decoded frames waiting to be shown. Each is a full RGBA picture (8 MB at 1080p, 33 MB at 4K), so this is the biggest
+// part of the memory while a video plays; 5 still covers the decoder's hiccups at 60 fps.
+const MAX_QUEUED_FRAMES: usize = 5;
 const NO_DEVICE_RATE: u32 = 48_000;
 /// `sub_stream` value for "subtitles from a file" (the cues are set from outside).
 pub const SUB_EXTERNAL: i64 = -2;

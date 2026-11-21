@@ -58,6 +58,8 @@ export component ImagePage inherits Rectangle {
     background: Tokens.stage;
     // The custom colour box's text.
     property <string> hex-text;
+    // The colour picker popup, opened from the custom colour swatch on the markup bar.
+    property <bool> picker-open: false;
 
     // The scale showing now, and zooming around the middle of the stage.
     property <float> cur-scale: Viewer.fit ? Viewer.fit-scale : Viewer.scale;
@@ -84,9 +86,10 @@ export component ImagePage inherits Rectangle {
                 IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: Viewer.dirty || Viewer.canvas; clicked => { Viewer.save(); } }
                 IconButton { icon: Icons.save; label: "Save as (Ctrl+Shift+S)"; clicked => { Viewer.save-as(); } }
                 IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; clicked => { Viewer.copy(); } }
-                IconButton { icon: Icons.printer; label: "Print (Ctrl+P)"; clicked => { Viewer.print(); } }
-                IconButton { icon: Icons.share; label: "Share"; enabled: Viewer.can-share; clicked => { Viewer.share(); } }
-                IconButton { icon: Icons.folder-open; label: "Show in folder"; enabled: Viewer.can-share; clicked => { Viewer.open-folder(); } }
+                // Photo-only actions: a canvas has no file, so these are left out there.
+                if !Viewer.canvas: IconButton { icon: Icons.printer; label: "Print (Ctrl+P)"; clicked => { Viewer.print(); } }
+                if !Viewer.canvas: IconButton { icon: Icons.share; label: "Share"; enabled: Viewer.can-share; clicked => { Viewer.share(); } }
+                if !Viewer.canvas: IconButton { icon: Icons.folder-open; label: "Show in folder"; enabled: Viewer.can-share; clicked => { Viewer.open-folder(); } }
                 Divider { }
                 IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: Viewer.can-undo; clicked => { Viewer.undo(); } }
                 IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: Viewer.can-redo; clicked => { Viewer.redo(); } }
@@ -99,7 +102,7 @@ export component ImagePage inherits Rectangle {
                 IconButton { icon: Icons.pen; label: "Draw (M)"; enabled: !Viewer.comparing; active: Viewer.mode == "markup"; clicked => { Viewer.set-mode(Viewer.mode == "markup" ? "" : "markup"); } }
                 IconButton { icon: Icons.resize; label: "Resize"; enabled: !Viewer.comparing; active: Viewer.mode == "resize"; clicked => { Viewer.set-mode(Viewer.mode == "resize" ? "" : "resize"); } }
                 Divider { }
-                IconButton { icon: Icons.trash; label: "Delete (Del)"; clicked => { Viewer.delete-current(); } }
+                if !Viewer.canvas: IconButton { icon: Icons.trash; label: "Delete (Del)"; clicked => { Viewer.delete-current(); } }
             }
             Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.border-subtle; }
         }
@@ -181,6 +184,26 @@ export component ImagePage inherits Rectangle {
                         Divider { }
                         for c in Viewer.recent-colours: Swatch { colour: c; }
                         Divider { }
+                        // The custom colour: opens the picker popup (below the bar).
+                        Rectangle {
+                            width: 26px;
+                            height: Tokens.control-height;
+                            Rectangle {
+                                width: 22px;
+                                height: 22px;
+                                border-radius: 11px;
+                                border-width: 1px;
+                                border-color: Tokens.border-subtle;
+                                background: @linear-gradient(90deg, #FF0000 0%, #FFFF00 25%, #00FF00 50%, #00FFFF 75%, #0000FF 100%);
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    Viewer.picker-sync();
+                                    root.picker-open = !root.picker-open;
+                                }
+                            }
+                        }
                         LineEdit {
                             width: 110px;
                             placeholder-text: "#RRGGBB";
@@ -228,7 +251,7 @@ export component ImagePage inherits Rectangle {
 
         HorizontalLayout {
             // Details: on the left of the picture.
-            if Viewer.show-info: Rectangle {
+            if Viewer.show-info && !Viewer.canvas: Rectangle {
                 width: 280px;
                 background: Tokens.surface-raised;
                 border-width: 1px;
@@ -656,7 +679,7 @@ export component ImagePage inherits Rectangle {
         }
 
         // Filmstrip: the pictures in the folder. Click to open; Ctrl+click to pick several and compare them.
-        if Viewer.filmstrip && !Shell.full-screen: Rectangle {
+        if Viewer.filmstrip && !Shell.full-screen && !Viewer.canvas: Rectangle {
             height: 104px;
             background: Tokens.surface-sunken;
             ScrollView {
@@ -719,7 +742,7 @@ export component ImagePage inherits Rectangle {
                 padding-top: 3px;
                 padding-bottom: 3px;
                 spacing: Tokens.space-2;
-                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; clicked => { Viewer.toggle-info(); } }
+                if !Viewer.canvas: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; clicked => { Viewer.toggle-info(); } }
                 if Viewer.facts-text != "": Text { text: Viewer.facts-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
             }
 
@@ -729,7 +752,7 @@ export component ImagePage inherits Rectangle {
                 padding-top: 3px;
                 padding-bottom: 3px;
                 spacing: Tokens.space-1;
-                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.film; label: "Filmstrip"; active: Viewer.filmstrip; clicked => { Viewer.toggle-filmstrip(); } }
+                if !Viewer.canvas: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.film; label: "Filmstrip"; active: Viewer.filmstrip; clicked => { Viewer.toggle-filmstrip(); } }
                 if Viewer.position != "": Text { text: Viewer.position; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; min-width: 48px; horizontal-alignment: center; }
                 if Viewer.animated: HorizontalLayout {
                     spacing: Tokens.space-1;
@@ -770,6 +793,128 @@ export component ImagePage inherits Rectangle {
                 }
                 IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-in; label: "Zoom in (+)"; clicked => { root.zoom-to(root.cur-scale * 1.25); } }
                 IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fullscreen; label: "Full screen (F11)"; clicked => { Shell.toggle-full-screen(); } }
+            }
+        }
+    }
+
+    // The colour picker: a saturation and value square, a hue bar, a preview and the hex box.
+    if picker-open && Viewer.mode == "markup": TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        clicked => { root.picker-open = false; }
+    }
+    if picker-open && Viewer.mode == "markup": Rectangle {
+        x: max(0px, root.width - 272px);
+        y: Tokens.bar-height * 2 + 6px;
+        width: 260px;
+        height: 300px;
+        background: Tokens.surface-raised;
+        border-width: 1px;
+        border-color: Tokens.border-subtle;
+        border-radius: Tokens.radius-control;
+        // Covers the panel so clicks on it don't close the picker.
+        TouchArea { width: parent.width; height: parent.height; }
+        VerticalLayout {
+            padding: Tokens.space-2;
+            spacing: Tokens.space-2;
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 180px;
+                    // A horizontal white-to-hue gradient, with a transparent-to-black one over it.
+                    background: @linear-gradient(90deg, #FFFFFF 0%, Viewer.picker-hue 100%);
+                    Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: @linear-gradient(180deg, #00000000 0%, #000000 100%);
+                    }
+                    Rectangle {
+                        x: Viewer.picker-s * parent.width - 6px;
+                        y: (1 - Viewer.picker-v) * parent.height - 6px;
+                        width: 12px;
+                        height: 12px;
+                        border-radius: 6px;
+                        border-width: 2px;
+                        border-color: #FFFFFF;
+                    }
+                    TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        mouse-cursor: crosshair;
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down {
+                                Viewer.picker-s = clamp(self.mouse-x / self.width, 0, 1);
+                                Viewer.picker-v = 1 - clamp(self.mouse-y / self.height, 0, 1);
+                                Viewer.picker-changed();
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                Viewer.picker-s = clamp(self.mouse-x / self.width, 0, 1);
+                                Viewer.picker-v = 1 - clamp(self.mouse-y / self.height, 0, 1);
+                                Viewer.picker-changed();
+                            }
+                        }
+                    }
+                }
+                // The hue bar, top (red) to bottom (red).
+                Rectangle {
+                    width: 18px;
+                    height: 180px;
+                    border-width: 1px;
+                    border-color: Tokens.border-subtle;
+                    background: @linear-gradient(180deg, #FF0000 0%, #FFFF00 17%, #00FF00 33%, #00FFFF 50%, #0000FF 67%, #FF00FF 83%, #FF0000 100%);
+                    Rectangle {
+                        x: -2px;
+                        y: Viewer.picker-h / 360 * parent.height - 2px;
+                        width: parent.width + 4px;
+                        height: 4px;
+                        border-width: 1px;
+                        border-color: #FFFFFF;
+                    }
+                    TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        mouse-cursor: pointer;
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down {
+                                Viewer.picker-h = clamp(self.mouse-y / self.height, 0, 1) * 360;
+                                Viewer.picker-changed();
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                Viewer.picker-h = clamp(self.mouse-y / self.height, 0, 1) * 360;
+                                Viewer.picker-changed();
+                            }
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                Rectangle {
+                    width: 40px;
+                    height: 28px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Tokens.border-subtle;
+                    background: Viewer.picker-rgb;
+                }
+                LineEdit {
+                    placeholder-text: "#RRGGBB";
+                    text <=> Viewer.picker-hex;
+                    accepted => { Viewer.pick-hex(Viewer.picker-hex); }
+                }
+            }
+            HorizontalLayout {
+                spacing: Tokens.space-1;
+                Rectangle { horizontal-stretch: 1; }
+                Button { text: "Use"; kind: ButtonKind.primary; clicked => { Viewer.picker-use(); } }
+                Button { text: "Close"; clicked => { root.picker-open = false; } }
             }
         }
     }

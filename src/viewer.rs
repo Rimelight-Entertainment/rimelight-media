@@ -32,7 +32,9 @@ pub struct ViewState {
     folder: Vec<PathBuf>,
     index: usize,
     marks: Vec<Mark>,
-    redo: Vec<Mark>,
+    /// The marks before each markup change (Undo) and the ones taken back (Redo), newest last.
+    marks_undo: Vec<Vec<Mark>>,
+    marks_redo: Vec<Vec<Mark>>,
     drawing: Option<Mark>,
     text_at: Option<(f32, f32)>,
     generation: u64,
@@ -123,9 +125,10 @@ pub fn wire(app: &Rc<App>) {
     v.on_clear_marks(|| {
         with_app(|a| {
             let mut s = a.view.borrow_mut();
-            let mut cleared = std::mem::take(&mut s.marks);
-            cleared.reverse();
-            s.redo = cleared;
+            if !s.marks.is_empty() {
+                snap_marks(&mut s);
+                s.marks.clear();
+            }
             s.selected = None;
             s.grab = None;
             drop(s);
@@ -144,6 +147,9 @@ pub fn wire(app: &Rc<App>) {
     v.on_set_tool(|t| with_app(move |a| set_tool(a, t)));
     v.on_pick_colour(|c| with_app(move |a| pick_colour(a, [c.red(), c.green(), c.blue(), 255])));
     v.on_pick_hex(|t: SharedString| with_app(move |a| pick_hex(a, &t)));
+    v.on_picker_sync(|| with_app(|a| picker_sync(a)));
+    v.on_picker_changed(|| with_app(|a| picker_show(a)));
+    v.on_picker_use(|| with_app(|a| picker_use(a)));
     v.on_crop_selection(|| with_app(crop_selection));
     v.on_cut_selection(|| with_app(|a| remove_selection(a, true)));
     v.on_delete_selection(|| with_app(|a| remove_selection(a, false)));
@@ -198,9 +204,25 @@ pub fn open_set(app: &Rc<App>, paths: &[PathBuf]) {
 }
 
 /// Forgets the markup in progress and the marks (the picture itself stays).
+/// Keeps the marks as they are now, as one Undo step (a new change clears Redo).
+fn snap_marks(s: &mut ViewState) {
+    let before = s.marks.clone();
+    push_marks_undo(s, before);
+}
+
+/// Adds an Undo step holding the marks as they were before a change.
+fn push_marks_undo(s: &mut ViewState, before: Vec<Mark>) {
+    s.marks_undo.push(before);
+    if s.marks_undo.len() > MAX_HISTORY {
+        s.marks_undo.remove(0);
+    }
+    s.marks_redo.clear();
+}
+
 fn clear_markup(s: &mut ViewState) {
     s.marks.clear();
-    s.redo.clear();
+    s.marks_undo.clear();
+    s.marks_redo.clear();
     s.drawing = None;
     s.text_at = None;
     s.sel = None;
@@ -498,9 +520,77 @@ fn pick_hex(app: &Rc<App>, text: &str) {
     let t = text.trim().trim_start_matches('#');
     let parsed = if t.len() == 6 { u32::from_str_radix(t, 16).ok() } else { None };
     match parsed {
-        Some(v) => pick_colour(app, [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]),
+        Some(v) => {
+            pick_colour(app, [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
+            picker_sync(app);
+        }
         None => toast(app, "Type a colour as six hex digits, like #3FD6B8."),
     }
+}
+
+/// HSV to RGB: hue in degrees, saturation and value from 0 to 1.
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let c = v * s;
+    let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let to = |f: f32| ((f + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    [to(r), to(g), to(b)]
+}
+
+/// RGB to HSV: hue in degrees (0 to 360), saturation and value from 0 to 1.
+fn rgb_to_hsv(rgb: [u8; 3]) -> (f32, f32, f32) {
+    let [r, g, b] = rgb.map(|c| f32::from(c) / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d == 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    let s = if max == 0.0 { 0.0 } else { d / max };
+    (h, s, max)
+}
+
+/// Opens the picker from the ink: its hue, saturation and value follow the current colour.
+fn picker_sync(app: &Rc<App>) {
+    let c = viewer(app).get_ink();
+    let (h, s, v) = rgb_to_hsv([c.red(), c.green(), c.blue()]);
+    let pv = viewer(app);
+    pv.set_picker_h(h);
+    pv.set_picker_s(s);
+    pv.set_picker_v(v);
+    picker_show(app);
+}
+
+/// Shows the picker's preview, hue bar and hex box for its current hue, saturation and value.
+fn picker_show(app: &Rc<App>) {
+    let v = viewer(app);
+    let [r, g, b] = hsv_to_rgb(v.get_picker_h(), v.get_picker_s(), v.get_picker_v());
+    let [hr, hg, hb] = hsv_to_rgb(v.get_picker_h(), 1.0, 1.0);
+    v.set_picker_rgb(slint::Color::from_argb_u8(255, r, g, b));
+    v.set_picker_hue(slint::Color::from_argb_u8(255, hr, hg, hb));
+    v.set_picker_hex(format!("#{r:02X}{g:02X}{b:02X}").into());
+}
+
+/// The picker's Use button: its colour becomes the ink and joins the recent colours.
+fn picker_use(app: &Rc<App>) {
+    let v = viewer(app);
+    let [r, g, b] = hsv_to_rgb(v.get_picker_h(), v.get_picker_s(), v.get_picker_v());
+    pick_colour(app, [r, g, b, 255]);
 }
 
 fn remember_colour(app: &Rc<App>, rgba: [u8; 4]) {
@@ -597,8 +687,8 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
                 .filter(|(_, d)| *d <= reach)
                 .min_by(|a, b| a.1.total_cmp(&b.1))
             {
-                let m = s.marks.remove(i);
-                s.redo.push(m);
+                snap_marks(&mut s);
+                s.marks.remove(i);
             }
             s.selected = None;
             drop(s);
@@ -670,7 +760,13 @@ fn mark_move(app: &Rc<App>, x: f32, y: f32) {
 
 fn mark_end(app: &Rc<App>) {
     let mut s = app.view.borrow_mut();
-    if s.grab.take().is_some() {
+    if let Some(g) = s.grab.take() {
+        // A move or resize that changed the mark is one Undo step: the marks as they were before the drag.
+        if s.marks.get(g.index).is_some_and(|m| m.points != g.origin.points) {
+            let mut before = s.marks.clone();
+            before[g.index] = g.origin;
+            push_marks_undo(&mut s, before);
+        }
         drop(s);
         refresh_marks(app);
         return;
@@ -687,8 +783,8 @@ fn mark_end(app: &Rc<App>) {
         let (a, b) = (m.points[0], *m.points.last().unwrap_or(&m.points[0]));
         let tiny = (a.0 - b.0).hypot(a.1 - b.1) < 3.0;
         if !(tiny && matches!(m.kind, 2 | 3 | 6 | 7)) {
+            snap_marks(&mut s);
             s.marks.push(m);
-            s.redo.clear();
         }
     }
     drop(s);
@@ -709,8 +805,8 @@ pub fn commit_text(app: &Rc<App>) {
         let width = v.get_ink_width() * scale;
         let rgba = ink(app);
         let mut s = app.view.borrow_mut();
+        snap_marks(&mut s);
         s.marks.push(Mark { kind: 4, rgba, width, points: vec![pos], text, filled: false, image: None });
-        s.redo.clear();
     }
     refresh_marks(app);
 }
@@ -718,10 +814,11 @@ pub fn commit_text(app: &Rc<App>) {
 /// Undo: the last mark while marking up, otherwise the last edit of the picture (a paint bucket fill is one too).
 fn undo(app: &Rc<App>) {
     let markup = viewer(app).get_mode() == "markup";
-    if markup && !app.view.borrow().marks.is_empty() {
+    if markup && !app.view.borrow().marks_undo.is_empty() {
         let mut s = app.view.borrow_mut();
-        if let Some(m) = s.marks.pop() {
-            s.redo.push(m);
+        if let Some(prev) = s.marks_undo.pop() {
+            let now = std::mem::replace(&mut s.marks, prev);
+            s.marks_redo.push(now);
         }
         s.selected = None;
         s.grab = None;
@@ -756,11 +853,14 @@ fn undo(app: &Rc<App>) {
 
 fn redo(app: &Rc<App>) {
     let markup = viewer(app).get_mode() == "markup";
-    if markup && !app.view.borrow().redo.is_empty() {
+    if markup && !app.view.borrow().marks_redo.is_empty() {
         let mut s = app.view.borrow_mut();
-        if let Some(m) = s.redo.pop() {
-            s.marks.push(m);
+        if let Some(next) = s.marks_redo.pop() {
+            let now = std::mem::replace(&mut s.marks, next);
+            s.marks_undo.push(now);
         }
+        s.selected = None;
+        s.grab = None;
         drop(s);
         refresh_marks(app);
         return;
@@ -794,8 +894,8 @@ fn refresh_undo(app: &Rc<App>) {
     let s = app.view.borrow();
     let v = viewer(app);
     if v.get_mode() == "markup" {
-        v.set_can_undo(!s.marks.is_empty() || !s.history.is_empty());
-        v.set_can_redo(!s.redo.is_empty() || !s.future.is_empty());
+        v.set_can_undo(!s.marks_undo.is_empty() || !s.history.is_empty());
+        v.set_can_redo(!s.marks_redo.is_empty() || !s.future.is_empty());
     } else {
         v.set_can_undo(!s.history.is_empty());
         v.set_can_redo(!s.future.is_empty());
@@ -968,8 +1068,8 @@ fn delete_selected(app: &Rc<App>) {
     let mut s = app.view.borrow_mut();
     let Some(i) = s.selected.take() else { return };
     if i < s.marks.len() {
-        let m = s.marks.remove(i);
-        s.redo.push(m);
+        snap_marks(&mut s);
+        s.marks.remove(i);
     }
     s.grab = None;
     drop(s);
@@ -1034,6 +1134,7 @@ pub fn place_picture(app: &Rc<App>, pic: Picture) {
     let (x, y) = ((pw - w) / 2.0, (ph - h) / 2.0);
     {
         let mut s = app.view.borrow_mut();
+        snap_marks(&mut s);
         s.marks.push(Mark {
             kind: 5,
             rgba: [0, 0, 0, 0],
@@ -1043,7 +1144,6 @@ pub fn place_picture(app: &Rc<App>, pic: Picture) {
             filled: false,
             image: Some(Arc::new(pic)),
         });
-        s.redo.clear();
         s.selected = Some(s.marks.len() - 1);
         s.grab = None;
     }
