@@ -12,7 +12,7 @@ for pictures, video and music. Uninstall from Windows Settings > Apps > Installe
 
 ## What it does
 
-- **Pictures:** PNG, JPEG, WebP, SVG, GIF, BMP, ICO. Zoom and pan, browse the folder, animated GIF/WebP with play, pause
+- **Pictures:** PNG, JPEG, WebP, SVG, GIF, BMP, ICO, HEIC/HEIF, AVIF and camera RAW (view only; save as PNG or JPEG). Zoom and pan, browse the folder, animated GIF/WebP with play, pause
   and frame-by-frame stepping. Crop, rotate, flip, resize, markup (pen, highlighter, arrow, box, text), save and copy.
 - **Video and music:** MP4, MKV, WebM, MOV, AVI, MPEG and more; MP3, FLAC, WAV, OGG, Opus, M4A and more. Audio track
   choice, subtitles (embedded text and picture subtitles, or SRT/VTT/ASS files) with delay and size, playback speed

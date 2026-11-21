@@ -9,5 +9,7 @@
   Settings carries the required notice).
 - **Lucide icons**, ISC licence (`licenses/Lucide-LICENSE.txt`).
 - **Velopack** (installer and updates), MIT licence.
+- **rawler** 0.7 (camera RAW decoding), LGPL-2.1. Source: https://crates.io/crates/rawler. Unmodified, used as a Rust
+  library; you may replace it with another version of the same crate under the LGPL terms.
 - Rust crates: image, resvg, cpal, global-hotkey, arboard, rfd, winreg, windows-sys and their dependencies, under MIT
   and/or Apache-2.0 (see each crate on crates.io).

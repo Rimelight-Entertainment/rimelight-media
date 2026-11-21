@@ -23,6 +23,8 @@ mod instance;
 mod media;
 mod mediactl;
 mod picture;
+mod picture_heif;
+mod picture_raw;
 mod platform;
 mod prefs;
 mod settingsctl;

@@ -35,9 +35,30 @@ fn svg_options() -> usvg::Options<'static> {
     opt
 }
 
+/// HEIC, HEIF, HIF and AVIF (through FFmpeg).
+fn is_heif(ext: &str) -> bool {
+    matches!(ext, "heic" | "heif" | "hif" | "avif")
+}
+
+/// Camera RAW formats (through rawler).
+fn is_raw(ext: &str) -> bool {
+    matches!(
+        ext,
+        "dng" | "cr2" | "cr3" | "nef" | "nrw" | "arw" | "srf" | "sr2" | "raf" | "orf" | "rw2" | "pef" | "srw" | "3fr"
+            | "erf" | "kdc" | "mrw" | "x3f" | "iiq" | "rwl"
+    )
+}
+
 pub fn load(path: &Path) -> Result<Picture, String> {
-    if crate::files::ext_of(path) == "svg" {
+    let ext = crate::files::ext_of(path);
+    if ext == "svg" {
         return load_svg(path);
+    }
+    if is_heif(&ext) {
+        return crate::picture_heif::load(path);
+    }
+    if is_raw(&ext) {
+        return crate::picture_raw::load(path);
     }
     let reader = image::ImageReader::open(path)
         .map_err(|e| e.to_string())?
@@ -56,6 +77,12 @@ pub fn load(path: &Path) -> Result<Picture, String> {
 pub fn thumbnail(path: &Path, w: u32, h: u32) -> Option<Picture> {
     if crate::files::ext_of(path) == "svg" {
         let pic = load_svg(path).ok()?;
+        let s = (w as f32 / pic.w as f32).min(h as f32 / pic.h as f32).min(1.0);
+        return Some(resize(&pic, ((pic.w as f32 * s) as u32).max(1), ((pic.h as f32 * s) as u32).max(1)));
+    }
+    let ext = crate::files::ext_of(path);
+    if is_heif(&ext) || is_raw(&ext) {
+        let pic = load(path).ok()?;
         let s = (w as f32 / pic.w as f32).min(h as f32 / pic.h as f32).min(1.0);
         return Some(resize(&pic, ((pic.w as f32 * s) as u32).max(1), ((pic.h as f32 * s) as u32).max(1)));
     }

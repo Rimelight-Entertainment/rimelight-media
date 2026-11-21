@@ -8,7 +8,8 @@ description = "Rimelight Media: pictures, video, music, screenshots and screen r
 default-run = "rimelight-media"
 
 # Same rule as rimelight-space: no unsafe code, except the audited modules that talk to Windows (src/platform.rs, src/capture/camera.rs), read
-# FFmpeg's picture subtitles (src/media/bitmap_sub.rs) and the code Slint generates (src/ui.rs).
+# FFmpeg's picture subtitles (src/media/bitmap_sub.rs), HEIF pictures through FFmpeg's stream groups (src/picture_heif.rs)
+# and the code Slint generates (src/ui.rs).
 [lints.rust]
 future_incompatible = { level = "deny", priority = -1 }
 unsafe_code = "deny"
@@ -26,6 +27,8 @@ slint = { version = "=1.18.1", default-features = false, features = [
 ] }
 # Pictures: decode and save. Only the formats the app opens (GIF and WebP with their animation frames).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
+# Camera RAW pictures (pure Rust, LGPL-2.1): developed to RGB, or the embedded JPEG when developing fails.
+rawler = "0.7"
 # SVG pictures and the markup layer (text uses the system fonts). Same version Slint already uses.
 resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 # Video and sound decoding and encoding (rimelight-space decision 0046). Without FFmpeg's device and filter libraries:

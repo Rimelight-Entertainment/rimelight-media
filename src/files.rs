@@ -10,7 +10,11 @@ pub enum Kind {
     Text,
 }
 
-pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "jfif", "webp", "svg", "gif", "bmp", "ico"];
+/// Pictures the app opens. HEIC/HEIF/HIF/AVIF and camera RAW are view-only: "Save as" writes PNG or JPEG.
+pub const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "jfif", "webp", "svg", "gif", "bmp", "ico", "heic", "heif", "hif", "avif", "dng", "cr2", "cr3",
+    "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "srw", "3fr", "erf", "kdc", "mrw", "x3f", "iiq", "rwl",
+];
 pub const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "mpeg", "m2ts", "mts", "ts", "flv", "3gp", "ogv",
 ];
