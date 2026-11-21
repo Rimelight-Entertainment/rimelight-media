@@ -185,7 +185,7 @@ export component Toggle inherits Rectangle {
         spacing: Tokens.space-3;
         VerticalLayout {
             alignment: center;
-            Text { text: root.text; color: Tokens.text-primary; font-size: Type.body; }
+            Text { text: root.text; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
             if root.detail != "": Text { text: root.detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
         }
         Rectangle {
@@ -405,7 +405,7 @@ export component ConfirmDialog inherits Rectangle {
 
     Rectangle {
         width: min(420px, parent.width - 2 * Tokens.space-6);
-        height: layout.preferred-height + 2 * Tokens.space-5;
+        height: layout.preferred-height;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Tokens.surface-overlay;
@@ -423,12 +423,13 @@ export component ConfirmDialog inherits Rectangle {
             Text { text: root.name; color: Tokens.text-primary; font-size: Type.body; font-weight: 600; overflow: elide; }
             Text { text: root.detail; color: Tokens.text-muted; font-size: Type.body; wrap: word-wrap; }
             Rectangle { height: Tokens.space-3; }
+            // Cancel bottom-left; Don't save then Save flush right, with the same gap as Tokens.space-2 elsewhere.
             HorizontalLayout {
-                alignment: end;
                 spacing: Tokens.space-2;
-                Button { text: root.primary-text; kind: ButtonKind.primary; clicked => { root.answer(0); } }
-                if root.secondary-text != "": Button { text: root.secondary-text; kind: ButtonKind.secondary; clicked => { root.answer(1); } }
                 Button { text: "Cancel"; kind: ButtonKind.ghost; clicked => { root.answer(2); } }
+                Rectangle { horizontal-stretch: 1; }
+                if root.secondary-text != "": Button { text: root.secondary-text; kind: ButtonKind.secondary; clicked => { root.answer(1); } }
+                Button { text: root.primary-text; kind: ButtonKind.primary; clicked => { root.answer(0); } }
             }
         }
     }

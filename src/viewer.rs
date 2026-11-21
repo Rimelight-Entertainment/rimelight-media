@@ -12,13 +12,100 @@ use crate::files;
 use crate::picture::{self, Mark, Picture};
 use crate::ui;
 
-/// A mark being moved (or, for a two-point mark, its last corner dragged to resize it).
+/// A mark being moved, or one of its box handles dragged to resize it.
 #[derive(Clone)]
 struct Grab {
     index: usize,
-    corner: bool,
+    /// The handle held: -1 left or top, 0 middle, 1 right or bottom, for x and y (None moves the mark).
+    handle: Option<(i8, i8)>,
     start: (f32, f32),
     origin: Mark,
+}
+
+/// The handle of a mark's box under (x, y), if any: the 4 corners and the 4 edge middles. An axis the box has no
+/// extent along (a straight horizontal or vertical line) has no handles across it.
+fn handle_at(m: &Mark, x: f32, y: f32, reach: f32) -> Option<(i8, i8)> {
+    if m.points.is_empty() {
+        return None;
+    }
+    let (bx, by, bw, bh) = m.bounds();
+    let mut best = None;
+    let mut best_d = reach;
+    for hx in -1i8..=1 {
+        for hy in -1i8..=1 {
+            if (hx == 0 && hy == 0) || (hx != 0 && bw < 1.0) || (hy != 0 && bh < 1.0) {
+                continue;
+            }
+            let px = bx + bw * (hx + 1) as f32 / 2.0;
+            let py = by + bh * (hy + 1) as f32 / 2.0;
+            let d = (px - x).hypot(py - y);
+            if d <= best_d {
+                best_d = d;
+                best = Some((hx, hy));
+            }
+        }
+    }
+    best
+}
+
+/// The mark resized by dragging its handle (hx, hy) by (dx, dy) picture pixels: the opposite side stays put and every
+/// point scales within the box. Strokes and shapes keep their stroke width; text scales its font size instead.
+fn resized(origin: &Mark, hx: i8, hy: i8, dx: f32, dy: f32) -> Mark {
+    let (x0, y0, w, h) = origin.bounds();
+    let (mut nl, mut nr, mut nt, mut nb) = (x0, x0 + w, y0, y0 + h);
+    match hx {
+        -1 => nl = (nl + dx).min(nr - 1.0),
+        1 => nr = (nr + dx).max(nl + 1.0),
+        _ => {}
+    }
+    match hy {
+        -1 => nt = (nt + dy).min(nb - 1.0),
+        1 => nb = (nb + dy).max(nt + 1.0),
+        _ => {}
+    }
+    let (nw, nh) = (nr - nl, nb - nt);
+    let mut m = origin.clone();
+    if origin.kind == 4 {
+        // Text: the font scales with the box (height for an edge, the mean of both for a corner).
+        let (rx, ry) = (
+            if w >= 1.0 { nw / w } else { 1.0 },
+            if h >= 1.0 { nh / h } else { 1.0 },
+        );
+        let f = match (hx, hy) {
+            (0, _) => ry,
+            (_, 0) => rx,
+            _ => (rx + ry) / 2.0,
+        }
+        .max(0.05);
+        m.width = origin.width * f;
+        if let Some(p) = m.points.first_mut() {
+            *p = (
+                if hx == -1 { nl } else { x0 },
+                if hy == -1 { nt } else { y0 },
+            );
+        }
+        return m;
+    }
+    let map_x = |px: f32| {
+        if w >= 1.0 {
+            nl + (px - x0) / w * nw
+        } else {
+            px + (nl - x0)
+        }
+    };
+    let map_y = |py: f32| {
+        if h >= 1.0 {
+            nt + (py - y0) / h * nh
+        } else {
+            py + (nt - y0)
+        }
+    };
+    m.points = origin
+        .points
+        .iter()
+        .map(|&(px, py)| (map_x(px), map_y(py)))
+        .collect();
+    m
 }
 
 /// The action waiting for the answer to the in-app question about unsaved canvas changes.
@@ -27,6 +114,10 @@ type Then = Box<dyn FnOnce(&Rc<App>)>;
 #[derive(Default)]
 pub struct ViewState {
     pub path: Option<PathBuf>,
+    /// What Revert goes back to, kept only when it isn't already held elsewhere: while it is None, the picture as opened
+    /// is the oldest Undo step (history[0]), or `pic` itself when there is no Undo step. It is set when the Undo cap drops
+    /// that oldest step (push_history), or for an animation frozen on a frame other than the first (freeze_anim). So an
+    /// opened picture is held once, not twice.
     original: Option<Picture>,
     pic: Option<Picture>,
     folder: Vec<PathBuf>,
@@ -62,6 +153,8 @@ pub struct ViewState {
     /// The mark picked for moving or resizing, and the drag in progress.
     selected: Option<usize>,
     grab: Option<Grab>,
+    /// The hand tool's drag on empty space: the press (picture space) and the pan it started from.
+    pan_grab: Option<(f32, f32, f32, f32)>,
     /// Up to six recent colours, newest first.
     recent: Vec<[u8; 4]>,
     /// Slint images of the picture marks (made once per picture, kept while the mark exists).
@@ -70,8 +163,33 @@ pub struct ViewState {
     pending: Option<Then>,
 }
 
-/// Picture edits kept for Undo.
-const MAX_HISTORY: usize = 20;
+/// Picture edits kept for Undo and Redo, capped by their total size (a large photo or canvas is tens of MB per step).
+const HISTORY_BYTES: usize = 256 * 1024 * 1024;
+/// Marks undo steps are small (vectors), so they are capped by count.
+const MAX_MARKS_HISTORY: usize = 100;
+
+/// Adds a picture to an undo or redo stack, dropping the oldest steps while the stack is over HISTORY_BYTES.
+fn keep_picture(stack: &mut Vec<Picture>, pic: Picture) {
+    stack.push(pic);
+    let mut total: usize = stack.iter().map(|p| p.rgba.len()).sum();
+    while total > HISTORY_BYTES && !stack.is_empty() {
+        total -= stack.remove(0).rgba.len();
+    }
+}
+
+/// Adds a picture to the Undo stack, like keep_picture. The first step the cap drops while `original` is empty is the
+/// picture as opened: it is moved into `original` for Revert (no copy).
+fn push_history(s: &mut ViewState, pic: Picture) {
+    s.history.push(pic);
+    let mut total: usize = s.history.iter().map(|p| p.rgba.len()).sum();
+    while total > HISTORY_BYTES && !s.history.is_empty() {
+        let old = s.history.remove(0);
+        total -= old.rgba.len();
+        if s.original.is_none() {
+            s.original = Some(old);
+        }
+    }
+}
 /// Paint bucket: how far a pixel's colour may differ from the seed's (per channel).
 const FILL_TOLERANCE: u8 = 16;
 
@@ -89,7 +207,12 @@ pub fn wire(app: &Rc<App>) {
     v.on_apply_crop(|| {
         with_app(|a| {
             let v = viewer(a);
-            let (x, y, w, h) = (v.get_crop_x(), v.get_crop_y(), v.get_crop_w(), v.get_crop_h());
+            let (x, y, w, h) = (
+                v.get_crop_x(),
+                v.get_crop_y(),
+                v.get_crop_w(),
+                v.get_crop_h(),
+            );
             edit(a, move |p| picture::crop(p, x, y, w, h));
             set_mode(a, "");
         })
@@ -99,7 +222,10 @@ pub fn wire(app: &Rc<App>) {
     v.on_apply_resize(|| {
         with_app(|a| {
             let v = viewer(a);
-            let (Ok(w), Ok(h)) = (v.get_resize_w().trim().parse::<u32>(), v.get_resize_h().trim().parse::<u32>()) else {
+            let (Ok(w), Ok(h)) = (
+                v.get_resize_w().trim().parse::<u32>(),
+                v.get_resize_h().trim().parse::<u32>(),
+            ) else {
                 toast(a, "Type a width and a height in pixels.");
                 return;
             };
@@ -140,7 +266,9 @@ pub fn wire(app: &Rc<App>) {
             let marks = std::mem::take(&mut a.view.borrow_mut().marks);
             if !marks.is_empty() {
                 let on_canvas = a.view.borrow().canvas;
-                edit(a, move |p| picture::burn_marks(p, &marks, on_canvas).unwrap_or_else(|_| p.clone()));
+                edit(a, move |p| {
+                    picture::burn_marks(p, &marks, on_canvas).unwrap_or_else(|_| p.clone())
+                });
             }
             set_mode(a, "");
         })
@@ -151,7 +279,9 @@ pub fn wire(app: &Rc<App>) {
     v.on_picker_sync(|| with_app(|a| picker_sync(a)));
     v.on_picker_changed(|| with_app(|a| picker_show(a)));
     v.on_picker_use(|| with_app(|a| picker_use(a)));
-    v.on_picker_field(|i, t: SharedString| with_app(move |a| picker_field(a, i.max(0) as usize, &t)));
+    v.on_picker_field(|i, t: SharedString| {
+        with_app(move |a| picker_field(a, i.max(0) as usize, &t))
+    });
     v.on_canvas_resize(|w: SharedString, h: SharedString, transparent: bool| {
         with_app(move |a| canvas_resize_typed(a, &w, &h, transparent));
     });
@@ -169,15 +299,24 @@ pub fn wire(app: &Rc<App>) {
                 settle_canvas(a, close);
                 return;
             }
-            let orig = a.view.borrow().original.clone();
-            if let Some(p) = orig {
-                {
-                    let mut s = a.view.borrow_mut();
+            // The picture as opened: kept aside, else the oldest Undo step, else the picture showing (see `original`).
+            let restored = {
+                let mut s = a.view.borrow_mut();
+                let orig = s
+                    .original
+                    .take()
+                    .or_else(|| (!s.history.is_empty()).then(|| s.history.remove(0)));
+                if let Some(p) = orig {
                     s.pic = Some(p);
+                }
+                if s.pic.is_some() {
                     clear_markup(&mut s);
                     s.history.clear();
                     s.future.clear();
                 }
+                s.pic.is_some()
+            };
+            if restored {
                 show_picture(a, false);
                 viewer(a).set_dirty(false);
                 refresh_undo(a);
@@ -197,9 +336,11 @@ pub fn wire(app: &Rc<App>) {
             }
         })
     });
-    app.ui.global::<ui::Shell>().on_new_canvas(|preset, w, h, transparent| {
-        with_app(move |a| new_canvas(a, preset, &w, &h, transparent));
-    });
+    app.ui
+        .global::<ui::Shell>()
+        .on_new_canvas(|preset, w, h, transparent| {
+            with_app(move |a| new_canvas(a, preset, &w, &h, transparent));
+        });
 }
 
 /// Opens a picture file: the folder list is built at once, the pixels arrive from a worker thread.
@@ -224,7 +365,7 @@ fn snap_marks(s: &mut ViewState) {
 /// Adds an Undo step holding the marks as they were before a change.
 fn push_marks_undo(s: &mut ViewState, before: Vec<Mark>) {
     s.marks_undo.push(before);
-    if s.marks_undo.len() > MAX_HISTORY {
+    if s.marks_undo.len() > MAX_MARKS_HISTORY {
         s.marks_undo.remove(0);
     }
     s.marks_redo.clear();
@@ -310,7 +451,7 @@ fn open_with(app: &Rc<App>, path: &Path, set: Option<Vec<PathBuf>>) {
                 Ok(pic) => {
                     {
                         let mut s = a.view.borrow_mut();
-                        s.original = Some(pic.clone());
+                        s.original = None;
                         s.pic = Some(pic);
                     }
                     show_picture(a, true);
@@ -337,11 +478,21 @@ pub fn open_picture(app: &Rc<App>, pic: Picture, path: Option<PathBuf>) {
         let mut s = app.view.borrow_mut();
         s.generation += 1;
         s.canvas = false;
-        s.folder = path.as_ref().map(|p| files::sibling_pictures(p)).unwrap_or_default();
-        s.index = path.as_ref().and_then(|p| s.folder.iter().position(|f| f == p)).unwrap_or(0);
-        s.file_size = path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()).unwrap_or(0);
+        s.folder = path
+            .as_ref()
+            .map(|p| files::sibling_pictures(p))
+            .unwrap_or_default();
+        s.index = path
+            .as_ref()
+            .and_then(|p| s.folder.iter().position(|f| f == p))
+            .unwrap_or(0);
+        s.file_size = path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
         s.path = path.clone();
-        s.original = Some(pic.clone());
+        s.original = None;
         s.pic = Some(pic);
         clear_markup(&mut s);
         s.history.clear();
@@ -354,7 +505,12 @@ pub fn open_picture(app: &Rc<App>, pic: Picture, path: Option<PathBuf>) {
     v.set_mode(SharedString::new());
     v.set_dirty(path.is_none());
     v.set_fit(true);
-    v.set_info_name(path.as_deref().map(files::file_name).unwrap_or_else(|| "Snip".into()).into());
+    v.set_info_name(
+        path.as_deref()
+            .map(files::file_name)
+            .unwrap_or_else(|| "Snip".into())
+            .into(),
+    );
     update_position(app);
     refresh_marks(app);
     show_picture(app, true);
@@ -374,10 +530,21 @@ fn show_picture(app: &Rc<App>, fresh: bool) {
     if fresh {
         v.set_fit(true);
     }
-    let file_type = s.path.as_deref().map(|p| files::ext_of(p).to_uppercase()).unwrap_or_else(|| "Not saved".into());
+    let file_type = s
+        .path
+        .as_deref()
+        .map(|p| files::ext_of(p).to_uppercase())
+        .unwrap_or_else(|| "Not saved".into());
     let dims = format!("{} x {}", pic.w, pic.h);
-    let size = if s.path.is_some() && s.file_size > 0 { files::human_size(s.file_size) } else { String::new() };
-    let facts: Vec<String> = [file_type.clone(), dims.clone(), size.clone()].into_iter().filter(|f| !f.is_empty()).collect();
+    let size = if s.path.is_some() && s.file_size > 0 {
+        files::human_size(s.file_size)
+    } else {
+        String::new()
+    };
+    let facts: Vec<String> = [file_type.clone(), dims.clone(), size.clone()]
+        .into_iter()
+        .filter(|f| !f.is_empty())
+        .collect();
     v.set_facts_text(facts.join("  |  ").into());
     v.set_dims_text(dims.into());
     v.set_file_type(file_type.into());
@@ -413,7 +580,11 @@ fn update_position(app: &Rc<App>) {
     let s = app.view.borrow();
     let v = viewer(app);
     let n = s.folder.len();
-    v.set_position(if n > 1 { format!("{} / {n}", s.index + 1).into() } else { SharedString::new() });
+    v.set_position(if n > 1 {
+        format!("{} / {n}", s.index + 1).into()
+    } else {
+        SharedString::new()
+    });
     v.set_has_prev(n > 1 && s.index > 0);
     v.set_has_next(n > 1 && s.index + 1 < n);
 }
@@ -443,10 +614,7 @@ fn edit(app: &Rc<App>, f: impl FnOnce(&Picture) -> Picture) {
         match s.pic.take() {
             Some(p) => {
                 s.pic = Some(f(&p));
-                s.history.push(p);
-                if s.history.len() > MAX_HISTORY {
-                    s.history.remove(0);
-                }
+                push_history(&mut s, p);
                 s.future.clear();
                 true
             }
@@ -494,7 +662,11 @@ fn crop_preset(app: &Rc<App>, aspect: f32) {
         return;
     }
     let pic_aspect = w / h;
-    let (fw, fh) = if aspect > pic_aspect { (1.0, pic_aspect / aspect) } else { (aspect / pic_aspect, 1.0) };
+    let (fw, fh) = if aspect > pic_aspect {
+        (1.0, pic_aspect / aspect)
+    } else {
+        (aspect / pic_aspect, 1.0)
+    };
     v.set_crop_w(fw);
     v.set_crop_h(fh);
     v.set_crop_x((1.0 - fw) / 2.0);
@@ -523,14 +695,20 @@ fn ink(app: &Rc<App>) -> [u8; 4] {
 
 /// Sets the ink and keeps the colour in the recent list.
 fn pick_colour(app: &Rc<App>, rgba: [u8; 4]) {
-    viewer(app).set_ink(slint::Color::from_argb_u8(rgba[3], rgba[0], rgba[1], rgba[2]));
+    viewer(app).set_ink(slint::Color::from_argb_u8(
+        rgba[3], rgba[0], rgba[1], rgba[2],
+    ));
     remember_colour(app, rgba);
 }
 
 /// The custom colour box: "#RRGGBB" (the # is optional).
 fn pick_hex(app: &Rc<App>, text: &str) {
     let t = text.trim().trim_start_matches('#');
-    let parsed = if t.len() == 6 { u32::from_str_radix(t, 16).ok() } else { None };
+    let parsed = if t.len() == 6 {
+        u32::from_str_radix(t, 16).ok()
+    } else {
+        None
+    };
     match parsed {
         Some(v) => {
             pick_colour(app, [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
@@ -622,7 +800,9 @@ fn picker_field(app: &Rc<App>, idx: usize, text: &str) {
     if idx > 2 {
         return;
     }
-    let Ok(x) = text.trim().replace(',', ".").parse::<f32>() else { return };
+    let Ok(x) = text.trim().replace(',', ".").parse::<f32>() else {
+        return;
+    };
     let v = viewer(app);
     let model = v.get_picker_model();
     let rgb = hsv_to_rgb(v.get_picker_h(), v.get_picker_s(), v.get_picker_v());
@@ -651,7 +831,11 @@ fn model_fields(model: i32, rgb: [u8; 3]) -> [f32; 3] {
 
 fn fields_rgb(model: i32, f: [f32; 3]) -> [u8; 3] {
     match model {
-        1 => hsl_to_rgb(f[0], (f[1] / 100.0).clamp(0.0, 1.0), (f[2] / 100.0).clamp(0.0, 1.0)),
+        1 => hsl_to_rgb(
+            f[0],
+            (f[1] / 100.0).clamp(0.0, 1.0),
+            (f[2] / 100.0).clamp(0.0, 1.0),
+        ),
         2 => oklch_to_rgb(f[0].clamp(0.0, 1.0), f[1].clamp(0.0, 0.4), f[2]),
         _ => f.map(|c| c.round().clamp(0.0, 255.0) as u8),
     }
@@ -676,7 +860,11 @@ fn rgb_to_hsl(rgb: [u8; 3]) -> (f32, f32, f32) {
     let min = r.min(g).min(b);
     let l = (max + min) / 2.0;
     let d = max - min;
-    let s = if d == 0.0 { 0.0 } else { d / (1.0 - (2.0 * l - 1.0).abs()) };
+    let s = if d == 0.0 {
+        0.0
+    } else {
+        d / (1.0 - (2.0 * l - 1.0).abs())
+    };
     (h, s, l)
 }
 
@@ -698,11 +886,19 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
 }
 
 fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 fn linear_to_srgb(c: f32) -> f32 {
-    if c <= 0.003_130_8 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    if c <= 0.003_130_8 {
+        12.92 * c
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// RGB to OKLCH (Ottosson's OKLab): L from 0 to 1, chroma about 0 to 0.4, hue in degrees.
@@ -715,7 +911,11 @@ fn rgb_to_oklch(rgb: [u8; 3]) -> [f32; 3] {
     let a = 1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s;
     let bb = 0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s;
     let chroma = (a * a + bb * bb).sqrt();
-    let hue = if chroma < 1e-4 { 0.0 } else { bb.atan2(a).to_degrees().rem_euclid(360.0) };
+    let hue = if chroma < 1e-4 {
+        0.0
+    } else {
+        bb.atan2(a).to_degrees().rem_euclid(360.0)
+    };
     [lightness, chroma, hue]
 }
 
@@ -745,17 +945,33 @@ fn canvas_resize(app: &Rc<App>, w: u32, h: u32, bg: [u8; 4]) {
 
 /// The size fields (typed) and the background of the canvas size flyout.
 fn canvas_resize_typed(app: &Rc<App>, w: &str, h: &str, transparent: bool) {
-    let parsed = w.trim().parse::<u32>().ok().zip(h.trim().parse::<u32>().ok());
-    let Some((w, h)) = parsed.filter(|(w, h)| (1..=10_000).contains(w) && (1..=10_000).contains(h)) else {
+    let parsed = w
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .zip(h.trim().parse::<u32>().ok());
+    let Some((w, h)) = parsed.filter(|(w, h)| (1..=10_000).contains(w) && (1..=10_000).contains(h))
+    else {
         toast(app, "Type a width and a height from 1 to 10000 pixels.");
         return;
     };
-    canvas_resize(app, w, h, if transparent { [0, 0, 0, 0] } else { [255, 255, 255, 255] });
+    canvas_resize(
+        app,
+        w,
+        h,
+        if transparent {
+            [0, 0, 0, 0]
+        } else {
+            [255, 255, 255, 255]
+        },
+    );
 }
 
 /// A size preset of the canvas flyout (0 window, 1 1920 x 1080, 2 A4), keeping the background.
 fn canvas_preset(app: &Rc<App>, preset: i32) {
-    let Some((w, h)) = canvas_size(app, preset, "", "") else { return };
+    let Some((w, h)) = canvas_size(app, preset, "", "") else {
+        return;
+    };
     let bg = app.view.borrow().canvas_bg;
     canvas_resize(app, w, h, bg);
 }
@@ -774,8 +990,13 @@ fn remember_colour(app: &Rc<App>, rgba: [u8; 4]) {
         s.recent.insert(0, rgba);
         s.recent.truncate(6);
     }
-    let colours: Vec<slint::Color> =
-        app.view.borrow().recent.iter().map(|c| slint::Color::from_argb_u8(c[3], c[0], c[1], c[2])).collect();
+    let colours: Vec<slint::Color> = app
+        .view
+        .borrow()
+        .recent
+        .iter()
+        .map(|c| slint::Color::from_argb_u8(c[3], c[0], c[1], c[2]))
+        .collect();
     viewer(app).set_recent_colours(ModelRc::new(VecModel::from(colours)));
 }
 
@@ -796,7 +1017,12 @@ fn set_tool(app: &Rc<App>, tool: i32) {
 }
 
 fn rect_of(a: (f32, f32), b: (f32, f32)) -> (f32, f32, f32, f32) {
-    (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs())
+    (
+        a.0.min(b.0),
+        a.1.min(b.1),
+        (a.0 - b.0).abs(),
+        (a.1 - b.1).abs(),
+    )
 }
 
 fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
@@ -807,22 +1033,33 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
     let scale = (v.get_pic_w().max(v.get_pic_h()) as f32 / 1600.0).max(1.0);
     let reach = 16.0 * scale;
 
-    // A picked mark (a picture, or one the move tool picked) is dragged from anywhere on it; its last corner resizes it.
-    let picked = {
+    // A picked mark (a picture, or one the move tool picked) is dragged from anywhere on it; its box handles resize it.
+    // The select tool only drags out a rectangle, so it never picks a mark.
+    let picked = if tool == 10 {
+        None
+    } else {
         let s = app.view.borrow();
-        s.selected.and_then(|i| s.marks.get(i).map(|m| (i, m.clone()))).and_then(|(i, m)| {
-            let corner = m.points.len() == 2 && m.kind != 4 && (m.points[1].0 - x).hypot(m.points[1].1 - y) <= reach;
-            (corner || m.distance(x, y) <= reach).then_some((i, corner, m))
-        })
+        s.selected
+            .and_then(|i| s.marks.get(i).map(|m| (i, m.clone())))
+            .and_then(|(i, m)| {
+                let handle = handle_at(&m, x, y, reach);
+                (handle.is_some() || m.distance(x, y) <= reach).then_some((i, handle, m))
+            })
     };
-    if let Some((index, corner, origin)) = picked {
-        app.view.borrow_mut().grab = Some(Grab { index, corner, start: (x, y), origin });
+    if let Some((index, handle, origin)) = picked {
+        app.view.borrow_mut().grab = Some(Grab {
+            index,
+            handle,
+            start: (x, y),
+            origin,
+        });
         return;
     }
 
     match tool {
         11 => {
-            // The move tool picks the nearest mark and drags it.
+            // The move tool picks the nearest mark and drags it. On empty space the drag pans the view instead; the
+            // view leaves Fit at the same scale first (as the middle button does), so the pan starts where it is shown.
             let hit = {
                 let s = app.view.borrow();
                 s.marks
@@ -833,12 +1070,30 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
                     .min_by(|a, b| a.1.total_cmp(&b.1))
                     .map(|(i, _)| i)
             };
-            {
+            if hit.is_some() {
+                {
+                    let mut s = app.view.borrow_mut();
+                    s.grab = hit.map(|i| Grab {
+                        index: i,
+                        handle: None,
+                        start: (x, y),
+                        origin: s.marks[i].clone(),
+                    });
+                    s.selected = hit;
+                }
+                refresh_marks(app);
+            } else {
+                if v.get_fit() {
+                    v.set_scale(v.get_fit_scale());
+                    v.set_pan_x(0.0);
+                    v.set_pan_y(0.0);
+                    v.set_fit(false);
+                }
                 let mut s = app.view.borrow_mut();
-                s.grab = hit.map(|i| Grab { index: i, corner: false, start: (x, y), origin: s.marks[i].clone() });
-                s.selected = hit;
+                s.grab = None;
+                s.selected = None;
+                s.pan_grab = Some((x, y, v.get_pan_x(), v.get_pan_y()));
             }
-            refresh_marks(app);
         }
         10 => {
             // The rectangle select drags out a selection.
@@ -877,7 +1132,11 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
         }
         _ => {
             // The pixel eraser (kind 8) takes the canvas background (transparent on a photo: it is unused there).
-            let mut rgba = if tool == 5 { app.view.borrow().canvas_bg } else { ink(app) };
+            let mut rgba = if tool == 5 {
+                app.view.borrow().canvas_bg
+            } else {
+                ink(app)
+            };
             if tool == 1 {
                 rgba[3] = 110;
             }
@@ -898,15 +1157,29 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
 
 fn mark_move(app: &Rc<App>, x: f32, y: f32) {
     let mut s = app.view.borrow_mut();
+    let pan = s.pan_grab;
+    if let Some((sx, sy, px, py)) = pan {
+        // (x, y) is the pointer's picture-space offset from the press, so the pan moves by that offset at the scale shown.
+        drop(s);
+        let v = viewer(app);
+        let k = v.get_scale();
+        v.set_pan_x(px + (x - sx) * k);
+        v.set_pan_y(py + (y - sy) * k);
+        return;
+    }
     if let Some(g) = s.grab.clone() {
         let (dx, dy) = (x - g.start.0, y - g.start.1);
         if let Some(m) = s.marks.get_mut(g.index) {
-            if g.corner {
-                if let (Some(last), Some(o)) = (m.points.last_mut(), g.origin.points.last()) {
-                    *last = (o.0 + dx, o.1 + dy);
+            match g.handle {
+                Some((hx, hy)) => *m = resized(&g.origin, hx, hy, dx, dy),
+                None => {
+                    m.points = g
+                        .origin
+                        .points
+                        .iter()
+                        .map(|(px, py)| (px + dx, py + dy))
+                        .collect()
                 }
-            } else {
-                m.points = g.origin.points.iter().map(|(px, py)| (px + dx, py + dy)).collect();
             }
         }
         drop(s);
@@ -935,12 +1208,17 @@ fn mark_move(app: &Rc<App>, x: f32, y: f32) {
 }
 
 fn mark_end(app: &Rc<App>) {
-    // The stroke's end always renders the final eraser preview (no throttle).
-    ERASE_PREVIEW.with(|c| c.set((None, c.get().1)));
+    // A committed eraser stroke changes the composite, which refresh_marks burns once here (at pointer-up).
     let mut s = app.view.borrow_mut();
+    if s.pan_grab.take().is_some() {
+        return;
+    }
     if let Some(g) = s.grab.take() {
         // A move or resize that changed the mark is one Undo step: the marks as they were before the drag.
-        if s.marks.get(g.index).is_some_and(|m| m.points != g.origin.points) {
+        if s.marks
+            .get(g.index)
+            .is_some_and(|m| m.points != g.origin.points || m.width != g.origin.width)
+        {
             let mut before = s.marks.clone();
             before[g.index] = g.origin;
             push_marks_undo(&mut s, before);
@@ -984,7 +1262,15 @@ pub fn commit_text(app: &Rc<App>) {
         let rgba = ink(app);
         let mut s = app.view.borrow_mut();
         snap_marks(&mut s);
-        s.marks.push(Mark { kind: 4, rgba, width, points: vec![pos], text, filled: false, image: None });
+        s.marks.push(Mark {
+            kind: 4,
+            rgba,
+            width,
+            points: vec![pos],
+            text,
+            filled: false,
+            image: None,
+        });
     }
     refresh_marks(app);
 }
@@ -1008,14 +1294,14 @@ fn undo(app: &Rc<App>) {
         let mut s = app.view.borrow_mut();
         match (s.history.pop(), s.pic.take()) {
             (Some(prev), Some(cur)) => {
-                s.future.push(cur);
+                keep_picture(&mut s.future, cur);
                 s.pic = Some(prev);
                 true
             }
             (prev, cur) => {
                 s.pic = cur;
                 if let Some(p) = prev {
-                    s.history.push(p);
+                    keep_picture(&mut s.history, p);
                 }
                 false
             }
@@ -1047,14 +1333,14 @@ fn redo(app: &Rc<App>) {
         let mut s = app.view.borrow_mut();
         match (s.future.pop(), s.pic.take()) {
             (Some(next), Some(cur)) => {
-                s.history.push(cur);
+                push_history(&mut s, cur);
                 s.pic = Some(next);
                 true
             }
             (next, cur) => {
                 s.pic = cur;
                 if let Some(n) = next {
-                    s.future.push(n);
+                    keep_picture(&mut s.future, n);
                 }
                 false
             }
@@ -1086,12 +1372,21 @@ fn to_ui(m: &Mark, images: &[(Arc<Picture>, slint::Image)]) -> ui::Mark {
     let picture = m
         .image
         .as_ref()
-        .and_then(|p| images.iter().find(|(q, _)| Arc::ptr_eq(q, p)).map(|(_, img)| img.clone()))
+        .and_then(|p| {
+            images
+                .iter()
+                .find(|(q, _)| Arc::ptr_eq(q, p))
+                .map(|(_, img)| img.clone())
+        })
         .unwrap_or_default();
     ui::Mark {
         kind: m.kind,
         colour: slint::Color::from_argb_u8(a, r, g, b),
-        width: if m.kind == 4 { m.font_size() } else { m.stroke_width() },
+        width: if m.kind == 4 {
+            m.font_size()
+        } else {
+            m.stroke_width()
+        },
         commands: m.commands().into(),
         x,
         y,
@@ -1104,34 +1399,41 @@ fn to_ui(m: &Mark, images: &[(Arc<Picture>, slint::Image)]) -> ui::Mark {
 }
 
 thread_local! {
-    /// When the live eraser preview was last rendered, and whether the picture currently shows that preview.
-    static ERASE_PREVIEW: std::cell::Cell<(Option<std::time::Instant>, bool)> = const { std::cell::Cell::new((None, false)) };
+    /// The committed pixel eraser strokes last burned into the picture (their count and point total), and whether the
+    /// picture currently shows that composite.
+    static ERASE_PREVIEW: std::cell::Cell<((usize, usize), bool)> = const { std::cell::Cell::new(((0, 0), false)) };
 }
 
-/// Pixel eraser strokes are not ink, so while any is in progress (or waiting for Done) the picture shows the live
-/// composite: the marks burned in with the eraser applied. Rendered at most every 60 ms; the stroke's end forces one.
+/// How a pixel eraser stroke in progress is drawn (a grey outline: the eraser's colour may be transparent on a photo).
+const ERASER_OUTLINE: [u8; 4] = [0x80, 0x80, 0x80, 0xC0];
+
+/// Pixel eraser strokes are not ink: the committed ones are burned into the picture (the composite). The burn is a full
+/// render of the picture, so it runs only when the committed strokes change (at the stroke's pointer-up, or on undo),
+/// never on each pointer move. A stroke in progress is drawn as a vector overlay instead. Returns true when the picture
+/// holds the composite, so the overlay leaves the committed marks out.
 fn erase_preview(app: &Rc<App>, s: &ViewState) -> bool {
-    let erasing = s.marks.iter().chain(s.drawing.iter()).any(|m| m.kind == 8);
-    let (last, showing) = ERASE_PREVIEW.with(|c| c.get());
-    if erasing {
-        let now = std::time::Instant::now();
-        let due = last.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_millis(60));
-        if due {
+    let committed = s.marks.iter().filter(|m| m.kind == 8);
+    let print = committed
+        .clone()
+        .fold((0, 0), |(n, p), m| (n + 1, p + m.points.len()));
+    let dragging = s.drawing.as_ref().is_some_and(|m| m.kind == 8);
+    let (shown, showing) = ERASE_PREVIEW.with(|c| c.get());
+    if print.0 > 0 {
+        if !showing || (shown != print && !dragging) {
             if let Some(pic) = s.pic.as_ref() {
-                let all: Vec<Mark> = s.marks.iter().chain(s.drawing.iter()).cloned().collect();
-                if let Ok(out) = picture::burn_marks(pic, &all, s.canvas) {
+                if let Ok(out) = picture::burn_marks(pic, &s.marks, s.canvas) {
                     viewer(app).set_picture(picture::to_slint(&out));
                 }
             }
-            ERASE_PREVIEW.with(|c| c.set((Some(now), true)));
+            ERASE_PREVIEW.with(|c| c.set((print, true)));
         }
     } else if showing {
         if let Some(pic) = s.pic.as_ref() {
             viewer(app).set_picture(picture::to_slint(pic));
         }
-        ERASE_PREVIEW.with(|c| c.set((None, false)));
+        ERASE_PREVIEW.with(|c| c.set(((0, 0), false)));
     }
-    erasing
+    ERASE_PREVIEW.with(|c| c.get().1)
 }
 
 fn refresh_marks(app: &Rc<App>) {
@@ -1145,15 +1447,26 @@ fn refresh_marks(app: &Rc<App>) {
                 s.mark_images.push((Arc::clone(pic), img));
             }
         }
-        s.mark_images.retain(|(p, _)| live.iter().any(|q| Arc::ptr_eq(p, q)));
+        s.mark_images
+            .retain(|(p, _)| live.iter().any(|q| Arc::ptr_eq(p, q)));
     }
     let s = app.view.borrow();
-    // While erasing, the composite on the picture holds every mark, so the vector overlay is left out.
-    let erasing = erase_preview(app, &s);
-    let items: Vec<ui::Mark> = if erasing {
-        Vec::new()
+    // When the picture holds the eraser composite, the committed marks are already in it: only the stroke in progress is
+    // drawn over it. Otherwise every mark is an overlay (an eraser stroke as a grey outline).
+    let composite = erase_preview(app, &s);
+    let shown = |m: &Mark| {
+        if m.kind == 8 {
+            let mut outline = m.clone();
+            outline.rgba = ERASER_OUTLINE;
+            to_ui(&outline, &s.mark_images)
+        } else {
+            to_ui(m, &s.mark_images)
+        }
+    };
+    let items: Vec<ui::Mark> = if composite {
+        s.drawing.iter().map(shown).collect()
     } else {
-        s.marks.iter().chain(s.drawing.iter()).map(|m| to_ui(m, &s.mark_images)).collect()
+        s.marks.iter().chain(s.drawing.iter()).map(shown).collect()
     };
     viewer(app).set_marks(ModelRc::new(VecModel::from(items)));
     drop(s);
@@ -1249,7 +1562,9 @@ fn crop_selection(app: &Rc<App>) {
     let sel = app.view.borrow().sel;
     let Some(sel) = sel else { return };
     let Some(flat) = flatten(app) else { return };
-    let Some((x, y, w, h)) = sel_px(&flat, sel) else { return };
+    let Some((x, y, w, h)) = sel_px(&flat, sel) else {
+        return;
+    };
     let cropped = picture::crop_px(&flat, x, y, w, h);
     edit(app, move |_| cropped);
     refresh_marks(app);
@@ -1260,7 +1575,9 @@ fn remove_selection(app: &Rc<App>, cut: bool) {
     let sel = app.view.borrow().sel;
     let Some(sel) = sel else { return };
     let Some(flat) = current(app) else { return };
-    let Some((x, y, w, h)) = sel_px(&flat, sel) else { return };
+    let Some((x, y, w, h)) = sel_px(&flat, sel) else {
+        return;
+    };
     if cut {
         let part = picture::crop_px(&flat, x, y, w, h);
         if let Err(e) = picture::copy_to_clipboard(&part) {
@@ -1268,7 +1585,11 @@ fn remove_selection(app: &Rc<App>, cut: bool) {
             return;
         }
     }
-    let bg = if app.view.borrow().canvas { app.view.borrow().canvas_bg } else { [255, 255, 255, 255] };
+    let bg = if app.view.borrow().canvas {
+        app.view.borrow().canvas_bg
+    } else {
+        [255, 255, 255, 255]
+    };
     let filled = picture::fill_rect(&flat, x, y, w, h, bg);
     clear_markup(&mut app.view.borrow_mut());
     edit(app, move |_| filled);
@@ -1299,7 +1620,11 @@ pub fn clipboard_image() -> Option<Picture> {
     if w == 0 || h == 0 {
         return None;
     }
-    Some(Picture { w, h, rgba: img.bytes.into_owned() })
+    Some(Picture {
+        w,
+        h,
+        rgba: img.bytes.into_owned(),
+    })
 }
 
 /// Ctrl+V on a page that is not the picture page: the picture on the clipboard opens as a new canvas.
@@ -1328,8 +1653,8 @@ pub fn place_picture(app: &Rc<App>, pic: Picture) {
     if empty_canvas {
         {
             let mut s = app.view.borrow_mut();
-            s.pic = Some(pic.clone());
-            s.original = Some(pic);
+            s.pic = Some(pic);
+            s.original = None;
             s.future.clear();
         }
         viewer(app).set_dirty(true);
@@ -1399,12 +1724,31 @@ fn save_as(app: &Rc<App>) {
     let (dir, stem) = {
         let s = app.view.borrow();
         match &s.path {
-            Some(p) => (p.parent().map(Path::to_path_buf), p.file_stem().and_then(|s| s.to_str()).unwrap_or("Picture").to_string()),
-            None if s.canvas => (Some(app.prefs.borrow().canvas_dir.clone()), files::stamp("Canvas")),
-            None => (Some(app.prefs.borrow().screenshot_dir.clone()), files::stamp("Screenshot")),
+            Some(p) => (
+                p.parent().map(Path::to_path_buf),
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Picture")
+                    .to_string(),
+            ),
+            None if s.canvas => (
+                Some(app.prefs.borrow().canvas_dir.clone()),
+                files::stamp("Canvas"),
+            ),
+            None => (
+                Some(app.prefs.borrow().screenshot_dir.clone()),
+                files::stamp("Screenshot"),
+            ),
         }
     };
-    let ext = app.view.borrow().path.as_deref().map(files::ext_of).filter(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp")).unwrap_or_else(|| "png".into());
+    let ext = app
+        .view
+        .borrow()
+        .path
+        .as_deref()
+        .map(files::ext_of)
+        .filter(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp"))
+        .unwrap_or_else(|| "png".into());
     let mut dialog = rfd::FileDialog::new()
         .set_title("Save as")
         .set_file_name(format!("{stem}.{ext}"))
@@ -1433,7 +1777,9 @@ fn write_to(app: &Rc<App>, path: &Path) {
                 let mut s = app.view.borrow_mut();
                 clear_markup(&mut s);
                 s.canvas = false;
-                s.original = Some(pic.clone());
+                // The saved picture is what Revert goes back to now. With no Undo steps that is `pic` itself, so no copy;
+                // otherwise (Undo still reaches the steps before the save) a copy is kept aside.
+                s.original = (!s.history.is_empty()).then(|| pic.clone());
                 s.pic = Some(pic);
                 s.path = Some(path.to_path_buf());
                 s.file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -1472,18 +1818,32 @@ fn copy(app: &Rc<App>) {
 fn zoom(app: &Rc<App>, factor: f32) {
     let v = viewer(app);
     let current = if v.get_fit() {
-        let size = app.ui.window().size().to_logical(app.ui.window().scale_factor());
+        let size = app
+            .ui
+            .window()
+            .size()
+            .to_logical(app.ui.window().scale_factor());
         let info = if v.get_show_info() { 280.0 } else { 0.0 };
         let sw = (size.width - info - 48.0).max(1.0);
         let sh = (size.height - 88.0 - 48.0).max(1.0);
-        (sw / v.get_pic_w() as f32).min(sh / v.get_pic_h() as f32).min(1.0)
+        (sw / v.get_pic_w() as f32)
+            .min(sh / v.get_pic_h() as f32)
+            .min(1.0)
     } else {
         v.get_scale()
     };
     let new = (current * factor).clamp(0.02, 40.0);
     let ratio = new / current;
-    v.set_pan_x(if v.get_fit() { 0.0 } else { v.get_pan_x() * ratio });
-    v.set_pan_y(if v.get_fit() { 0.0 } else { v.get_pan_y() * ratio });
+    v.set_pan_x(if v.get_fit() {
+        0.0
+    } else {
+        v.get_pan_x() * ratio
+    });
+    v.set_pan_y(if v.get_fit() {
+        0.0
+    } else {
+        v.get_pan_y() * ratio
+    });
     v.set_scale(new);
     v.set_fit(false);
 }
@@ -1604,7 +1964,10 @@ fn start_anim(app: &Rc<App>, anim: picture::Animation) {
     let v = viewer(app);
     v.set_animated(true);
     if cut {
-        toast(app, "This animation is very large: only its first part is shown.");
+        toast(
+            app,
+            "This animation is very large: only its first part is shown.",
+        );
     }
     show_frame(app, 0);
     schedule_next(app);
@@ -1625,7 +1988,16 @@ fn show_frame(app: &Rc<App>, i: usize) {
                 img
             }
         };
-        (image, format!("{} / {}  ·  {} ms", i + 1, anim.frames.len(), anim.frames[i].1), s.anim_playing)
+        (
+            image,
+            format!(
+                "{} / {}  ·  {} ms",
+                i + 1,
+                anim.frames.len(),
+                anim.frames[i].1
+            ),
+            s.anim_playing,
+        )
     };
     let v = viewer(app);
     v.set_picture(image);
@@ -1641,16 +2013,20 @@ fn schedule_next(app: &Rc<App>) {
     }
     let delay = anim.frames[s.anim_frame].1;
     let generation = s.generation;
-    s.anim_timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(u64::from(delay)), move || {
-        with_app(move |a| {
-            if a.view.borrow().generation != generation || !a.view.borrow().anim_playing {
-                return;
-            }
-            let next = a.view.borrow().anim_frame + 1;
-            show_frame(a, next);
-            schedule_next(a);
-        })
-    });
+    s.anim_timer.start(
+        slint::TimerMode::SingleShot,
+        std::time::Duration::from_millis(u64::from(delay)),
+        move || {
+            with_app(move |a| {
+                if a.view.borrow().generation != generation || !a.view.borrow().anim_playing {
+                    return;
+                }
+                let next = a.view.borrow().anim_frame + 1;
+                show_frame(a, next);
+                schedule_next(a);
+            })
+        },
+    );
 }
 
 fn anim_toggle(app: &Rc<App>) {
@@ -1686,6 +2062,10 @@ fn anim_step(app: &Rc<App>, delta: i32) {
 fn freeze_anim(app: &Rc<App>) {
     let mut s = app.view.borrow_mut();
     if let Some(anim) = s.anim.clone() {
+        // Revert goes back to the first frame (the picture as opened), so it is kept aside when another frame is kept.
+        if s.anim_frame != 0 && s.original.is_none() && s.history.is_empty() {
+            s.original = Some(anim.frames[0].0.clone());
+        }
         s.pic = Some(anim.frames[s.anim_frame].0.clone());
     }
     stop_anim(&mut s);
@@ -1697,10 +2077,22 @@ fn save_frame(app: &Rc<App>) {
     let (pic, path, frame) = {
         let s = app.view.borrow();
         let Some(anim) = s.anim.as_ref() else { return };
-        (anim.frames[s.anim_frame].0.clone(), s.path.clone(), s.anim_frame)
+        (
+            anim.frames[s.anim_frame].0.clone(),
+            s.path.clone(),
+            s.anim_frame,
+        )
     };
-    let dir = path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_else(|| app.prefs.borrow().screenshot_dir.clone());
-    let stem = path.as_ref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("Animation").to_string();
+    let dir = path
+        .as_ref()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| app.prefs.borrow().screenshot_dir.clone());
+    let stem = path
+        .as_ref()
+        .and_then(|p| p.file_stem())
+        .and_then(|s| s.to_str())
+        .unwrap_or("Animation")
+        .to_string();
     let out = files::free_path(&dir, &format!("{stem} frame {}", frame + 1), "png");
     match picture::save(&pic, &out) {
         Ok(()) => toast(app, format!("Frame saved: {}", files::file_name(&out))),
@@ -1726,7 +2118,10 @@ fn delete_current(app: &Rc<App>) {
                 toast(app, "Could not delete it (is it open in another app?)");
                 return;
             }
-            toast(app, format!("{} moved to the Recycle Bin", files::file_name(&p)));
+            toast(
+                app,
+                format!("{} moved to the Recycle Bin", files::file_name(&p)),
+            );
             app.recents.borrow_mut().retain(|r| r != &p);
             crate::prefs::save_recents(&app.recents.borrow());
             crate::app::refresh_recents(app);
@@ -1806,18 +2201,32 @@ pub fn settle_picture(app: &Rc<App>, then: impl FnOnce(&Rc<App>) + 'static) {
         then(app);
         return;
     }
-    let name = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "this snip".into());
+    let name = app
+        .view
+        .borrow()
+        .path
+        .as_deref()
+        .map(files::file_name)
+        .unwrap_or_else(|| "this snip".into());
     let detail = "Your changes will be lost if you don't save them.";
-    crate::app::ask(app, "Save changes?", &name, detail, "Save", "Don't save", move |a, choice| match choice {
-        0 => {
-            save(a);
-            if !viewer(a).get_dirty() {
-                then(a);
+    crate::app::ask(
+        app,
+        "Save changes?",
+        &name,
+        detail,
+        "Save",
+        "Don't save",
+        move |a, choice| match choice {
+            0 => {
+                save(a);
+                if !viewer(a).get_dirty() {
+                    then(a);
+                }
             }
-        }
-        1 => then(a),
-        _ => {}
-    });
+            1 => then(a),
+            _ => {}
+        },
+    );
 }
 
 /// Runs `then` now when the canvas has nothing unsaved; otherwise shows the in-app "Save changes?" question and runs it
@@ -1866,8 +2275,16 @@ fn new_canvas(app: &Rc<App>, preset: i32, w: &str, h: &str, transparent: bool) {
         toast(app, "Type a width and a height from 1 to 10000 pixels.");
         return;
     };
-    let bg = if transparent { [0, 0, 0, 0] } else { [255, 255, 255, 255] };
-    let pic = Picture { w, h, rgba: bg.repeat(w as usize * h as usize) };
+    let bg = if transparent {
+        [0, 0, 0, 0]
+    } else {
+        [255, 255, 255, 255]
+    };
+    let pic = Picture {
+        w,
+        h,
+        rgba: bg.repeat(w as usize * h as usize),
+    };
     settle_canvas(app, move |a| install_canvas(a, pic, bg));
 }
 
@@ -1896,7 +2313,8 @@ fn install_canvas(app: &Rc<App>, pic: Picture, bg: [u8; 4]) {
         s.folder.clear();
         s.index = 0;
         s.file_size = 0;
-        s.original = Some(pic.clone());
+        // A canvas has no file to revert to, so it keeps one copy of its pixels (in `pic`), not two.
+        s.original = None;
         s.pic = Some(pic);
         s.history.clear();
         s.future.clear();
@@ -1923,8 +2341,15 @@ fn install_canvas(app: &Rc<App>, pic: Picture, bg: [u8; 4]) {
 
 fn print(app: &Rc<App>) {
     let Some(pic) = current(app) else { return };
-    let title = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "Picture".into());
-    match crate::platform::print_image(crate::app::main_hwnd(app), &pic.rgba, pic.w, pic.h, &title) {
+    let title = app
+        .view
+        .borrow()
+        .path
+        .as_deref()
+        .map(files::file_name)
+        .unwrap_or_else(|| "Picture".into());
+    match crate::platform::print_image(crate::app::main_hwnd(app), &pic.rgba, pic.w, pic.h, &title)
+    {
         Ok(true) => toast(app, "Sent to the printer"),
         Ok(false) => {}
         Err(e) => toast(app, format!("Could not print: {e}")),
@@ -1937,9 +2362,14 @@ fn share(app: &Rc<App>) {
         return;
     };
     if viewer(app).get_dirty() {
-        toast(app, "Sharing the saved file: changes not saved yet aren't included.");
+        toast(
+            app,
+            "Sharing the saved file: changes not saved yet aren't included.",
+        );
     }
-    if let Err(e) = crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path)) {
+    if let Err(e) =
+        crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
+    {
         toast(app, format!("Could not share: {e}"));
     }
 }
@@ -1958,15 +2388,28 @@ fn sync_thumbs(app: &Rc<App>) {
     }
     let (folder, dir, same) = {
         let s = app.view.borrow();
-        let dir = s.folder.first().and_then(|p| p.parent()).map(Path::to_path_buf);
-        let same = s.thumbs.as_ref().is_some_and(|m| m.row_count() == s.folder.len()) && s.thumbs_dir == dir;
+        let dir = s
+            .folder
+            .first()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf);
+        let same = s
+            .thumbs
+            .as_ref()
+            .is_some_and(|m| m.row_count() == s.folder.len())
+            && s.thumbs_dir == dir;
         (s.folder.clone(), dir, same)
     };
     if !same {
         let model = Rc::new(VecModel::from(
             folder
                 .iter()
-                .map(|p| ui::Thumb { image: slint::Image::default(), name: files::file_name(p).into(), current: false, selected: false })
+                .map(|p| ui::Thumb {
+                    image: slint::Image::default(),
+                    name: files::file_name(p).into(),
+                    current: false,
+                    selected: false,
+                })
                 .collect::<Vec<_>>(),
         ));
         let generation = {
@@ -1980,8 +2423,12 @@ fn sync_thumbs(app: &Rc<App>) {
         viewer(app).set_thumbs(ModelRc::from(model));
         std::thread::spawn(move || {
             for (i, p) in folder.into_iter().enumerate() {
-                let Some(pic) = picture::thumbnail(&p, 240, 176) else { continue };
-                let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pic.rgba, pic.w, pic.h);
+                let Some(pic) = picture::thumbnail(&p, 240, 176) else {
+                    continue;
+                };
+                let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    &pic.rgba, pic.w, pic.h,
+                );
                 let keep_going = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
                 let flag = std::sync::Arc::clone(&keep_going);
                 post(move |a| {
@@ -2020,7 +2467,9 @@ fn sync_thumbs(app: &Rc<App>) {
 
 /// A click in the filmstrip opens that picture; Ctrl+click (or Shift+click) picks pictures to compare side by side.
 fn thumb_clicked(app: &Rc<App>, i: usize, add: bool) {
-    let Some(path) = app.view.borrow().folder.get(i).cloned() else { return };
+    let Some(path) = app.view.borrow().folder.get(i).cloned() else {
+        return;
+    };
     if !add {
         if viewer(app).get_dirty() {
             toast(app, "Changes not saved: save them, or undo them, first.");
@@ -2042,7 +2491,10 @@ fn thumb_clicked(app: &Rc<App>, i: usize, add: bool) {
         } else {
             s.picked.push(i);
         }
-        s.picked.iter().filter_map(|p| s.folder.get(*p).cloned()).collect::<Vec<_>>()
+        s.picked
+            .iter()
+            .filter_map(|p| s.folder.get(*p).cloned())
+            .collect::<Vec<_>>()
     };
     sync_thumbs(app);
     let v = viewer(app);
@@ -2056,7 +2508,10 @@ fn thumb_clicked(app: &Rc<App>, i: usize, add: bool) {
     v.set_compare_cols(cols);
     v.set_compare_rows(rows);
     v.set_comparing(true);
-    v.set_compare_images(ModelRc::new(VecModel::from(vec![slint::Image::default(); picked.len()])));
+    v.set_compare_images(ModelRc::new(VecModel::from(vec![
+        slint::Image::default();
+        picked.len()
+    ])));
     let generation = app.view.borrow().generation;
     for (slot, p) in picked.into_iter().enumerate() {
         std::thread::spawn(move || {
@@ -2068,7 +2523,9 @@ fn thumb_clicked(app: &Rc<App>, i: usize, add: bool) {
             } else {
                 pic
             };
-            let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pic.rgba, pic.w, pic.h);
+            let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                &pic.rgba, pic.w, pic.h,
+            );
             post(move |a| {
                 if a.view.borrow().generation != generation {
                     return;

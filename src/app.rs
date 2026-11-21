@@ -119,7 +119,9 @@ fn wire_shell(app: &Rc<App>) {
             let kind = kind.as_str();
             {
                 let mut list = a.recents.borrow_mut();
-                list.retain(|p| !kind.is_empty() && files::kind_of(p).map(files::kind_name) != Some(kind));
+                list.retain(|p| {
+                    !kind.is_empty() && files::kind_of(p).map(files::kind_name) != Some(kind)
+                });
                 prefs::save_recents(&list);
             }
             refresh_recents(a);
@@ -159,11 +161,15 @@ fn wire_shell(app: &Rc<App>) {
     app.ui.window().on_close_requested(|| {
         // Each unsaved thing asks in the window (picture, canvas, text) and the close goes on from its answer;
         // finish_close hides the window or quits.
-        with_app(|a| viewer::settle_picture(a, |a| viewer::settle_canvas(a, |a| {
-            if textctl::settle(a, textctl::Pending::Quit) {
-                finish_close(a);
-            }
-        })));
+        with_app(|a| {
+            viewer::settle_picture(a, |a| {
+                viewer::settle_canvas(a, |a| {
+                    if textctl::settle(a, textctl::Pending::Quit) {
+                        finish_close(a);
+                    }
+                })
+            })
+        });
         slint::CloseRequestResponse::KeepWindowShown
     });
 
@@ -171,14 +177,19 @@ fn wire_shell(app: &Rc<App>) {
     use slint::winit_030::{EventResult, WinitWindowAccessor as _, winit};
     app.ui.window().on_winit_window_event(|_w, event| {
         match event {
-            winit::event::WindowEvent::HoveredFile(_) => with_app(|a| a.ui.global::<ui::Shell>().set_drop_hover(true)),
-            winit::event::WindowEvent::HoveredFileCancelled => with_app(|a| a.ui.global::<ui::Shell>().set_drop_hover(false)),
+            winit::event::WindowEvent::HoveredFile(_) => {
+                with_app(|a| a.ui.global::<ui::Shell>().set_drop_hover(true))
+            }
+            winit::event::WindowEvent::HoveredFileCancelled => {
+                with_app(|a| a.ui.global::<ui::Shell>().set_drop_hover(false))
+            }
             winit::event::WindowEvent::DroppedFile(path) => {
                 let path = path.clone();
                 with_app(move |a| {
                     a.ui.global::<ui::Shell>().set_drop_hover(false);
                     // An image dropped while marking up (or on a canvas) comes in as a picture mark, or the canvas.
-                    let markup = a.ui.global::<ui::Shell>().get_page() == "image" && viewer::in_markup(a);
+                    let markup =
+                        a.ui.global::<ui::Shell>().get_page() == "image" && viewer::in_markup(a);
                     if markup && files::kind_of(&path) == Some(Kind::Image) {
                         viewer::drop_picture(a, &path);
                     } else {
@@ -222,17 +233,50 @@ pub fn update_title(app: &Rc<App>) {
     let (title, name) = match page.as_str() {
         "image" if app.view.borrow().canvas => ("Canvas".to_string(), String::new()),
         "image" => {
-            let name = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_default();
-            (if name.is_empty() { "Picture".to_string() } else { name.clone() }, name)
+            let name = app
+                .view
+                .borrow()
+                .path
+                .as_deref()
+                .map(files::file_name)
+                .unwrap_or_default();
+            (
+                if name.is_empty() {
+                    "Picture".to_string()
+                } else {
+                    name.clone()
+                },
+                name,
+            )
         }
         "audio" | "video" => {
-            let name = app.media.borrow().path.as_deref().map(files::file_name).unwrap_or_default();
-            let tab = if page.as_str() == "video" { "Video" } else { "Audio" };
-            (if name.is_empty() { tab.to_string() } else { name.clone() }, name)
+            let name = app
+                .media
+                .borrow()
+                .path
+                .as_deref()
+                .map(files::file_name)
+                .unwrap_or_default();
+            let tab = if page.as_str() == "video" {
+                "Video"
+            } else {
+                "Audio"
+            };
+            (
+                if name.is_empty() {
+                    tab.to_string()
+                } else {
+                    name.clone()
+                },
+                name,
+            )
         }
         "text" => {
             let t = textctl::title(app);
-            (if t.is_empty() { "Text".to_string() } else { t }, String::new())
+            (
+                if t.is_empty() { "Text".to_string() } else { t },
+                String::new(),
+            )
         }
         "voice" => ("Voice recorder".to_string(), String::new()),
         "camera" => ("Camera".to_string(), String::new()),
@@ -241,6 +285,23 @@ pub fn update_title(app: &Rc<App>) {
     };
     shell.set_title_name(name.into());
     shell.set_title(title.into());
+}
+
+/// Renames a file that a handle of ours may still hold for a moment. Windows answers ERROR_SHARING_VIOLATION (32) while
+/// an open handle without FILE_SHARE_DELETE exists, so this retries it every 50 ms for about 500 ms before giving up.
+pub fn rename_file(old: &Path, new: &Path) -> std::io::Result<()> {
+    const SHARING_VIOLATION: i32 = 32;
+    const STEP: Duration = Duration::from_millis(50);
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(old, new) {
+            Err(e) if e.raw_os_error() == Some(SHARING_VIOLATION) && tries < 10 => {
+                tries += 1;
+                std::thread::sleep(STEP);
+            }
+            other => return other,
+        }
+    }
 }
 
 /// Renames the file in the Image or Audio/Video tab (Enter in the title). The extension is kept when the name has none.
@@ -281,7 +342,7 @@ pub fn rename_current(app: &Rc<App>, typed: &str) {
     if playing {
         app.media.borrow_mut().take_player();
     }
-    if let Err(e) = std::fs::rename(&old, &new) {
+    if let Err(e) = rename_file(&old, &new) {
         toast(app, format!("Could not rename: {e}"));
         if playing {
             mediactl::open(app, &old);
@@ -306,9 +367,11 @@ pub fn rename_current(app: &Rc<App>, typed: &str) {
 
 pub fn toast(app: &Rc<App>, text: impl Into<SharedString>) {
     app.ui.global::<ui::Shell>().set_toast(text.into());
-    app.toast_timer.start(slint::TimerMode::SingleShot, Duration::from_millis(3500), || {
-        with_app(|a| a.ui.global::<ui::Shell>().set_toast(SharedString::new()))
-    });
+    app.toast_timer.start(
+        slint::TimerMode::SingleShot,
+        Duration::from_millis(3500),
+        || with_app(|a| a.ui.global::<ui::Shell>().set_toast(SharedString::new())),
+    );
 }
 
 /// Shows and raises the main window.
@@ -402,12 +465,19 @@ pub fn refresh_recents(app: &Rc<App>) {
         .map(|(i, p)| ui::RecentItem {
             name: files::file_name(p).into(),
             detail: files::folder_name(p).into(),
-            kind: files::kind_of(p).map(files::kind_name).unwrap_or("video").into(),
+            kind: files::kind_of(p)
+                .map(files::kind_name)
+                .unwrap_or("video")
+                .into(),
             index: i as i32,
         })
         .collect();
     let of_kind = |kind: &str| -> ModelRc<ui::RecentItem> {
-        let items: Vec<ui::RecentItem> = all.iter().filter(|r| r.kind.as_str() == kind).cloned().collect();
+        let items: Vec<ui::RecentItem> = all
+            .iter()
+            .filter(|r| r.kind.as_str() == kind)
+            .cloned()
+            .collect();
         ModelRc::new(VecModel::from(items))
     };
     let shell = app.ui.global::<ui::Shell>();
@@ -420,7 +490,12 @@ pub fn refresh_recents(app: &Rc<App>) {
 
 /// Recent items shown are the existing ones; map a shown index back to the stored list.
 pub fn recent_at(app: &Rc<App>, i: usize) -> Option<PathBuf> {
-    app.recents.borrow().iter().filter(|p| p.exists()).nth(i).cloned()
+    app.recents
+        .borrow()
+        .iter()
+        .filter(|p| p.exists())
+        .nth(i)
+        .cloned()
 }
 
 fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
@@ -439,7 +514,9 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
         return true;
     }
     if ctrl && (text == "n" || text == "N") {
-        app.ui.global::<ui::Shell>().invoke_new_canvas(1, "".into(), "".into(), false);
+        app.ui
+            .global::<ui::Shell>()
+            .invoke_new_canvas(1, "".into(), "".into(), false);
         return true;
     }
     if ctrl && (text == "v" || text == "V") && page == "home" {
@@ -479,7 +556,9 @@ pub fn check_updates(app: &Rc<App>, manual: bool) {
         return;
     }
     if manual {
-        app.ui.global::<ui::Settings>().set_update_state("Checking for updates…".into());
+        app.ui
+            .global::<ui::Settings>()
+            .set_update_state("Checking for updates…".into());
     }
     std::thread::spawn(move || {
         let outcome = crate::update::check_and_download();
@@ -496,7 +575,8 @@ pub fn check_updates(app: &Rc<App>, manual: bool) {
                     format!("Version {v} is downloaded. Restart to use it (or it is applied when you quit).")
                 }
             };
-            a.ui.global::<ui::Settings>().set_update_state(text.clone().into());
+            a.ui.global::<ui::Settings>()
+                .set_update_state(text.clone().into());
             if manual {
                 toast(a, text);
             }
@@ -552,9 +632,15 @@ pub fn finish_close(app: &Rc<App>) {
         let _ = slint::quit_event_loop();
     }
     // Going to the tray: a fresh copy on the software renderer takes over, unless something still runs here.
-    if !app.background_start.get() && !capturectl::busy(app) && spawn_self(&["--background", "--takeover"]) {
+    // The new copy waits for this process to end (--after) before it takes the start lock.
+    let me = std::process::id().to_string();
+    if !app.background_start.get()
+        && !capturectl::busy(app)
+        && spawn_self(&["--background", "--takeover", "--after", me.as_str()])
+    {
+        crate::platform::release_start_lock();
         crate::instance::release();
-        std::process::exit(0);
+        crate::platform::exit_now(0);
     }
     let _ = app.ui.window().hide();
 }
@@ -635,14 +721,22 @@ fn handoff(app: &Rc<App>) {
         "text" => app.text.borrow().path.clone(),
         _ => None,
     };
-    let mut args = vec!["--takeover".to_string(), "--page".to_string(), page];
+    // The new copy waits for this process to end (--after) before it takes the start lock.
+    let mut args = vec![
+        "--takeover".to_string(),
+        "--after".to_string(),
+        std::process::id().to_string(),
+        "--page".to_string(),
+        page,
+    ];
     if let Some(f) = file {
         args.push(f.display().to_string());
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     if !stay && spawn_self(&refs) {
+        crate::platform::release_start_lock();
         crate::instance::release();
-        std::process::exit(0);
+        crate::platform::exit_now(0);
     }
     app.background_start.set(false);
     show_main(app);
@@ -650,7 +744,8 @@ fn handoff(app: &Rc<App>) {
 
 /// Starts this exe again with `args`. True when it started.
 fn spawn_self(args: &[&str]) -> bool {
-    std::env::current_exe().is_ok_and(|exe| std::process::Command::new(exe).args(args).spawn().is_ok())
+    std::env::current_exe()
+        .is_ok_and(|exe| std::process::Command::new(exe).args(args).spawn().is_ok())
 }
 
 type AskThen = Box<dyn FnOnce(&Rc<App>, i32)>;
@@ -661,7 +756,15 @@ thread_local! {
 
 /// Asks a question in the window's own dialog (never a native message box). `then` gets 0 (primary), 1 (secondary) or 2
 /// (Cancel). An empty `secondary` shows only the primary button and Cancel.
-pub fn ask(app: &Rc<App>, title: &str, name: &str, detail: &str, primary: &str, secondary: &str, then: impl FnOnce(&Rc<App>, i32) + 'static) {
+pub fn ask(
+    app: &Rc<App>,
+    title: &str,
+    name: &str,
+    detail: &str,
+    primary: &str,
+    secondary: &str,
+    then: impl FnOnce(&Rc<App>, i32) + 'static,
+) {
     ASK.with(|a| *a.borrow_mut() = Some(Box::new(then)));
     let shell = app.ui.global::<ui::Shell>();
     shell.set_confirm_title(title.into());
@@ -675,7 +778,9 @@ pub fn ask(app: &Rc<App>, title: &str, name: &str, detail: &str, primary: &str, 
 /// The answer to an `ask` question, if one is waiting. True when it was handled. The dialog goes back to the default
 /// "Save changes?" wording for the next question.
 pub fn take_ask_answer(app: &Rc<App>, choice: i32) -> bool {
-    let Some(then) = ASK.with(|a| a.borrow_mut().take()) else { return false };
+    let Some(then) = ASK.with(|a| a.borrow_mut().take()) else {
+        return false;
+    };
     let shell = app.ui.global::<ui::Shell>();
     shell.set_confirm_open(false);
     shell.set_confirm_title("Save changes?".into());

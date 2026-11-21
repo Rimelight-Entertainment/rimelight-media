@@ -5,6 +5,15 @@ import { Icons } from "icons.slint";
 import { IconButton, Button, ButtonKind, Card, Toggle, Slider, ToolBar, ActionRow, StatusBar, ToolDivider, EmptyState } from "widgets.slint";
 import { Viewer, Shell } from "state.slint";
 
+/// One handle on the picked mark's box (a small white square with an accent edge).
+component BoxHandle inherits Rectangle {
+    width: 8px;
+    height: 8px;
+    background: #FFFFFF;
+    border-width: 1px;
+    border-color: Tokens.accent-default;
+}
+
 component Swatch inherits Rectangle {
     in property <color> colour;
     width: 26px;
@@ -119,6 +128,18 @@ export component ImagePage inherits Rectangle {
         Viewer.fit = false;
     }
 
+    // Owns the keyboard while the page is shown: a click on the stage gives it focus back (a text box or a field
+    // that took focus goes away, and a stage click never moves focus by itself). Unhandled keys are rejected, so they
+    // still reach the window's own key handler.
+    pick := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(e) => {
+            if Shell.key(e.text, e.modifiers.control, e.modifiers.shift, e.modifiers.alt) { return accept; }
+            reject
+        }
+    }
+
     VerticalLayout {
         // Main toolbar, the same on every tab: file actions on the left, edit tools on the right. Nothing is hidden
         // when no picture is open; the buttons that need one are disabled. Hidden in full screen.
@@ -169,6 +190,10 @@ export component ImagePage inherits Rectangle {
             IconButton { icon: Icons.resize; label: "Resize"; enabled: root.has-pic && !Viewer.comparing; active: Viewer.mode == "resize"; clicked => { Viewer.set-mode(Viewer.mode == "resize" ? "" : "resize"); } }
             ToolDivider { }
             IconButton { icon: Icons.trash; label: "Delete (Del)"; enabled: root.has-pic && !Viewer.canvas; clicked => { Viewer.delete-current(); } }
+            if Shell.recording || Viewer.info-name != "": ToolDivider { }
+            if Shell.recording: IconButton { icon: Icons.stop; label: "Stop recording"; clicked => { Shell.stop-recording(); } }
+            // Closes the picture back to the empty tab (shown only when one is open).
+            if Viewer.info-name != "": IconButton { icon: Icons.x; label: "Close the picture"; clicked => { Shell.close-tab(); } }
         }
 
         // The edit in progress (crop, draw, resize), under the toolbar. Markup takes two rows: the tools and the
@@ -239,6 +264,9 @@ export component ImagePage inherits Rectangle {
             confirm-text: "Done";
             cancel => { Viewer.set-mode(""); }
             confirm => { Viewer.apply-marks(); }
+            // The hand pans the view (drag with the left button; the middle button pans in every tool).
+            IconButton { icon: Icons.hand; label: "Hand (drag to pan the view)"; tip-above: true; active: Viewer.tool == 11; clicked => { Viewer.set-tool(11); } }
+            ToolDivider { }
             IconButton { icon: Icons.pen; label: "Pen"; tip-above: true; active: Viewer.tool == 0; clicked => { Viewer.set-tool(0); } }
             IconButton { icon: Icons.highlighter; label: "Highlighter"; tip-above: true; active: Viewer.tool == 1; clicked => { Viewer.set-tool(1); } }
             IconButton { icon: Icons.arrow; label: "Arrow"; tip-above: true; active: Viewer.tool == 2; clicked => { Viewer.set-tool(2); } }
@@ -255,8 +283,8 @@ export component ImagePage inherits Rectangle {
             ToolDivider { }
             IconButton { icon: Icons.pipette; label: "Eyedropper (take a colour from the picture)"; tip-above: true; active: Viewer.tool == 8; clicked => { Viewer.set-tool(8); } }
             IconButton { icon: Icons.paint-bucket; label: "Paint bucket (fill an area)"; tip-above: true; active: Viewer.tool == 9; clicked => { Viewer.set-tool(9); } }
-            IconButton { icon: Icons.select-rect; label: "Rectangle select"; tip-above: true; active: Viewer.tool == 10; clicked => { Viewer.set-tool(10); } }
-            IconButton { icon: Icons.move; label: "Move (click a mark, then drag it)"; tip-above: true; active: Viewer.tool == 11; clicked => { Viewer.set-tool(11); } }
+            // The select tool also picks a mark and drags it (what the Move tool did), so moves stay here.
+            IconButton { icon: Icons.select-rect; label: "Select (drag out a selection, or drag a mark)"; tip-above: true; active: Viewer.tool == 10; clicked => { Viewer.set-tool(10); } }
             ToolDivider { }
             // Thickness, 1 to 40 px: the slider and its label centred on the row, the label hugging its text.
             Rectangle {
@@ -352,11 +380,17 @@ export component ImagePage inherits Rectangle {
                 property <float> fit-scale: min((self.width - 48px) / 1px / Viewer.pic-w, (self.height - 48px) / 1px / Viewer.pic-h, 1.0);
                 init => { Viewer.fit-scale = self.fit-scale; }
                 changed fit-scale => { Viewer.fit-scale = self.fit-scale; }
-                property <float> s: Viewer.fit || Viewer.mode != "" ? fit-scale : Viewer.scale;
+                property <float> s: Viewer.fit ? fit-scale : Viewer.scale;
                 property <length> pw: Viewer.pic-w * s * 1px;
                 property <length> ph: Viewer.pic-h * s * 1px;
-                property <length> px: (self.width - pw) / 2 + (Viewer.fit || Viewer.mode != "" ? 0px : Viewer.pan-x);
-                property <length> py: (self.height - ph) / 2 + (Viewer.fit || Viewer.mode != "" ? 0px : Viewer.pan-y);
+                property <length> px: (self.width - pw) / 2 + (Viewer.fit ? 0px : Viewer.pan-x);
+                property <length> py: (self.height - ph) / 2 + (Viewer.fit ? 0px : Viewer.pan-y);
+                // A middle-button drag (or the hand tool's drag) pans in every mode; these hold where it began, in stage space.
+                property <bool> hand-pan: false;
+                property <length> hand-x;
+                property <length> hand-y;
+                property <length> hand-pan-x;
+                property <length> hand-pan-y;
 
                 // Pan with a drag, zoom with the wheel around the pointer, double-click for 100 % / fit.
                 pan := TouchArea {
@@ -365,12 +399,33 @@ export component ImagePage inherits Rectangle {
                     mouse-cursor: Viewer.fit ? default : (self.pressed ? grabbing : grab);
                     pointer-event(e) => {
                         if e.kind == PointerEventKind.down {
+                            pick.focus();
+                        }
+                        if e.kind == PointerEventKind.up {
+                            stage.hand-pan = false;
+                        } else if e.button == PointerEventButton.middle && e.kind == PointerEventKind.down {
+                            // A middle drag pans from wherever the view is (leaving fit at the same scale first).
+                            if Viewer.fit {
+                                Viewer.scale = stage.fit-scale;
+                                Viewer.pan-x = 0px;
+                                Viewer.pan-y = 0px;
+                                Viewer.fit = false;
+                            }
+                            stage.hand-pan = true;
+                            stage.hand-x = self.mouse-x + self.x;
+                            stage.hand-y = self.mouse-y + self.y;
+                            stage.hand-pan-x = Viewer.pan-x;
+                            stage.hand-pan-y = Viewer.pan-y;
+                        } else if e.kind == PointerEventKind.down {
                             self.start-x = Viewer.pan-x;
                             self.start-y = Viewer.pan-y;
                         }
                     }
                     moved => {
-                        if self.pressed && !Viewer.fit {
+                        if stage.hand-pan {
+                            Viewer.pan-x = stage.hand-pan-x + (self.mouse-x + self.x - stage.hand-x);
+                            Viewer.pan-y = stage.hand-pan-y + (self.mouse-y + self.y - stage.hand-y);
+                        } else if self.pressed && !Viewer.fit {
                             Viewer.pan-x = self.start-x + (self.mouse-x - self.pressed-x);
                             Viewer.pan-y = self.start-y + (self.mouse-y - self.pressed-y);
                         }
@@ -386,7 +441,6 @@ export component ImagePage inherits Rectangle {
                         }
                     }
                     scroll-event(e) => {
-                        if Viewer.mode != "" { return reject; }
                         let old = stage.s;
                         let new = clamp(old * (e.delta-y > 0 ? 1.2 : 1 / 1.2), 0.02, 40);
                         let u = (self.mouse-x - stage.px) / old;
@@ -473,15 +527,15 @@ export component ImagePage inherits Rectangle {
                     height: max(2px, Viewer.box-h * stage.s * 1px);
                     border-width: 1px;
                     border-color: Tokens.accent-default;
-                    Rectangle {
-                        x: parent.width - 4px;
-                        y: parent.height - 4px;
-                        width: 8px;
-                        height: 8px;
-                        background: #FFFFFF;
-                        border-width: 1px;
-                        border-color: Tokens.accent-default;
-                    }
+                    // Handles: the 4 corners and the 4 edge middles (Rust takes the press and resizes from the one hit).
+                    BoxHandle { x: -4px; y: -4px; }
+                    BoxHandle { x: parent.width / 2 - 4px; y: -4px; }
+                    BoxHandle { x: parent.width - 4px; y: -4px; }
+                    BoxHandle { x: -4px; y: parent.height / 2 - 4px; }
+                    BoxHandle { x: parent.width - 4px; y: parent.height / 2 - 4px; }
+                    BoxHandle { x: -4px; y: parent.height - 4px; }
+                    BoxHandle { x: parent.width / 2 - 4px; y: parent.height - 4px; }
+                    BoxHandle { x: parent.width - 4px; y: parent.height - 4px; }
                 }
 
                 // Markup input.
@@ -490,18 +544,57 @@ export component ImagePage inherits Rectangle {
                     y: stage.py;
                     width: stage.pw;
                     height: stage.ph;
-                    mouse-cursor: crosshair;
+                    mouse-cursor: Viewer.tool == 11 ? (stage.hand-pan ? grabbing : grab) : crosshair;
+                    // Where the left press was: in stage space (which stays put while the view pans) and in picture space.
+                    property <length> press-x;
+                    property <length> press-y;
+                    property <float> press-pic-x;
+                    property <float> press-pic-y;
+                    // The middle button always pans. The left button goes to Rust, which marks up, picks or moves a mark,
+                    // or (hand tool, on empty space) pans the view.
                     pointer-event(e) => {
-                        if e.button == PointerEventButton.left {
+                        if e.kind == PointerEventKind.down {
+                            pick.focus();
+                        }
+                        if e.kind == PointerEventKind.up {
+                            stage.hand-pan = false;
+                        }
+                        if e.button == PointerEventButton.middle {
                             if e.kind == PointerEventKind.down {
-                                Viewer.mark-begin(self.mouse-x / stage.s / 1px, self.mouse-y / stage.s / 1px);
+                                if Viewer.fit {
+                                    Viewer.scale = stage.fit-scale;
+                                    Viewer.pan-x = 0px;
+                                    Viewer.pan-y = 0px;
+                                    Viewer.fit = false;
+                                }
+                                stage.hand-pan = true;
+                                stage.hand-x = self.mouse-x + self.x;
+                                stage.hand-y = self.mouse-y + self.y;
+                                stage.hand-pan-x = Viewer.pan-x;
+                                stage.hand-pan-y = Viewer.pan-y;
+                            }
+                        } else if e.button == PointerEventButton.left {
+                            if e.kind == PointerEventKind.down {
+                                press-x = self.mouse-x + self.x;
+                                press-y = self.mouse-y + self.y;
+                                press-pic-x = self.mouse-x / stage.s / 1px;
+                                press-pic-y = self.mouse-y / stage.s / 1px;
+                                Viewer.mark-begin(press-pic-x, press-pic-y);
                             } else if e.kind == PointerEventKind.up {
                                 Viewer.mark-end();
                             }
                         }
                     }
                     moved => {
-                        if self.pressed { Viewer.mark-move(self.mouse-x / stage.s / 1px, self.mouse-y / stage.s / 1px); }
+                        if stage.hand-pan {
+                            Viewer.pan-x = stage.hand-pan-x + (self.mouse-x + self.x - stage.hand-x);
+                            Viewer.pan-y = stage.hand-pan-y + (self.mouse-y + self.y - stage.hand-y);
+                        } else if self.pressed {
+                            // The pointer's movement since the press, in picture space, from stage positions (these
+                            // stay put when the hand tool pans the picture under the pointer).
+                            Viewer.mark-move(press-pic-x + (self.mouse-x + self.x - press-x) / 1px / stage.s,
+                                             press-pic-y + (self.mouse-y + self.y - press-y) / 1px / stage.s);
+                        }
                     }
                 }
                 if Viewer.mode == "markup" && Viewer.text-x >= 0: Rectangle {
@@ -522,13 +615,14 @@ export component ImagePage inherits Rectangle {
                         single-line: true;
                         text <=> Viewer.pending-text;
                         init => { self.focus(); }
-                        accepted => { Viewer.commit-text(); }
+                        accepted => { Viewer.commit-text(); pick.focus(); }
                         changed has-focus => {
                             if !self.has-focus { Viewer.commit-text(); }
                         }
                         key-pressed(e) => {
                             if e.text == "\u{1b}" {
                                 Viewer.commit-text();
+                                pick.focus();
                                 return accept;
                             }
                             reject
@@ -715,7 +809,9 @@ export component ImagePage inherits Rectangle {
                 if Viewer.comparing: grid := Rectangle {
                     background: Tokens.stage;
                     property <length> cw: (self.width - 2 * Tokens.space-3) / max(1, Viewer.compare-cols);
-                    property <length> ch: (self.height - 2 * Tokens.space-3) / max(1, Viewer.compare-rows);
+                    // The bottom strip keeps the close button clear of the grid (none in full screen).
+                    property <length> foot: Shell.full-screen ? Tokens.space-3 : Tokens.control-height + 2 * Tokens.space-3;
+                    property <length> ch: (self.height - Tokens.space-3 - grid.foot) / max(1, Viewer.compare-rows);
                     for img[i] in Viewer.compare-images: Image {
                         x: Tokens.space-3 + mod(i, Viewer.compare-cols) * grid.cw;
                         y: Tokens.space-3 + floor(i / Viewer.compare-cols) * grid.ch;
@@ -724,9 +820,10 @@ export component ImagePage inherits Rectangle {
                         source: img;
                         image-fit: contain;
                     }
-                    Button {
-                        x: parent.width - self.width - Tokens.space-3;
-                        y: Tokens.space-3;
+                    if !Shell.full-screen: Button {
+                        x: Tokens.space-3;
+                        width: parent.width - 2 * Tokens.space-3;
+                        y: parent.height - self.height - Tokens.space-3;
                         text: "Close comparison";
                         clicked => { Viewer.close-compare(); }
                     }
@@ -738,7 +835,7 @@ export component ImagePage inherits Rectangle {
                     icon: Icons.image;
                     icon-colour: Tokens.file-picture;
                     title: "Open a picture";
-                    formats: ".png, .jpg, .jpeg, .webp, .gif, .bmp, .svg, .heic, .avif, camera RAW (.dng, .cr2, .nef) and more";
+                    formats: ".3fr, .arw, .avif, .bmp, .cr2, .cr3, .dng, .erf, .gif, .heic, .heif, .hif, .ico, .iiq, .jfif, .jpeg, .jpg, .kdc, .mrw, .nef, .nrw, .orf, .pef, .png, .raf, .rw2, .rwl, .sr2, .srf, .srw, .svg, .webp, .x3f";
                     open-text: "Open a file";
                     new-text: "New canvas";
                     new-icon: Icons.brush;
@@ -802,11 +899,11 @@ export component ImagePage inherits Rectangle {
                             y: 6px;
                             width: 18px;
                             height: 18px;
-                            border-radius: 9px;
+                            border-radius: Tokens.radius-control;
                             border-width: 1px;
                             border-color: #FFFFFF;
                             background: t.selected ? Tokens.accent-fill : (check-ta.has-hover ? #000000B0 : #00000080);
-                            if t.selected: Image { source: Icons.check; width: 12px; height: 12px; colorize: Tokens.text-on-accent; x: 3px; y: 3px; }
+                            if t.selected: Image { source: Icons.check; width: 12px; height: 12px; colorize: #FFFFFF; x: 3px; y: 3px; }
                             check-ta := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => { Viewer.thumb-clicked(i, true); }
@@ -822,20 +919,31 @@ export component ImagePage inherits Rectangle {
         if !Shell.full-screen: StatusBar {
             // Details and filmstrip on the left, then the picture's facts; the frame controls and zoom on the right.
             // Like the other tabs, the controls show only while a picture is open.
-            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; enabled: !Viewer.canvas; clicked => { Viewer.toggle-info(); } }
-            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.film; label: "Filmstrip"; active: Viewer.filmstrip; enabled: !Viewer.canvas; clicked => { Viewer.toggle-filmstrip(); } }
+            if root.has-pic: HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; enabled: !Viewer.canvas; clicked => { Viewer.toggle-info(); } }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.film; label: "Filmstrip"; active: Viewer.filmstrip; enabled: !Viewer.canvas; clicked => { Viewer.toggle-filmstrip(); } }
+            }
             Text { text: root.has-pic ? Viewer.facts-text : ""; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
             if Viewer.position != "": Text { text: Viewer.position; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
-            if Viewer.position != "": Rectangle { width: Tokens.space-3; }
             if Viewer.animated: ToolDivider { }
-            if Viewer.animated: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.chevron-left; label: "Previous frame (,)"; clicked => { Viewer.anim-step(-1); } }
-            if Viewer.animated: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Viewer.anim-playing ? Icons.pause : Icons.play; label: Viewer.anim-playing ? "Pause (Space)" : "Play (Space)"; clicked => { Viewer.anim-toggle(); } }
-            if Viewer.animated: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.chevron-right; label: "Next frame (.)"; clicked => { Viewer.anim-step(1); } }
+            if Viewer.animated: HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.chevron-left; label: "Previous frame (,)"; clicked => { Viewer.anim-step(-1); } }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Viewer.anim-playing ? Icons.pause : Icons.play; label: Viewer.anim-playing ? "Pause (Space)" : "Play (Space)"; clicked => { Viewer.anim-toggle(); } }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.chevron-right; label: "Next frame (.)"; clicked => { Viewer.anim-step(1); } }
+            }
             if Viewer.animated: Text { text: Viewer.frame-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
             if Viewer.animated: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.camera; label: "Save this frame as PNG"; clicked => { Viewer.save-frame(); } }
             if Viewer.animated: ToolDivider { }
-            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fit; label: "Fit to window (0)"; active: Viewer.fit; clicked => { Viewer.fit = true; Viewer.pan-x = 0; Viewer.pan-y = 0; } }
-            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-out; label: "Zoom out (-)"; clicked => { root.zoom-to(root.cur-scale / 1.25); } }
+            if root.has-pic: HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fit; label: "Fit to window (0)"; active: Viewer.fit; clicked => { Viewer.fit = true; Viewer.pan-x = 0; Viewer.pan-y = 0; } }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-out; label: "Zoom out (-)"; clicked => { root.zoom-to(root.cur-scale / 1.25); } }
+            }
             if root.has-pic: Text {
                 text: round(root.cur-scale * 100) + "%";
                 color: Tokens.text-muted;
@@ -854,8 +962,12 @@ export component ImagePage inherits Rectangle {
                     released(v) => { root.zoom-to(0.02 * pow(2000, v)); }
                 }
             }
-            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-in; label: "Zoom in (+)"; clicked => { root.zoom-to(root.cur-scale * 1.25); } }
-            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fullscreen; label: "Full screen (F11)"; clicked => { Shell.toggle-full-screen(); } }
+            if root.has-pic: HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-in; label: "Zoom in (+)"; clicked => { root.zoom-to(root.cur-scale * 1.25); } }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fullscreen; label: "Full screen (F11)"; clicked => { Shell.toggle-full-screen(); } }
+            }
         }
     }
 

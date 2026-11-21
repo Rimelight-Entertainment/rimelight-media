@@ -29,7 +29,8 @@ fn err(e: impl std::fmt::Display) -> String {
 /// Opens a HEIC, HEIF, HIF or AVIF file and returns its picture, upright.
 pub fn load(path: &Path) -> Result<Picture, String> {
     crate::media::player::init()?;
-    let mut ictx = ff::format::input(&path).map_err(|e| format!("Could not open the picture: {e}"))?;
+    let mut ictx =
+        ff::format::input(&path).map_err(|e| format!("Could not open the picture: {e}"))?;
     let turns = quarter_turns(&ictx);
     // Files without a tile grid (single-image HEIC and AVIF) take the first video stream's first picture.
     // TODO: a multi-image HEIF with no tile grid shows only its first image.
@@ -67,7 +68,8 @@ fn read_grid(ictx: &ff::format::context::Input) -> Option<Grid> {
                 return None;
             }
             let tg = &*tg_ptr;
-            if tg.offsets.is_null() || tg.nb_tiles == 0 || g.streams.is_null() || g.nb_streams == 0 {
+            if tg.offsets.is_null() || tg.nb_tiles == 0 || g.streams.is_null() || g.nb_streams == 0
+            {
                 return None;
             }
             let offsets = std::slice::from_raw_parts(tg.offsets, tg.nb_tiles as usize);
@@ -78,13 +80,20 @@ fn read_grid(ictx: &ff::format::context::Input) -> Option<Grid> {
                 if s.is_null() {
                     return None;
                 }
-                tiles.push(((*s).index as usize, i64::from(o.horizontal), i64::from(o.vertical)));
+                tiles.push((
+                    (*s).index as usize,
+                    i64::from(o.horizontal),
+                    i64::from(o.vertical),
+                ));
             }
             let (cw, ch) = (tg.coded_width, tg.coded_height);
             if cw <= 0 || ch <= 0 {
                 return None;
             }
-            let (x, y) = (tg.horizontal_offset.max(0) as u32, tg.vertical_offset.max(0) as u32);
+            let (x, y) = (
+                tg.horizontal_offset.max(0) as u32,
+                tg.vertical_offset.max(0) as u32,
+            );
             let (w, h) = (tg.width, tg.height);
             let (cw, ch) = (cw as u32, ch as u32);
             let crop = if w > 0 && h > 0 && x < cw && y < ch {
@@ -92,7 +101,13 @@ fn read_grid(ictx: &ff::format::context::Input) -> Option<Grid> {
             } else {
                 (0, 0, cw, ch)
             };
-            return Some(Grid { canvas_w: cw, canvas_h: ch, background: tg.background, tiles, crop });
+            return Some(Grid {
+                canvas_w: cw,
+                canvas_h: ch,
+                background: tg.background,
+                tiles,
+                crop,
+            });
         }
     }
     None
@@ -139,7 +154,9 @@ fn compose(ictx: &mut ff::format::context::Input, grid: &Grid) -> Result<Picture
     let mut decoded: HashMap<usize, Picture> = HashMap::new();
     for &(idx, x, y) in &grid.tiles {
         if !decoded.contains_key(&idx) {
-            let packet = packets.get(&idx).ok_or("a tile of the picture has no data")?;
+            let packet = packets
+                .get(&idx)
+                .ok_or("a tile of the picture has no data")?;
             decoded.insert(idx, decode_first(ictx, idx, packet)?);
         }
         if let Some(tile) = decoded.get(&idx) {
@@ -166,7 +183,10 @@ fn first_picture(ictx: &mut ff::format::context::Input) -> Result<Picture, Strin
 }
 
 /// The first packet of each wanted stream, read until all are found or the file ends.
-fn first_packets(ictx: &mut ff::format::context::Input, wanted: &[usize]) -> Result<HashMap<usize, ff::Packet>, String> {
+fn first_packets(
+    ictx: &mut ff::format::context::Input,
+    wanted: &[usize],
+) -> Result<HashMap<usize, ff::Packet>, String> {
     let mut found: HashMap<usize, ff::Packet> = HashMap::new();
     for (stream, packet) in ictx.packets() {
         let idx = stream.index();
@@ -181,8 +201,14 @@ fn first_packets(ictx: &mut ff::format::context::Input, wanted: &[usize]) -> Res
 }
 
 /// Decodes one packet of a stream to RGBA (the first picture the decoder gives).
-fn decode_first(ictx: &ff::format::context::Input, idx: usize, packet: &ff::Packet) -> Result<Picture, String> {
-    let stream = ictx.stream(idx).ok_or("a stream of the picture is missing")?;
+fn decode_first(
+    ictx: &ff::format::context::Input,
+    idx: usize,
+    packet: &ff::Packet,
+) -> Result<Picture, String> {
+    let stream = ictx
+        .stream(idx)
+        .ok_or("a stream of the picture is missing")?;
     let mut dec = ff::codec::context::Context::from_parameters(stream.parameters())
         .map_err(err)?
         .decoder()
@@ -192,7 +218,8 @@ fn decode_first(ictx: &ff::format::context::Input, idx: usize, packet: &ff::Pack
     dec.send_packet(packet).map_err(err)?;
     if dec.receive_frame(&mut frame).is_err() {
         dec.send_eof().map_err(err)?;
-        dec.receive_frame(&mut frame).map_err(|e| format!("the picture could not be decoded: {e}"))?;
+        dec.receive_frame(&mut frame)
+            .map_err(|e| format!("the picture could not be decoded: {e}"))?;
     }
     to_rgba(&frame)
 }

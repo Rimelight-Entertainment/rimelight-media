@@ -49,17 +49,31 @@ fn secret() -> String {
     use std::hash::{BuildHasher as _, Hasher as _};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
     h.write_u32(std::process::id());
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
     format!("{:016x}{:08x}", h.finish(), std::process::id())
 }
 
 /// Sends `request` to a running copy. True when one took it (this process should exit).
 pub fn forward(request: &Request) -> bool {
-    let Ok(text) = std::fs::read_to_string(lock_file()) else { return false };
+    let Ok(text) = std::fs::read_to_string(lock_file()) else {
+        return false;
+    };
     let mut parts = text.split_whitespace();
-    let (Some(port), Some(token)) = (parts.next().and_then(|p| p.parse::<u16>().ok()), parts.next()) else { return false };
+    let (Some(port), Some(token)) = (
+        parts.next().and_then(|p| p.parse::<u16>().ok()),
+        parts.next(),
+    ) else {
+        return false;
+    };
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(400)) else { return false };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(400)) else {
+        return false;
+    };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     if writeln!(stream, "{token}\t{}", request.encode()).is_err() {
         return false;
@@ -71,8 +85,12 @@ pub fn forward(request: &Request) -> bool {
 
 /// Becomes the running copy: listens for requests from later starts and hands each to `handle` on the UI thread.
 pub fn serve(handle: fn(Request)) {
-    let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else { return };
-    let Ok(addr) = listener.local_addr() else { return };
+    let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
+        return;
+    };
+    let Ok(addr) = listener.local_addr() else {
+        return;
+    };
     let token = secret();
     let file = lock_file();
     if let Some(dir) = file.parent() {
@@ -92,7 +110,9 @@ pub fn serve(handle: fn(Request)) {
                     continue;
                 }
                 let line = line.trim_end_matches(['\r', '\n']);
-                let Some((given, rest)) = line.split_once('\t') else { continue };
+                let Some((given, rest)) = line.split_once('\t') else {
+                    continue;
+                };
                 if given != token {
                     continue;
                 }
@@ -131,10 +151,18 @@ mod tests {
 
     #[test]
     fn requests_round_trip() {
-        for r in [Request::Show, Request::Open(r"C:\a b\c.png".into()), Request::Snip("free".into()), Request::Nothing] {
+        for r in [
+            Request::Show,
+            Request::Open(r"C:\a b\c.png".into()),
+            Request::Snip("free".into()),
+            Request::Nothing,
+        ] {
             assert_eq!(Request::decode(&r.encode()), Some(r));
         }
-        assert_eq!(screenclip_mode("ms-screenclip:?source=HotKey&clippingMode=Window"), "window");
+        assert_eq!(
+            screenclip_mode("ms-screenclip:?source=HotKey&clippingMode=Window"),
+            "window"
+        );
         assert_eq!(screenclip_mode("ms-screenclip:"), "region");
     }
 }

@@ -42,10 +42,8 @@ pub struct Recording {
     pause: Arc<AtomicBool>,
     /// The recording's own clock in milliseconds, without the paused time (written by the recorder thread).
     clock_ms: Arc<AtomicU64>,
-    started: Instant,
     level: Arc<AtomicU32>,
     handle: Option<JoinHandle<Result<PathBuf, String>>>,
-    pub path: PathBuf,
     pub notes: Vec<String>,
 }
 
@@ -71,7 +69,10 @@ impl Recording {
     /// Stops, finishes the file and returns its path.
     pub fn finish(mut self) -> Result<PathBuf, String> {
         self.stop.store(true, Relaxed);
-        self.handle.take().map_or(Err("not running".into()), |h| h.join().unwrap_or_else(|_| Err("the recorder stopped unexpectedly".into())))
+        self.handle.take().map_or(Err("not running".into()), |h| {
+            h.join()
+                .unwrap_or_else(|_| Err("the recorder stopped unexpectedly".into()))
+        })
     }
 
     /// Stops and deletes the file.
@@ -97,7 +98,6 @@ pub fn start(opts: Options) -> Result<Recording, String> {
     let pause = Arc::new(AtomicBool::new(false));
     let clock_ms = Arc::new(AtomicU64::new(0));
     let (ready_tx, ready_rx) = mpsc::channel::<Result<Vec<String>, String>>();
-    let path = opts.path.clone();
     let (s, d, l) = (Arc::clone(&stop), Arc::clone(&discard), Arc::clone(&level));
     let (p, c) = (Arc::clone(&pause), Arc::clone(&clock_ms));
     let handle = std::thread::Builder::new()
@@ -114,7 +114,15 @@ pub fn start(opts: Options) -> Result<Recording, String> {
         })
         .map_err(|e| e.to_string())?;
     match ready_rx.recv() {
-        Ok(Ok(notes)) => Ok(Recording { stop, discard, pause, clock_ms, started: Instant::now(), level, handle: Some(handle), path, notes }),
+        Ok(Ok(notes)) => Ok(Recording {
+            stop,
+            discard,
+            pause,
+            clock_ms,
+            level,
+            handle: Some(handle),
+            notes,
+        }),
         Ok(Err(e)) => {
             let _ = handle.join();
             Err(e)
@@ -194,27 +202,56 @@ struct AudioCodec {
 }
 
 fn audio_codec(path: &Path) -> AudioCodec {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let planar = ff::format::Sample::F32(ff::format::sample::Type::Planar);
     let packed16 = ff::format::Sample::I16(ff::format::sample::Type::Packed);
     match ext.as_str() {
-        "mp3" => AudioCodec { id: ff::codec::Id::MP3, bit_rate: 192_000, sample: planar },
-        "wav" => AudioCodec { id: ff::codec::Id::PCM_S16LE, bit_rate: 0, sample: packed16 },
-        "flac" => AudioCodec { id: ff::codec::Id::FLAC, bit_rate: 0, sample: packed16 },
-        _ => AudioCodec { id: ff::codec::Id::AAC, bit_rate: 160_000, sample: planar },
+        "mp3" => AudioCodec {
+            id: ff::codec::Id::MP3,
+            bit_rate: 192_000,
+            sample: planar,
+        },
+        "wav" => AudioCodec {
+            id: ff::codec::Id::PCM_S16LE,
+            bit_rate: 0,
+            sample: packed16,
+        },
+        "flac" => AudioCodec {
+            id: ff::codec::Id::FLAC,
+            bit_rate: 0,
+            sample: packed16,
+        },
+        _ => AudioCodec {
+            id: ff::codec::Id::AAC,
+            bit_rate: 160_000,
+            sample: planar,
+        },
     }
 }
 
-fn open_video_encoder(w: u32, h: u32, fps: i32, global: bool) -> Result<ff::encoder::Video, String> {
+fn open_video_encoder(
+    w: u32,
+    h: u32,
+    fps: i32,
+    global: bool,
+) -> Result<ff::encoder::Video, String> {
     let mut last = String::from("no H.264 encoder");
     for (name, pix) in [
         ("h264_mf", ff::format::Pixel::NV12),
         ("libopenh264", ff::format::Pixel::YUV420P),
         ("mpeg4", ff::format::Pixel::YUV420P),
     ] {
-        let Some(codec) = ff::encoder::find_by_name(name) else { continue };
+        let Some(codec) = ff::encoder::find_by_name(name) else {
+            continue;
+        };
         let ctx = ff::codec::context::Context::new_with_codec(codec);
-        let Ok(mut enc) = ctx.encoder().video() else { continue };
+        let Ok(mut enc) = ctx.encoder().video() else {
+            continue;
+        };
         enc.set_width(w);
         enc.set_height(h);
         enc.set_format(pix);
@@ -242,7 +279,10 @@ fn open_video_encoder(w: u32, h: u32, fps: i32, global: bool) -> Result<ff::enco
 
 fn open_audio_encoder(global: bool, codec: &AudioCodec) -> Result<ff::encoder::Audio, String> {
     let found = ff::encoder::find(codec.id).ok_or("no encoder for this sound format")?;
-    let mut enc = ff::codec::context::Context::new_with_codec(found).encoder().audio().map_err(|e| e.to_string())?;
+    let mut enc = ff::codec::context::Context::new_with_codec(found)
+        .encoder()
+        .audio()
+        .map_err(|e| e.to_string())?;
     enc.set_rate(audio_in::RATE as i32);
     enc.set_channel_layout(ff::ChannelLayout::STEREO);
     enc.set_format(codec.sample);
@@ -253,10 +293,15 @@ fn open_audio_encoder(global: bool, codec: &AudioCodec) -> Result<ff::encoder::A
     if global {
         enc.set_flags(ff::codec::flag::Flags::GLOBAL_HEADER);
     }
-    enc.open_as(found).map_err(|e| format!("Could not start the sound encoder: {e}"))
+    enc.open_as(found)
+        .map_err(|e| format!("Could not start the sound encoder: {e}"))
 }
 
-fn write_packets_video(v: &mut VideoPart, octx: &mut ff::format::context::Output, out_tb: ff::Rational) -> Result<(), String> {
+fn write_packets_video(
+    v: &mut VideoPart,
+    octx: &mut ff::format::context::Output,
+    out_tb: ff::Rational,
+) -> Result<(), String> {
     let mut pkt = ff::Packet::empty();
     while v.enc.receive_packet(&mut pkt).is_ok() {
         pkt.set_stream(v.out_idx);
@@ -266,7 +311,11 @@ fn write_packets_video(v: &mut VideoPart, octx: &mut ff::format::context::Output
     Ok(())
 }
 
-fn write_packets_audio(a: &mut AudioPart, octx: &mut ff::format::context::Output, out_tb: ff::Rational) -> Result<(), String> {
+fn write_packets_audio(
+    a: &mut AudioPart,
+    octx: &mut ff::format::context::Output,
+    out_tb: ff::Rational,
+) -> Result<(), String> {
     let mut pkt = ff::Packet::empty();
     while a.enc.receive_packet(&mut pkt).is_ok() {
         pkt.set_stream(a.out_idx);
@@ -318,15 +367,29 @@ fn run(
     }
     // The video encoder starts first: Windows' Media Foundation encoder needs this thread's COM in the multi-threaded
     // mode, and the sound devices would otherwise set it up single-threaded first.
-    let mut octx = ff::format::output(&opts.path).map_err(|e| format!("Could not create the file: {e}"))?;
-    let global = octx.format().flags().contains(ff::format::flag::Flags::GLOBAL_HEADER);
+    let mut octx =
+        ff::format::output(&opts.path).map_err(|e| format!("Could not create the file: {e}"))?;
+    let global = octx
+        .format()
+        .flags()
+        .contains(ff::format::flag::Flags::GLOBAL_HEADER);
 
     let source = match (opts.screen, &opts.camera) {
-        (_, Some(cam)) => Some((FrameSrc::Camera(Arc::clone(&cam.feed)), cam.w & !1, cam.h & !1, cam.fps)),
+        (_, Some(cam)) => Some((
+            FrameSrc::Camera(Arc::clone(&cam.feed)),
+            cam.w & !1,
+            cam.h & !1,
+            cam.fps,
+        )),
         (Some((rect, fps)), None) => {
             let w = (rect.w.max(2) as u32) & !1;
             let h = (rect.h.max(2) as u32) & !1;
-            let area = ScreenRect { x: rect.x, y: rect.y, w: w as i32, h: h as i32 };
+            let area = ScreenRect {
+                x: rect.x,
+                y: rect.y,
+                w: w as i32,
+                h: h as i32,
+            };
             let grabber = ScreenGrabber::new(area).ok_or("Could not reach the screen")?;
             Some((FrameSrc::Screen(grabber), w, h, fps))
         }
@@ -335,14 +398,34 @@ fn run(
     let mut video = match source {
         Some((src, w, h, fps)) => {
             let enc = open_video_encoder(w, h, fps, global)?;
-            let scaler = ff::software::scaling::Context::get(ff::format::Pixel::BGRA, w, h, enc.format(), w, h, ff::software::scaling::Flags::BILINEAR)
+            let scaler = ff::software::scaling::Context::get(
+                ff::format::Pixel::BGRA,
+                w,
+                h,
+                enc.format(),
+                w,
+                h,
+                ff::software::scaling::Flags::BILINEAR,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut ost = octx
+                .add_stream(ff::encoder::find(ff::codec::Id::H264))
                 .map_err(|e| e.to_string())?;
-            let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::H264)).map_err(|e| e.to_string())?;
             ost.set_parameters(&enc);
             ost.set_time_base((1, fps));
             let out_idx = ost.index();
             let bgra = ff::frame::Video::new(ff::format::Pixel::BGRA, w, h);
-            Some(VideoPart { src, bgra, scaler, enc, out_idx, fps, last_pts: -1, w, h })
+            Some(VideoPart {
+                src,
+                bgra,
+                scaler,
+                enc,
+                out_idx,
+                fps,
+                last_pts: -1,
+                w,
+                h,
+            })
         }
         None => None,
     };
@@ -350,7 +433,10 @@ fn run(
     let mut cap = Capture::start(opts.system_audio, opts.mic, opts.mic_name.as_deref());
     let mut notes = cap.notes.clone();
     if opts.screen.is_none() && opts.camera.is_none() && cap.is_empty() {
-        return Err(format!("No microphone to record from. {}", notes.join("; ")));
+        return Err(format!(
+            "No microphone to record from. {}",
+            notes.join("; ")
+        ));
     }
 
     let codec = audio_codec(&opts.path);
@@ -359,21 +445,34 @@ fn run(
     } else {
         let enc = open_audio_encoder(global, &codec)?;
         let frame_size = (enc.frame_size() as usize).max(1024);
-        let mut ost = octx.add_stream(ff::encoder::find(codec.id)).map_err(|e| e.to_string())?;
+        let mut ost = octx
+            .add_stream(ff::encoder::find(codec.id))
+            .map_err(|e| e.to_string())?;
         ost.set_parameters(&enc);
         ost.set_time_base((1, audio_in::RATE as i32));
         let packed_s16 = matches!(codec.sample, ff::format::Sample::I16(_));
-        Some(AudioPart { enc, out_idx: ost.index(), frame_size, written: 0, packed_s16 })
+        Some(AudioPart {
+            enc,
+            out_idx: ost.index(),
+            frame_size,
+            written: 0,
+            packed_s16,
+        })
     };
 
-    octx.write_header().map_err(|e| format!("Could not start the file: {e}"))?;
+    octx.write_header()
+        .map_err(|e| format!("Could not start the file: {e}"))?;
     let out_tbs: Vec<ff::Rational> = octx.streams().map(|s| s.time_base()).collect();
     if video.is_some() && audio.is_none() && (opts.system_audio || opts.mic) {
         notes.push("Recording without sound".into());
     }
     let _ = ready.send(Ok(notes));
 
-    let mut clock = Clock { started: Instant::now(), paused_total: 0.0, paused_since: None };
+    let mut clock = Clock {
+        started: Instant::now(),
+        paused_total: 0.0,
+        paused_since: None,
+    };
     let level_src = Arc::clone(&cap.level);
     while !stop.load(Relaxed) {
         let paused = pause.load(Relaxed);
@@ -398,7 +497,8 @@ fn run(
                     // The camera's latest frame, when it is the size the encoder was opened for (else the last one stays).
                     FrameSrc::Camera(feed) => {
                         if let Ok(guard) = feed.lock() {
-                            if let Some(frame) = guard.as_ref().filter(|f| f.w == v.w && f.h == v.h) {
+                            if let Some(frame) = guard.as_ref().filter(|f| f.w == v.w && f.h == v.h)
+                            {
                                 copy_rows(&mut v.bgra, v.w as usize, v.h as usize, &frame.bgra);
                             }
                         }

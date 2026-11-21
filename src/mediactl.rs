@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
@@ -50,6 +53,17 @@ pub struct MediaState {
     shown_sub_picture: usize,
     /// The subtitle choice before V turned them off.
     sub_before_off: Option<SubChoice>,
+    /// Markers saved beside the file (the voice recorder's <name>.json), in milliseconds, in the order shown.
+    markers: Vec<u64>,
+    /// Background threads that open the file (probe, waveform): each with its cancel flag. Cancelled when the player
+    /// is taken, so no file stays open.
+    tasks: Vec<(Arc<AtomicBool>, JoinHandle<()>)>,
+}
+
+/// Keeps a background thread so take_player can cancel and join it; finished ones are forgotten.
+fn track(m: &mut MediaState, cancel: Arc<AtomicBool>, handle: JoinHandle<()>) {
+    m.tasks.retain(|(_, h)| !h.is_finished());
+    m.tasks.push((cancel, handle));
 }
 
 /// Playback speeds: the flyout's presets, also the steps of the step keys.
@@ -92,14 +106,24 @@ impl Default for MediaState {
             sub_scale: 1.0,
             shown_sub_picture: 0,
             sub_before_off: None,
+            markers: Vec::new(),
+            tasks: Vec::new(),
         }
     }
 }
 
 impl MediaState {
-    /// Closes the player (and its sound device).
+    /// Closes the player (and its sound device), stops the background threads that hold the file, and waits briefly
+    /// for them all to let go of it.
     pub fn take_player(&mut self) {
-        self.player = None;
+        if let Some(pl) = self.player.take() {
+            pl.release();
+        }
+        for (cancel, _) in &self.tasks {
+            cancel.store(true, Relaxed);
+        }
+        let handles: Vec<JoinHandle<()>> = self.tasks.drain(..).map(|(_, h)| h).collect();
+        player::join_within(handles, Duration::from_millis(500));
     }
 }
 
@@ -114,6 +138,8 @@ pub fn wire(app: &Rc<App>) {
     p.on_seek(|f| {
         with_app(move |a| {
             a.media.borrow_mut().preview = None;
+            // Show the new spot at once, so the handle and the waveform do not jump back while the seek runs.
+            a.ui.global::<ui::Player>().set_position(f);
             seek_fraction(a, f);
         })
     });
@@ -125,9 +151,11 @@ pub fn wire(app: &Rc<App>) {
                 m.preview_at = Some(Instant::now());
             }
             let dur = a.media.borrow().info.as_ref().map_or(0, |i| i.duration_ms);
-            player_ui(a).set_time_text(files::clock((f64::from(f) * dur as f64) as u64).into());
+            let at = files::clock((f64::from(f) * dur as f64) as u64);
+            player_ui(a).set_time_text(format!("{at} / {}", files::clock(dur)).into());
         })
     });
+    p.on_seek_marker(|i| with_app(move |a| seek_marker(a, i as usize)));
     p.on_skip(|secs| with_app(move |a| skip(a, i64::from(secs) * 1000)));
     p.on_set_volume(|v| {
         with_app(move |a| {
@@ -151,7 +179,9 @@ pub fn wire(app: &Rc<App>) {
     p.on_trim_redo(|| with_app(|a| trim_step(a, false)));
     p.on_trim_discard(|| with_app(trim_discard));
     p.on_share(|| with_app(share));
-    p.on_pick_speed(|i| with_app(move |a| set_speed(a, SPEEDS.get(i as usize).copied().unwrap_or(1.0))));
+    p.on_pick_speed(|i| {
+        with_app(move |a| set_speed(a, SPEEDS.get(i as usize).copied().unwrap_or(1.0)))
+    });
     p.on_speed_step(|d| with_app(move |a| speed_step(a, d)));
     // The speed flyout (slider and presets): a speed from 0.25x to 3x, rounded to steps of 0.05. No toast.
     p.on_set_speed(|s| {
@@ -165,14 +195,17 @@ pub fn wire(app: &Rc<App>) {
     p.on_sub_size(|d| with_app(move |a| sub_size(a, d)));
     refresh_speeds(app);
 
-    app.tick.start(slint::TimerMode::Repeated, Duration::from_millis(8), || with_app(tick));
+    app.tick
+        .start(slint::TimerMode::Repeated, Duration::from_millis(8), || {
+            with_app(tick)
+        });
 }
 
 pub fn open(app: &Rc<App>, path: &Path) {
     // Stop what was playing.
     let generation = {
         let mut m = app.media.borrow_mut();
-        m.player = None;
+        m.take_player();
         m.generation += 1;
         m.path = Some(path.to_path_buf());
         m.info = None;
@@ -185,6 +218,7 @@ pub fn open(app: &Rc<App>, path: &Path) {
     p.set_meta_text(SharedString::new());
     p.set_has_wave(false);
     p.set_wave_bars(ModelRc::default());
+    set_markers(app, &[], 1);
     p.set_playing(false);
     p.set_position(0.0);
     p.set_trim_mode(false);
@@ -192,9 +226,21 @@ pub fn open(app: &Rc<App>, path: &Path) {
     p.set_media_title(files::file_name(path).into());
     p.set_media_detail(SharedString::new());
     p.set_has_video(files::kind_of(path) == Some(files::Kind::Video));
-    go(app, if files::kind_of(path) == Some(files::Kind::Audio) { "audio" } else { "video" });
+    go(
+        app,
+        if files::kind_of(path) == Some(files::Kind::Audio) {
+            "audio"
+        } else {
+            "video"
+        },
+    );
     let path = path.to_path_buf();
-    std::thread::spawn(move || {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let probe_cancel = Arc::clone(&cancel);
+    let handle = std::thread::spawn(move || {
+        if probe_cancel.load(Relaxed) {
+            return;
+        }
         let result = player::probe(&path);
         post(move |a| {
             if a.media.borrow().generation != generation {
@@ -210,6 +256,7 @@ pub fn open(app: &Rc<App>, path: &Path) {
             }
         });
     });
+    track(&mut app.media.borrow_mut(), cancel, handle);
 }
 
 fn output_size(app: &Rc<App>) -> (u32, u32) {
@@ -223,7 +270,14 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
     // The extension guessed the tab; the file decides (a .mkv with only sound is music).
     let page = app.ui.global::<ui::Shell>().get_page();
     if matches!(page.as_str(), "audio" | "video") {
-        go(app, if info.video.is_some() { "video" } else { "audio" });
+        go(
+            app,
+            if info.video.is_some() {
+                "video"
+            } else {
+                "audio"
+            },
+        );
     }
     p.set_video_w(info.width.max(1) as i32);
     p.set_video_h(info.height.max(1) as i32);
@@ -234,15 +288,26 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
         detail = format!("{} × {}", info.width, info.height);
     }
     p.set_media_detail(detail.into());
-    p.set_length_text(files::clock(info.duration_ms).into());
-    p.set_time_text(files::clock(0).into());
+    p.set_time_text(format!("{} / {}", files::clock(0), files::clock(info.duration_ms)).into());
     p.set_meta_text(meta_text(path, &info).into());
-    // The waveform is decoded in the background, from the sound track that plays.
-    if let Some(idx) = info.audio.iter().find(|t| t.default).or(info.audio.first()).map(|t| t.index) {
+    // Markers saved beside the file: ticks on the seek bar.
+    let markers = read_markers(path, info.duration_ms);
+    set_markers(app, &markers, info.duration_ms);
+    app.media.borrow_mut().markers = markers;
+    // The waveform is decoded in the background, from the sound track that plays (video files included).
+    if let Some(idx) = info
+        .audio
+        .iter()
+        .find(|t| t.default)
+        .or(info.audio.first())
+        .map(|t| t.index)
+    {
         let wave_path = path.to_path_buf();
-        std::thread::spawn(move || {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let wave_cancel = Arc::clone(&cancel);
+        let handle = std::thread::spawn(move || {
             // Only a track with real sound gets a waveform (an all-silent or undecodable track keeps none).
-            if let Ok(peaks) = player::peaks(&wave_path, idx, WAVE_BARS) {
+            if let Ok(peaks) = player::peaks(&wave_path, idx, WAVE_BARS, &wave_cancel) {
                 if peaks.iter().any(|v| *v > 0.0) {
                     post(move |a| {
                         if a.media.borrow().path.as_deref() == Some(wave_path.as_path()) {
@@ -254,11 +319,16 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
                 }
             }
         });
+        track(&mut app.media.borrow_mut(), cancel, handle);
     }
     let sub_files = subs::files_beside(path);
     // A default subtitle stream, or a file beside the video, is not turned on by itself (VLC-like: off unless marked
     // as forced/default). Default-marked text streams are turned on.
-    let default_sub = info.subtitles.iter().find(|t| t.default && !t.bitmap).map(|t| t.index);
+    let default_sub = info
+        .subtitles
+        .iter()
+        .find(|t| t.default && !t.bitmap)
+        .map(|t| t.index);
     let size = output_size(app);
     let volume = app.prefs.borrow().volume;
     match Player::open(path, &info, None, 0, size) {
@@ -278,7 +348,12 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
             let mut m = app.media.borrow_mut();
             m.shown_sub_picture = 0;
             m.repeated = false;
-            m.audio_track = info.audio.iter().find(|t| t.default).or(info.audio.first()).map(|t| t.index);
+            m.audio_track = info
+                .audio
+                .iter()
+                .find(|t| t.default)
+                .or(info.audio.first())
+                .map(|t| t.index);
             m.trim = (0, info.duration_ms);
             m.trim_undo.clear();
             m.trim_redo.clear();
@@ -305,7 +380,10 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
 
 fn tick(app: &Rc<App>) {
     let mut m = app.media.borrow_mut();
-    if m.preview.is_some() && m.preview_at.is_some_and(|t| t.elapsed() > Duration::from_millis(400)) {
+    if m.preview.is_some()
+        && m.preview_at
+            .is_some_and(|t| t.elapsed() > Duration::from_millis(400))
+    {
         m.preview = None;
         m.preview_at = None;
     }
@@ -315,15 +393,18 @@ fn tick(app: &Rc<App>) {
         pl.set_output_size(size.0, size.1);
     }
     // Repeat once: play it one more time after it ends.
-    let replay =m.loop_mode == 1 && !m.repeated && pl.ended();
+    let replay = m.loop_mode == 1 && !m.repeated && pl.ended();
     if replay {
         pl.play();
     }
+    // Rebuilds the sound output if the device was lost (cheap when nothing is wrong).
+    pl.check_output();
     let frame = pl.take_frame();
     let pos = pl.position_ms();
     let dur = pl.duration_ms().max(1);
     let playing = pl.is_playing();
     let buffering = pl.is_buffering() && playing;
+    let ended = pl.ended();
     let (subtitle, sub_picture) = pl.subtitle_now();
     let error = pl.error();
     m.last_size = size;
@@ -331,7 +412,7 @@ fn tick(app: &Rc<App>) {
         m.repeated = true;
     }
     let preview = m.preview;
-    let text = files::clock(pos);
+    let text = format!("{} / {}", files::clock(pos), files::clock(dur));
     let text_changed = text != m.last_pos_text;
     if text_changed {
         m.last_pos_text = text.clone();
@@ -343,7 +424,12 @@ fn tick(app: &Rc<App>) {
         p.set_frame(slint::Image::from_rgba8(f.rgba));
     }
     if preview.is_none() {
-        let frac = (pos as f64 / dur as f64) as f32;
+        // At the end the clock can stop a few ms short of the length; show the whole track as played.
+        let frac = if ended {
+            1.0
+        } else {
+            (pos as f64 / dur as f64) as f32
+        };
         if (p.get_position() - frac).abs() > 0.0005 {
             p.set_position(frac);
         }
@@ -361,17 +447,24 @@ fn tick(app: &Rc<App>) {
         p.set_subtitle(subtitle.into());
     }
     show_sub_picture(app, sub_picture);
-    if let Some(e) = error
-        && p.get_error().as_str() != e
-    {
-        p.set_error(e.into());
+    if let Some(e) = error {
+        if p.get_error().as_str() != e {
+            p.set_error(e.into());
+        }
+    } else if p.get_error().starts_with("Sound output") {
+        // The output recovered: its error goes away (other errors stay until the next file).
+        p.set_error(Default::default());
     }
 }
 
 fn toggle_play(app: &Rc<App>) {
     let m = app.media.borrow();
     if let Some(pl) = m.player.as_ref() {
-        if pl.is_playing() { pl.pause() } else { pl.play() }
+        if pl.is_playing() {
+            pl.pause()
+        } else {
+            pl.play()
+        }
     }
 }
 
@@ -388,6 +481,53 @@ pub fn leaving(app: &Rc<App>) {
     }
     if app.ui.global::<ui::Shell>().get_full_screen() {
         crate::app::toggle_full_screen(app);
+    }
+}
+
+/// The markers saved beside a recording (`<name>.json`, written by the voice recorder): their times in milliseconds,
+/// those within the file's length. Missing or unreadable files give none.
+fn read_markers(path: &Path, duration_ms: u64) -> Vec<u64> {
+    let Ok(text) = std::fs::read_to_string(path.with_extension("json")) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    v.get("markers")
+        .and_then(|m| m.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| m.get("ms").and_then(|ms| ms.as_u64()))
+                .filter(|ms| *ms <= duration_ms)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pushes the marker ticks (place on the seek bar, and label) to the player page.
+fn set_markers(app: &Rc<App>, markers: &[u64], duration_ms: u64) {
+    let dur = duration_ms.max(1) as f64;
+    let ticks: Vec<f32> = markers.iter().map(|ms| (*ms as f64 / dur) as f32).collect();
+    let labels: Vec<SharedString> = markers
+        .iter()
+        .enumerate()
+        .map(|(i, ms)| format!("Marker {} · {}", i + 1, files::clock(*ms)).into())
+        .collect();
+    let p = player_ui(app);
+    p.set_marker_ticks(ModelRc::new(VecModel::from(ticks)));
+    p.set_marker_labels(ModelRc::new(VecModel::from(labels)));
+}
+
+/// Clicking a marker: seeks to its time.
+fn seek_marker(app: &Rc<App>, i: usize) {
+    let ms = app.media.borrow().markers.get(i).copied();
+    let Some(ms) = ms else { return };
+    {
+        let mut m = app.media.borrow_mut();
+        m.preview = None;
+        if let Some(pl) = m.player.as_ref() {
+            pl.seek(ms);
+        }
     }
 }
 
@@ -427,21 +567,45 @@ fn refresh_tracks(app: &Rc<App>) {
     let audio: Vec<ui::Choice> = info
         .audio
         .iter()
-        .map(|t| ui::Choice { label: t.label.clone().into(), detail: t.detail.clone().into(), selected: m.audio_track == Some(t.index) })
+        .map(|t| ui::Choice {
+            label: t.label.clone().into(),
+            detail: t.detail.clone().into(),
+            selected: m.audio_track == Some(t.index),
+        })
         .collect();
-    let mut subs_list = vec![ui::Choice { label: "Off".into(), detail: SharedString::new(), selected: m.sub == SubChoice::Off }];
+    let mut subs_list = vec![ui::Choice {
+        label: "Off".into(),
+        detail: SharedString::new(),
+        selected: m.sub == SubChoice::Off,
+    }];
     for t in &info.subtitles {
-        subs_list.push(ui::Choice { label: t.label.clone().into(), detail: t.detail.clone().into(), selected: m.sub == SubChoice::Stream(t.index) });
+        subs_list.push(ui::Choice {
+            label: t.label.clone().into(),
+            detail: t.detail.clone().into(),
+            selected: m.sub == SubChoice::Stream(t.index),
+        });
     }
     for f in &m.sub_files {
-        subs_list.push(ui::Choice { label: files::file_name(f).into(), detail: "File beside the video".into(), selected: m.sub == SubChoice::File(f.clone()) });
+        subs_list.push(ui::Choice {
+            label: files::file_name(f).into(),
+            detail: "File beside the video".into(),
+            selected: m.sub == SubChoice::File(f.clone()),
+        });
     }
     if let SubChoice::File(f) = &m.sub
         && !m.sub_files.contains(f)
     {
-        subs_list.push(ui::Choice { label: files::file_name(f).into(), detail: "Subtitle file".into(), selected: true });
+        subs_list.push(ui::Choice {
+            label: files::file_name(f).into(),
+            detail: "Subtitle file".into(),
+            selected: true,
+        });
     }
-    subs_list.push(ui::Choice { label: "Add a subtitle file…".into(), detail: "SRT, VTT, ASS or SSA".into(), selected: false });
+    subs_list.push(ui::Choice {
+        label: "Add a subtitle file…".into(),
+        detail: "SRT, VTT, ASS or SSA".into(),
+        selected: false,
+    });
     let p = player_ui(app);
     p.set_audio_tracks(ModelRc::new(VecModel::from(audio)));
     p.set_subtitle_tracks(ModelRc::new(VecModel::from(subs_list)));
@@ -450,13 +614,23 @@ fn refresh_tracks(app: &Rc<App>) {
 fn pick_audio(app: &Rc<App>, i: usize) {
     let (path, info, pos, playing, idx) = {
         let m = app.media.borrow();
-        let (Some(path), Some(info), Some(pl)) = (m.path.clone(), m.info.clone(), m.player.as_ref()) else { return };
+        let (Some(path), Some(info), Some(pl)) =
+            (m.path.clone(), m.info.clone(), m.player.as_ref())
+        else {
+            return;
+        };
         let Some(t) = info.audio.get(i) else { return };
-        (path, info.clone(), pl.position_ms(), pl.is_playing(), t.index)
+        (
+            path,
+            info.clone(),
+            pl.position_ms(),
+            pl.is_playing(),
+            t.index,
+        )
     };
     let size = output_size(app);
     // A new player on the other track, from the same spot.
-    app.media.borrow_mut().player = None;
+    app.media.borrow_mut().take_player();
     match Player::open(&path, &info, Some(idx), pos, size) {
         Ok(pl) => {
             let mut m = app.media.borrow_mut();
@@ -508,7 +682,9 @@ fn pick_subtitle(app: &Rc<App>, i: usize) {
             Some(SubChoice::Stream(info.subtitles[i - 1].index))
         } else if i - 1 - n_streams < m.sub_files.len() {
             Some(SubChoice::File(m.sub_files[i - 1 - n_streams].clone()))
-        } else if matches!(&m.sub, SubChoice::File(f) if !m.sub_files.contains(f)) && i == 1 + n_streams + m.sub_files.len() {
+        } else if matches!(&m.sub, SubChoice::File(f) if !m.sub_files.contains(f))
+            && i == 1 + n_streams + m.sub_files.len()
+        {
             None
         } else {
             drop(m);
@@ -523,8 +699,15 @@ fn pick_subtitle(app: &Rc<App>, i: usize) {
 }
 
 fn load_subtitle_file(app: &Rc<App>) {
-    let dir = app.media.borrow().path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf));
-    let mut d = rfd::FileDialog::new().set_title("Add subtitles").add_filter("Subtitles", files::SUBTITLE_EXTS);
+    let dir = app
+        .media
+        .borrow()
+        .path
+        .as_ref()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let mut d = rfd::FileDialog::new()
+        .set_title("Add subtitles")
+        .add_filter("Subtitles", files::SUBTITLE_EXTS);
     if let Some(dir) = dir {
         d = d.set_directory(dir);
     }
@@ -537,14 +720,24 @@ fn load_subtitle_file(app: &Rc<App>) {
 fn snapshot(app: &Rc<App>) {
     let (path, pos) = {
         let m = app.media.borrow();
-        let (Some(path), Some(pl)) = (m.path.clone(), m.player.as_ref()) else { return };
+        let (Some(path), Some(pl)) = (m.path.clone(), m.player.as_ref()) else {
+            return;
+        };
         (path, pl.position_ms())
     };
     let dir = app.prefs.borrow().screenshot_dir.clone();
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Video").to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Video")
+        .to_string();
     std::thread::spawn(move || {
         let result = player::frame_at(&path, pos).and_then(|pic| {
-            let out = files::free_path(&dir, &format!("{stem} {}", files::clock(pos).replace(':', "-")), "png");
+            let out = files::free_path(
+                &dir,
+                &format!("{stem} {}", files::clock(pos).replace(':', "-")),
+                "png",
+            );
             crate::picture::save(&pic, &out).map(|()| out)
         });
         post(move |a| match result {
@@ -561,17 +754,31 @@ fn update_trim_text(app: &Rc<App>) {
     let p = player_ui(app);
     p.set_trim_start((s as f64 / dur as f64) as f32);
     p.set_trim_end((e as f64 / dur as f64) as f32);
-    p.set_trim_text(format!("Keep {} to {} ({})", files::clock(s), files::clock(e), files::clock(e.saturating_sub(s))).into());
+    p.set_trim_text(
+        format!(
+            "Keep {} to {} ({})",
+            files::clock(s),
+            files::clock(e),
+            files::clock(e.saturating_sub(s))
+        )
+        .into(),
+    );
     p.set_can_undo(!m.trim_undo.is_empty());
     p.set_can_redo(!m.trim_redo.is_empty());
-    p.set_trim_dirty(m.info.as_ref().is_some_and(|i| (s, e) != (0, i.duration_ms)));
+    p.set_trim_dirty(
+        m.info
+            .as_ref()
+            .is_some_and(|i| (s, e) != (0, i.duration_ms)),
+    );
 }
 
 /// Remembers the trim before an edit, so undo can return to it. Edits close together (a drag) are one step.
 /// `force` always records (for discard).
 fn record_trim(m: &mut MediaState, force: bool) {
     let now = Instant::now();
-    let new_step = m.trim_edit_at.is_none_or(|t| now.duration_since(t) > TRIM_STEP_GAP);
+    let new_step = m
+        .trim_edit_at
+        .is_none_or(|t| now.duration_since(t) > TRIM_STEP_GAP);
     if force || new_step {
         m.trim_undo.push(m.trim);
         m.trim_redo.clear();
@@ -582,10 +789,16 @@ fn record_trim(m: &mut MediaState, force: bool) {
 fn trim_set(app: &Rc<App>, start: bool) {
     {
         let mut m = app.media.borrow_mut();
-        let Some(pos) = m.player.as_ref().map(Player::position_ms) else { return };
+        let Some(pos) = m.player.as_ref().map(Player::position_ms) else {
+            return;
+        };
         let dur = m.info.as_ref().map_or(0, |i| i.duration_ms);
         let (s, e) = m.trim;
-        let new = if start { (pos.min(e.saturating_sub(100)), e) } else { (s, pos.max(s + 100).min(dur)) };
+        let new = if start {
+            (pos.min(e.saturating_sub(100)), e)
+        } else {
+            (s, pos.max(s + 100).min(dur))
+        };
         if new != m.trim {
             record_trim(&mut m, false);
             m.trim = new;
@@ -598,7 +811,11 @@ fn trim_set(app: &Rc<App>, start: bool) {
 fn trim_step(app: &Rc<App>, undo: bool) {
     {
         let mut m = app.media.borrow_mut();
-        let popped = if undo { m.trim_undo.pop() } else { m.trim_redo.pop() };
+        let popped = if undo {
+            m.trim_undo.pop()
+        } else {
+            m.trim_redo.pop()
+        };
         let Some(prev) = popped else { return };
         let current = m.trim;
         if undo {
@@ -626,8 +843,12 @@ fn trim_discard(app: &Rc<App>) {
 }
 
 fn share(app: &Rc<App>) {
-    let Some(path) = app.media.borrow().path.clone() else { return };
-    if let Err(e) = crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path)) {
+    let Some(path) = app.media.borrow().path.clone() else {
+        return;
+    };
+    if let Err(e) =
+        crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
+    {
         toast(app, format!("Could not share: {e}"));
     }
 }
@@ -656,17 +877,22 @@ fn save_in_place(app: &Rc<App>) {
 
 fn replace_with_trim(app: &Rc<App>, path: PathBuf, s: u64, e: u64) {
     let ext = files::ext_of(&path);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Clip").to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Clip")
+        .to_string();
     let tmp = path.with_file_name(format!("{stem} (trimming).{ext}"));
     // The file is let go first, so it can be replaced.
     {
         let mut m = app.media.borrow_mut();
-        m.player = None;
+        m.take_player();
         m.generation += 1;
     }
     player_ui(app).set_exporting(true);
     std::thread::spawn(move || {
-        let result = export::trim(&path, &tmp, s, e).and_then(|()| std::fs::rename(&tmp, &path).map_err(|err| err.to_string()));
+        let result = export::trim(&path, &tmp, s, e)
+            .and_then(|()| std::fs::rename(&tmp, &path).map_err(|err| err.to_string()));
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
@@ -694,15 +920,25 @@ fn trim_save(app: &Rc<App>) {
         (path, m.trim)
     };
     let ext = files::ext_of(&path);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Clip").to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Clip")
+        .to_string();
     let suggested = format!("{stem} (trimmed).{ext}");
-    let mut d = rfd::FileDialog::new().set_title("Save trimmed copy").set_file_name(&suggested).add_filter(&ext.to_uppercase(), &[ext.as_str()]);
+    let mut d = rfd::FileDialog::new()
+        .set_title("Save trimmed copy")
+        .set_file_name(&suggested)
+        .add_filter(&ext.to_uppercase(), &[ext.as_str()]);
     if let Some(dir) = path.parent() {
         d = d.set_directory(dir);
     }
     let Some(out) = d.save_file() else { return };
     if out == path {
-        toast(app, "Pick another name: the trimmed copy can't replace the file that is open.");
+        toast(
+            app,
+            "Pick another name: the trimmed copy can't replace the file that is open.",
+        );
         return;
     }
     player_ui(app).set_exporting(true);
@@ -810,7 +1046,11 @@ fn trim_drag(app: &Rc<App>, start: bool, frac: f32) {
         let dur = m.info.as_ref().map_or(0, |i| i.duration_ms);
         let ms = (f64::from(frac.clamp(0.0, 1.0)) * dur as f64) as u64;
         let (s, e) = m.trim;
-        let new = if start { (ms.min(e.saturating_sub(100)), e) } else { (s, ms.max(s + 100).min(dur)) };
+        let new = if start {
+            (ms.min(e.saturating_sub(100)), e)
+        } else {
+            (s, ms.max(s + 100).min(dur))
+        };
         if new != m.trim {
             record_trim(&mut m, false);
             m.trim = new;
@@ -858,10 +1098,12 @@ fn meta_text(path: &Path, info: &MediaInfo) -> String {
     parts.join("  |  ")
 }
 
-
 fn speed_step(app: &Rc<App>, delta: i32) {
     let current = app.media.borrow().speed;
-    let i = SPEEDS.iter().position(|s| (*s - current).abs() < 0.001).unwrap_or(3) as i32;
+    let i = SPEEDS
+        .iter()
+        .position(|s| (*s - current).abs() < 0.001)
+        .unwrap_or(3) as i32;
     let next = (i + delta).clamp(0, SPEEDS.len() as i32 - 1) as usize;
     set_speed(app, SPEEDS[next]);
 }
@@ -869,13 +1111,21 @@ fn speed_step(app: &Rc<App>, delta: i32) {
 fn sub_delay(app: &Rc<App>, change_ms: i64) {
     let ms = {
         let mut m = app.media.borrow_mut();
-        m.sub_delay_ms = if change_ms == 0 { 0 } else { (m.sub_delay_ms + change_ms).clamp(-600_000, 600_000) };
+        m.sub_delay_ms = if change_ms == 0 {
+            0
+        } else {
+            (m.sub_delay_ms + change_ms).clamp(-600_000, 600_000)
+        };
         if let Some(pl) = m.player.as_ref() {
             pl.set_sub_delay(m.sub_delay_ms);
         }
         m.sub_delay_ms
     };
-    let text = if ms == 0 { "0 ms".to_string() } else { format!("{ms:+} ms") };
+    let text = if ms == 0 {
+        "0 ms".to_string()
+    } else {
+        format!("{ms:+} ms")
+    };
     player_ui(app).set_sub_delay_text(text.clone().into());
     toast(app, format!("Subtitle delay {text}"));
 }
@@ -883,7 +1133,11 @@ fn sub_delay(app: &Rc<App>, change_ms: i64) {
 fn sub_size(app: &Rc<App>, delta: i32) {
     let scale = {
         let mut m = app.media.borrow_mut();
-        m.sub_scale = if delta == 0 { 1.0 } else { (m.sub_scale + 0.1 * delta as f32).clamp(0.5, 3.0) };
+        m.sub_scale = if delta == 0 {
+            1.0
+        } else {
+            (m.sub_scale + 0.1 * delta as f32).clamp(0.5, 3.0)
+        };
         m.sub_scale
     };
     player_ui(app).set_sub_scale(scale);
@@ -907,7 +1161,10 @@ fn toggle_subs(app: &Rc<App>) {
         // Nothing chosen yet: the first text track, else a file beside the video.
         let first = {
             let m = app.media.borrow();
-            let stream = m.info.as_ref().and_then(|i| i.subtitles.first().map(|t| SubChoice::Stream(t.index)));
+            let stream = m
+                .info
+                .as_ref()
+                .and_then(|i| i.subtitles.first().map(|t| SubChoice::Stream(t.index)));
             stream.or_else(|| m.sub_files.first().map(|f| SubChoice::File(f.clone())))
         };
         match first {
@@ -915,15 +1172,23 @@ fn toggle_subs(app: &Rc<App>) {
                 set_sub(app, c);
                 toast(app, "Subtitles on");
             }
-            None => toast(app, "This video has no subtitles. Add a file from the subtitles menu."),
+            None => toast(
+                app,
+                "This video has no subtitles. Add a file from the subtitles menu.",
+            ),
         }
     }
     refresh_tracks(app);
 }
 
-fn show_sub_picture(app: &Rc<App>, picture: Option<std::sync::Arc<crate::media::bitmap_sub::SubPicture>>) {
+fn show_sub_picture(
+    app: &Rc<App>,
+    picture: Option<std::sync::Arc<crate::media::bitmap_sub::SubPicture>>,
+) {
     let p = player_ui(app);
-    let key = picture.as_ref().map_or(0, |pic| std::sync::Arc::as_ptr(pic) as usize);
+    let key = picture
+        .as_ref()
+        .map_or(0, |pic| std::sync::Arc::as_ptr(pic) as usize);
     if app.media.borrow().shown_sub_picture == key {
         return;
     }
@@ -933,7 +1198,8 @@ fn show_sub_picture(app: &Rc<App>, picture: Option<std::sync::Arc<crate::media::
         return;
     };
     let (vw, vh) = (p.get_video_w().max(1) as f32, p.get_video_h().max(1) as f32);
-    let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pic.rgba, pic.w, pic.h);
+    let buf =
+        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pic.rgba, pic.w, pic.h);
     p.set_sub_picture(slint::Image::from_rgba8(buf));
     p.set_sub_x(pic.x as f32 / vw);
     p.set_sub_y(pic.y as f32 / vh);
@@ -953,18 +1219,22 @@ fn cycle_loop(app: &Rc<App>) {
         m.loop_mode
     };
     player_ui(app).set_loop_mode(mode);
-    toast(app, ["Repeat off", "Repeat once", "Repeat forever"][mode as usize]);
+    toast(
+        app,
+        ["Repeat off", "Repeat once", "Repeat forever"][mode as usize],
+    );
 }
 
 /// Empties the Audio/Video tab: stops playback and frees the player and its pictures.
 pub fn close(app: &Rc<App>) {
     {
         let mut m = app.media.borrow_mut();
-        m.player = None;
+        m.take_player();
         m.generation += 1;
         m.path = None;
         m.info = None;
         m.sub_files.clear();
+        m.markers.clear();
         m.shown_sub_picture = 0;
         m.repeated = false;
         m.trim_undo.clear();
@@ -991,6 +1261,7 @@ pub fn close(app: &Rc<App>) {
     p.set_subtitle_tracks(ModelRc::default());
     p.set_has_wave(false);
     p.set_wave_bars(ModelRc::default());
+    set_markers(app, &[], 1);
     p.set_meta_text(SharedString::new());
     crate::app::update_title(app);
 }

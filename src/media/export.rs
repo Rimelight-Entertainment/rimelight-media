@@ -9,20 +9,29 @@ use super::player::open_input;
 
 pub fn trim(input: &Path, output: &Path, start_ms: u64, end_ms: u64) -> Result<(), String> {
     let mut ictx = open_input(input)?;
-    let mut octx = ff::format::output(&output).map_err(|e| format!("Could not create the file: {e}"))?;
+    let mut octx =
+        ff::format::output(&output).map_err(|e| format!("Could not create the file: {e}"))?;
 
     // Map input streams to output streams (video, audio and subtitles; data streams and attachments are left out).
     let mut map: Vec<Option<usize>> = vec![None; ictx.nb_streams() as usize];
     let mut next = 0;
     for ist in ictx.streams() {
         let medium = ist.parameters().medium();
-        if !matches!(medium, ff::media::Type::Video | ff::media::Type::Audio | ff::media::Type::Subtitle) {
+        if !matches!(
+            medium,
+            ff::media::Type::Video | ff::media::Type::Audio | ff::media::Type::Subtitle
+        ) {
             continue;
         }
-        if ist.disposition().contains(ff::format::stream::Disposition::ATTACHED_PIC) {
+        if ist
+            .disposition()
+            .contains(ff::format::stream::Disposition::ATTACHED_PIC)
+        {
             continue;
         }
-        let mut ost = octx.add_stream(ff::encoder::find(ff::codec::Id::None)).map_err(|e| e.to_string())?;
+        let mut ost = octx
+            .add_stream(ff::encoder::find(ff::codec::Id::None))
+            .map_err(|e| e.to_string())?;
         ost.set_parameters(ist.parameters());
         ost.set_time_base(ist.time_base());
         map[ist.index()] = Some(next);
@@ -32,12 +41,14 @@ pub fn trim(input: &Path, output: &Path, start_ms: u64, end_ms: u64) -> Result<(
         return Err("nothing to copy".into());
     }
     octx.set_metadata(ictx.metadata().to_owned());
-    octx.write_header().map_err(|e| format!("This kind of file can't be trimmed here: {e}"))?;
+    octx.write_header()
+        .map_err(|e| format!("This kind of file can't be trimmed here: {e}"))?;
 
     let start = start_ms as f64 / 1000.0;
     let end = end_ms as f64 / 1000.0;
     if start > 0.0 {
-        ictx.seek((start * f64::from(ff::ffi::AV_TIME_BASE)) as i64, ..).map_err(|e| e.to_string())?;
+        ictx.seek((start * f64::from(ff::ffi::AV_TIME_BASE)) as i64, ..)
+            .map_err(|e| e.to_string())?;
     }
     // The first copied packet's time becomes 0 for every stream, so they stay in sync.
     let mut offset: Option<f64> = None;
@@ -54,7 +65,9 @@ pub fn trim(input: &Path, output: &Path, start_ms: u64, end_ms: u64) -> Result<(
             continue;
         }
         let tb = f64::from(ist.time_base());
-        let Some(ts) = pkt.pts().or(pkt.dts()) else { continue };
+        let Some(ts) = pkt.pts().or(pkt.dts()) else {
+            continue;
+        };
         let t = ts as f64 * tb;
         if t > end {
             done[i] = true;
@@ -70,7 +83,8 @@ pub fn trim(input: &Path, output: &Path, start_ms: u64, end_ms: u64) -> Result<(
         if pkt.dts().is_some_and(|d| d < 0) && ist.parameters().medium() != ff::media::Type::Video {
             continue;
         }
-        pkt.write_interleaved(&mut octx).map_err(|e| e.to_string())?;
+        pkt.write_interleaved(&mut octx)
+            .map_err(|e| e.to_string())?;
     }
     octx.write_trailer().map_err(|e| e.to_string())?;
     Ok(())

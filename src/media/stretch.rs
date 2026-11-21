@@ -25,7 +25,9 @@ pub struct Stretch {
 
 impl Stretch {
     pub fn new(channels: usize, speed: f64) -> Stretch {
-        let window = (0..BLOCK).map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / BLOCK as f32).cos()).collect();
+        let window = (0..BLOCK)
+            .map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / BLOCK as f32).cos())
+            .collect();
         Stretch {
             channels: channels.max(1),
             speed: speed.clamp(0.25, 4.0),
@@ -44,7 +46,9 @@ impl Stretch {
 
     fn mono(&self, start: usize, len: usize) -> Vec<f32> {
         let ch = self.channels;
-        (start..start + len).map(|f| self.input[f * ch..f * ch + ch].iter().sum::<f32>() / ch as f32).collect()
+        (start..start + len)
+            .map(|f| self.input[f * ch..f * ch + ch].iter().sum::<f32>() / ch as f32)
+            .collect()
     }
 
     /// Feeds input and returns whatever output is ready.
@@ -121,12 +125,18 @@ mod tests {
     #[test]
     fn length_follows_speed_and_tone_stays() {
         let rate = 48_000.0;
-        let input: Vec<f32> = (0..96_000).map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate).sin() * 0.5).collect();
+        let input: Vec<f32> = (0..96_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate).sin() * 0.5)
+            .collect();
         for speed in [0.5, 1.5, 2.0] {
             let mut s = Stretch::new(1, speed);
             let out = s.process(&input);
             let expected = input.len() as f64 / speed;
-            assert!((out.len() as f64 - expected).abs() < expected * 0.08, "speed {speed}: {} vs {expected}", out.len());
+            assert!(
+                (out.len() as f64 - expected).abs() < expected * 0.08,
+                "speed {speed}: {} vs {expected}",
+                out.len()
+            );
             // Same pitch: count zero crossings per second in the middle.
             let mid = &out[out.len() / 4..out.len() * 3 / 4];
             let crossings = mid.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count() as f64;

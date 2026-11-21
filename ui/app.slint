@@ -66,6 +66,7 @@ component MediaSlot inherits Rectangle {
                 label: root.want-video ? "Open a video (Ctrl+O)" : "Open a song (Ctrl+O)";
                 clicked => { Shell.open-file(); }
             }
+            ToolDivider { }
             IconButton { icon: Icons.save; label: "Save (replaces the file with the trim)"; enabled: root.loaded && Player.trim-dirty && !Player.exporting; clicked => { Player.save-in-place(); } }
             IconButton { icon: Icons.save-as; label: "Save as (trimmed copy)"; enabled: root.loaded && !Player.exporting; clicked => { Player.trim-save(); } }
             IconButton { icon: Icons.share; label: "Share"; enabled: root.loaded; clicked => { Player.share(); } }
@@ -76,6 +77,10 @@ component MediaSlot inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
             IconButton { icon: Icons.scissors; label: "Trim"; enabled: root.loaded; active: Player.trim-mode; clicked => { Player.trim-mode = !Player.trim-mode; } }
             if Player.has-video: IconButton { icon: Icons.camera; label: "Save this frame as a picture"; enabled: root.loaded; clicked => { Player.snapshot(); } }
+            if Shell.recording || (Player.media-title != "" && Player.has-video == root.want-video): ToolDivider { }
+            if Shell.recording: IconButton { icon: Icons.stop; label: "Stop recording"; clicked => { Shell.stop-recording(); } }
+            // Closes the open file and stops it (shown only while one is loaded on this tab).
+            if Player.media-title != "" && Player.has-video == root.want-video: IconButton { icon: Icons.x; label: "Close and stop"; clicked => { Shell.close-tab(); } }
         }
 
         Rectangle {
@@ -88,7 +93,7 @@ component MediaSlot inherits Rectangle {
                 icon: root.want-video ? Icons.video : Icons.music;
                 icon-colour: root.want-video ? Tokens.file-video : Tokens.file-music;
                 title: root.want-video ? "Open a video" : "Open a song";
-                formats: root.want-video ? ".mp4, .mkv, .webm, .mov, .avi, .wmv, .m4v and more" : ".mp3, .flac, .wav, .ogg, .opus, .m4a, .aac, .wma and more";
+                formats: root.want-video ? ".3gp, .avi, .flv, .m2ts, .m4v, .mkv, .mov, .mp4, .mpeg, .mpg, .mts, .ogv, .webm, .wmv" : ".aac, .aif, .aiff, .flac, .m4a, .mp3, .oga, .ogg, .opus, .wav, .wma";
                 open-text: "Open a file";
                 new-text: "New recording";
                 new-icon: root.want-video ? Icons.record : Icons.mic;
@@ -162,18 +167,6 @@ export component AppWindow inherits Window {
                     padding-top: 6px;
                     padding-bottom: 6px;
                     spacing: Tokens.space-1;
-                    if Shell.recording: Rectangle {
-                        width: rec-row.preferred-width + Tokens.space-4;
-                        border-radius: Tokens.radius-control;
-                        background: Tokens.record-red.with-alpha(rec-ta.has-hover ? 0.3 : 0.18);
-                        rec-row := HorizontalLayout {
-                            alignment: center;
-                            spacing: Tokens.space-2;
-                            Rectangle { width: 10px; Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Tokens.record-red; } }
-                            Text { text: "Stop " + Shell.recording-time; color: Tokens.record-red; font-size: Type.body; font-weight: 600; vertical-alignment: center; }
-                        }
-                        rec-ta := TouchArea { mouse-cursor: pointer; clicked => { Shell.stop-recording(); } }
-                    }
                     if Shell.update-ready != "": Rectangle {
                         width: up-text.preferred-width + Tokens.space-4;
                         border-radius: Tokens.radius-control;
@@ -194,12 +187,6 @@ export component AppWindow inherits Window {
                     cast-btn := IconButton { icon: Icons.cast; label: "Cast to a TV or speaker"; clicked => { Shell.cast(); cast-popup.show(); } }
                     IconButton { icon: Icons.folder-open; label: "Open (Ctrl+O)"; clicked => { Shell.open-file(); } }
                     IconButton { icon: Icons.settings; label: "Settings"; active: Shell.page == "settings"; clicked => { Shell.go("settings"); } }
-                    // Close what this tab has open (back to its empty page).
-                    if (Shell.page == "image" && Viewer.info-name != "") || (Shell.page == "text" && TextDoc.has-doc) || ((Shell.page == "audio" || Shell.page == "video") && Player.media-title != "" && Player.has-video == (Shell.page == "video")): HorizontalLayout {
-                        spacing: Tokens.space-1;
-                        Rectangle { width: 9px; Rectangle { width: 1px; height: 20px; background: Tokens.border-subtle; } }
-                        IconButton { icon: Icons.x; label: Shell.page == "image" ? "Close the picture" : Shell.page == "text" ? "Close the text" : "Close and stop"; clicked => { Shell.close-tab(); } }
-                    }
                 }
                 // Centred on the window; only as wide as the space both groups leave free on each side.
                 // Click the file name to rename it: Enter renames the file, Escape or leaving the box cancels.

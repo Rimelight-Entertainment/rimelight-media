@@ -50,13 +50,23 @@ pub fn parse_srt(text: &str) -> Vec<Cue> {
     for block in text.split("\n\n") {
         let mut lines = block.lines().skip_while(|l| !l.contains("-->"));
         let Some(timing) = lines.next() else { continue };
-        let Some((a, b)) = timing.split_once("-->") else { continue };
+        let Some((a, b)) = timing.split_once("-->") else {
+            continue;
+        };
         let b = b.split_whitespace().next().unwrap_or_default();
-        let (Some(start_ms), Some(end_ms)) = (parse_time(a), parse_time(b)) else { continue };
+        let (Some(start_ms), Some(end_ms)) = (parse_time(a), parse_time(b)) else {
+            continue;
+        };
         let body: Vec<&str> = lines.collect();
         let text = strip_tags(&body.join("\n"));
         if !text.trim().is_empty() {
-            cues.push(Cue { start_ms, end_ms, text, picture: None, open: false });
+            cues.push(Cue {
+                start_ms,
+                end_ms,
+                text,
+                picture: None,
+                open: false,
+            });
         }
     }
     cues
@@ -66,15 +76,25 @@ pub fn parse_srt(text: &str) -> Vec<Cue> {
 pub fn parse_ass(text: &str) -> Vec<Cue> {
     let mut cues = Vec::new();
     for line in text.lines() {
-        let Some(rest) = line.strip_prefix("Dialogue:") else { continue };
+        let Some(rest) = line.strip_prefix("Dialogue:") else {
+            continue;
+        };
         let fields: Vec<&str> = rest.splitn(10, ',').collect();
         if fields.len() < 10 {
             continue;
         }
-        let (Some(start_ms), Some(end_ms)) = (parse_time(fields[1]), parse_time(fields[2])) else { continue };
+        let (Some(start_ms), Some(end_ms)) = (parse_time(fields[1]), parse_time(fields[2])) else {
+            continue;
+        };
         let text = clean_ass(fields[9]);
         if !text.trim().is_empty() {
-            cues.push(Cue { start_ms, end_ms, text, picture: None, open: false });
+            cues.push(Cue {
+                start_ms,
+                end_ms,
+                text,
+                picture: None,
+                open: false,
+            });
         }
     }
     cues
@@ -102,7 +122,11 @@ pub fn clean_ass(text: &str) -> String {
             _ => {}
         }
     }
-    out.replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ").trim().to_string()
+    out.replace("\\N", "\n")
+        .replace("\\n", "\n")
+        .replace("\\h", " ")
+        .trim()
+        .to_string()
 }
 
 /// Removes <i>, <b>, <font ...> and similar tags.
@@ -122,17 +146,23 @@ pub fn strip_tags(text: &str) -> String {
 
 pub fn load_file(path: &Path) -> Result<Vec<Cue>, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let text = String::from_utf8(bytes.clone()).unwrap_or_else(|_| bytes.iter().map(|&b| b as char).collect());
+    let text = String::from_utf8(bytes.clone())
+        .unwrap_or_else(|_| bytes.iter().map(|&b| b as char).collect());
     let cues = match crate::files::ext_of(path).as_str() {
         "ass" | "ssa" => parse_ass(&text),
         _ => parse_srt(&text),
     };
-    if cues.is_empty() { Err("no subtitles found in the file".into()) } else { Ok(cues) }
+    if cues.is_empty() {
+        Err("no subtitles found in the file".into())
+    } else {
+        Ok(cues)
+    }
 }
 
 /// Subtitle files next to a video that share its name ("Movie.srt", "Movie.en.srt").
 pub fn files_beside(video: &Path) -> Vec<PathBuf> {
-    let (Some(dir), Some(stem)) = (video.parent(), video.file_stem().and_then(|s| s.to_str())) else {
+    let (Some(dir), Some(stem)) = (video.parent(), video.file_stem().and_then(|s| s.to_str()))
+    else {
         return Vec::new();
     };
     let stem = stem.to_lowercase();
@@ -142,7 +172,9 @@ pub fn files_beside(video: &Path) -> Vec<PathBuf> {
                 .map(|e| e.path())
                 .filter(|p| {
                     crate::files::SUBTITLE_EXTS.contains(&crate::files::ext_of(p).as_str())
-                        && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.to_lowercase().starts_with(&stem))
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.to_lowercase().starts_with(&stem))
                 })
                 .collect()
         })
@@ -163,7 +195,10 @@ mod tests {
         assert_eq!(cues[0].text, "Hello\nthere");
         assert_eq!(text_at(&cues, 2000), "Hello\nthere");
         assert_eq!(text_at(&cues, 2600), "");
-        assert_eq!(ass_event_text("0,0,Default,,0,0,0,,{\\i1}Hi\\Nyou"), "Hi\nyou");
+        assert_eq!(
+            ass_event_text("0,0,Default,,0,0,0,,{\\i1}Hi\\Nyou"),
+            "Hi\nyou"
+        );
         let ass = "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Line, with comma";
         assert_eq!(parse_ass(ass)[0].text, "Line, with comma");
     }

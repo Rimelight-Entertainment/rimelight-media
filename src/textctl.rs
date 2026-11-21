@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize as _;
@@ -13,10 +14,17 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
 use crate::app::{self, App, toast, with_app};
 use crate::files;
+use crate::highlight;
 use crate::ui;
 
 /// The largest file the tab opens (a bigger one is a log for another tool).
 const MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Above this size the editor is not highlighted (the layers would be too big to rebuild as you type).
+const HIGHLIGHT_MAX_BYTES: usize = 200 * 1024;
+
+/// How long the editor waits after the last edit before it highlights again.
+const HIGHLIGHT_DELAY: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Enc {
@@ -52,6 +60,8 @@ pub struct TextState {
     collapsed: HashSet<String>,
     /// The action waiting for the answer to "Save changes to ...?".
     pending: Option<Pending>,
+    /// Bumped on each edit: a highlight scheduled earlier does nothing when a later edit has come.
+    hl_gen: u32,
 }
 
 /// What to do once the unsaved-changes question is answered (Save, or Don't save; Cancel does nothing).
@@ -63,7 +73,7 @@ pub enum Pending {
     Quit,
 }
 
-fn doc(app: &Rc<App>) -> ui::TextDoc {
+fn doc(app: &Rc<App>) -> ui::TextDoc<'_> {
     app.ui.global::<ui::TextDoc>()
 }
 
@@ -103,15 +113,28 @@ pub fn wire(app: &Rc<App>) {
     d.on_open_link(|url: SharedString| {
         crate::platform::open_uri(&url);
     });
-    d.on_replace_one(|needle: SharedString, repl: SharedString| with_app(|a| replace_one(a, &needle, &repl)));
-    d.on_replace_all(|needle: SharedString, repl: SharedString| with_app(|a| replace_all(a, &needle, &repl)));
+    d.on_replace_one(|needle: SharedString, repl: SharedString| {
+        with_app(|a| replace_one(a, &needle, &repl))
+    });
+    d.on_replace_all(|needle: SharedString, repl: SharedString| {
+        with_app(|a| replace_all(a, &needle, &repl))
+    });
     d.on_revert(|| with_app(revert));
-    app.ui.global::<ui::Shell>().on_confirm_answer(|choice| with_app(|a| answer(a, choice)));
+    d.set_text_font(app.prefs.borrow().text_font);
+    d.on_set_text_font(|i| with_app(|a| set_font(a, i)));
+    app.ui
+        .global::<ui::Shell>()
+        .on_confirm_answer(|choice| with_app(|a| answer(a, choice)));
 }
 
 /// The window's title part for this tab: the file's name (the editor shows the unsaved marker).
 pub fn title(app: &Rc<App>) -> String {
-    app.text.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "Untitled".into())
+    app.text
+        .borrow()
+        .path
+        .as_deref()
+        .map(files::file_name)
+        .unwrap_or_else(|| "Untitled".into())
 }
 
 /// Opens a text file in the tab (asks about unsaved changes first; the file is read once the answer is in).
@@ -131,7 +154,10 @@ fn load(app: &Rc<App>, path: &Path) {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
-            toast(app, format!("Could not read {}: {e}", files::file_name(path)));
+            toast(
+                app,
+                format!("Could not read {}: {e}", files::file_name(path)),
+            );
             return;
         }
     };
@@ -139,7 +165,15 @@ fn load(app: &Rc<App>, path: &Path) {
     let crlf = text.contains("\r\n");
     {
         let mut st = app.text.borrow_mut();
-        *st = TextState { path: Some(path.to_path_buf()), enc, crlf, ..TextState::default() };
+        // The highlight generation carries over, so a result still on its way from the last file is discarded.
+        let hl_ticket = st.hl_gen;
+        *st = TextState {
+            path: Some(path.to_path_buf()),
+            enc,
+            crlf,
+            ..TextState::default()
+        };
+        st.hl_gen = hl_ticket;
     }
     set_meta(app, path);
     let d = doc(app);
@@ -150,6 +184,7 @@ fn load(app: &Rc<App>, path: &Path) {
     refresh(app);
     update_status(app);
     app::update_title(app);
+    highlight_now(app);
 }
 
 /// An empty, untitled document (asks about unsaved changes first).
@@ -173,7 +208,14 @@ fn fresh(app: &Rc<App>) {
 
 /// Empties the tab (no question asked: the caller has already dealt with unsaved changes).
 pub fn clear(app: &Rc<App>) {
-    *app.text.borrow_mut() = TextState::default();
+    {
+        let mut st = app.text.borrow_mut();
+        let hl_ticket = st.hl_gen;
+        *st = TextState {
+            hl_gen: hl_ticket,
+            ..TextState::default()
+        };
+    }
     let d = doc(app);
     d.set_text("".into());
     d.set_has_doc(false);
@@ -186,6 +228,23 @@ pub fn clear(app: &Rc<App>) {
     d.set_find_status("".into());
     d.set_message("".into());
     d.set_status("".into());
+    d.set_hl_on(false);
+    d.set_code_file(false);
+    d.set_caret_prefix("".into());
+    // The preview, the tree and the colour layers go too: each can hold copies of a large text.
+    d.set_md_blocks(ModelRc::default());
+    d.set_json_rows(ModelRc::default());
+    drop_layers(app);
+}
+
+/// Frees the colour layers (one copy of the text per colour) once they no longer show.
+fn drop_layers(app: &Rc<App>) {
+    use slint::Model as _;
+    let d = doc(app);
+    if d.get_hl_texts().row_count() > 0 {
+        d.set_hl_colours(ModelRc::default());
+        d.set_hl_texts(ModelRc::default());
+    }
 }
 
 /// The X in the top bar: back to the empty tab (asking first about unsaved changes).
@@ -280,7 +339,10 @@ pub fn save(app: &Rc<App>, as_new: bool) -> bool {
                 .and_then(|p| p.file_stem())
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Untitled".into());
-            let name = format!("{stem}.{}", KINDS[doc(app).get_kind().clamp(0, KINDS.len() as i32 - 1) as usize].1);
+            let name = format!(
+                "{stem}.{}",
+                KINDS[doc(app).get_kind().clamp(0, KINDS.len() as i32 - 1) as usize].1
+            );
             let picked = rfd::FileDialog::new()
                 .set_title("Save as")
                 .set_file_name(name)
@@ -302,7 +364,10 @@ pub fn save(app: &Rc<App>, as_new: bool) -> bool {
         text = text.replace('\n', "\r\n");
     }
     if let Err(e) = std::fs::write(&path, encode(enc, &text)) {
-        toast(app, format!("Could not save {}: {e}", files::file_name(&path)));
+        toast(
+            app,
+            format!("Could not save {}: {e}", files::file_name(&path)),
+        );
         return false;
     }
     app.text.borrow_mut().path = Some(path.clone());
@@ -376,6 +441,7 @@ fn apply_kind(app: &Rc<App>, k: i32) {
     }
     refresh(app);
     update_status(app);
+    highlight_now(app);
 }
 
 fn edited(app: &Rc<App>) {
@@ -384,6 +450,92 @@ fn edited(app: &Rc<App>) {
     update_status(app);
     refresh(app);
     app::update_title(app);
+    schedule_highlight(app);
+}
+
+/// Highlights the editor's text for its file type now (the overlay layers under the editor; see highlight.rs). Turns the
+/// overlay off for a plain file or a text over the size limit.
+fn highlight_now(app: &Rc<App>) {
+    let d = doc(app);
+    let ext = app
+        .text
+        .borrow()
+        .path
+        .as_deref()
+        .map(files::ext_of)
+        .unwrap_or_default();
+    let syntax = highlight::syntax_for(&ext, d.get_kind());
+    let text = text_of(app);
+    // Markdown keeps word wrap (prose), which the overlay can't follow, so it is not coloured.
+    let capable = syntax.is_some() && text.len() <= HIGHLIGHT_MAX_BYTES;
+    d.set_code_file(capable);
+    let Some(syntax) = syntax.filter(|_| capable) else {
+        d.set_hl_on(false);
+        drop_layers(app);
+        return;
+    };
+    // The text is highlighted on a background thread (syntect is slow on big files); the result comes back on the
+    // event loop and is dropped if an edit or another file has come since (the generation no longer matches).
+    let ticket = {
+        let mut st = app.text.borrow_mut();
+        st.hl_gen = st.hl_gen.wrapping_add(1);
+        st.hl_gen
+    };
+    let syntax = syntax.to_string();
+    // The app theme is not yet passed to the Text tab, so the highlighting uses the dark colours.
+    const DARK: bool = true;
+    std::thread::spawn(move || {
+        let layers = highlight::layers(&text, &syntax, DARK).unwrap_or_default();
+        let _ =
+            slint::invoke_from_event_loop(move || with_app(|a| apply_layers(a, ticket, layers)));
+    });
+}
+
+/// Shows the colour layers a background highlight produced, if no later edit or file has replaced them.
+fn apply_layers(app: &Rc<App>, ticket: u32, layers: Vec<(i32, String)>) {
+    if app.text.borrow().hl_gen != ticket {
+        return;
+    }
+    let d = doc(app);
+    if layers.is_empty() {
+        d.set_hl_on(false);
+        drop_layers(app);
+        return;
+    }
+    let kinds: Vec<slint::Color> = layers
+        .iter()
+        .map(|(k, _)| slint::Color::from_rgb_u8((*k >> 16) as u8, (*k >> 8) as u8, *k as u8))
+        .collect();
+    let texts: Vec<SharedString> = layers.into_iter().map(|(_, s)| s.into()).collect();
+    d.set_hl_colours(ModelRc::new(VecModel::from(kinds)));
+    d.set_hl_texts(ModelRc::new(VecModel::from(texts)));
+    d.set_hl_on(true);
+}
+
+/// The font of plain text (0 Mono, 1 Sans, 2 Serif): kept in the settings, so it is the same next time.
+fn set_font(app: &Rc<App>, font: i32) {
+    let font = font.clamp(0, 2);
+    doc(app).set_text_font(font);
+    app.prefs.borrow_mut().text_font = font;
+    app.prefs.borrow().save();
+}
+
+/// Highlights again after a short pause in typing. Until then the editor shows its own text colour: the overlay would
+/// not match the text that was just typed.
+fn schedule_highlight(app: &Rc<App>) {
+    let hl_ticket = {
+        let mut st = app.text.borrow_mut();
+        st.hl_gen = st.hl_gen.wrapping_add(1);
+        st.hl_gen
+    };
+    doc(app).set_hl_on(false);
+    slint::Timer::single_shot(HIGHLIGHT_DELAY, move || {
+        with_app(|a| {
+            if a.text.borrow().hl_gen == hl_ticket {
+                highlight_now(a);
+            }
+        })
+    });
 }
 
 /// Ln, Col, characters, line ends and encoding, separated by "  |  ".
@@ -396,17 +548,32 @@ fn update_status(app: &Rc<App>) {
             c -= 1;
         }
         let before = &text[..c];
+        // The text up to the caret (with a mark after it): the editor lays it out to find the caret's height, so it can
+        // scroll the caret into view.
+        doc(app).set_caret_prefix(format!("{before}|").into());
         let line = before.matches('\n').count() + 1;
         let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
         let eol = if st.crlf { "CRLF" } else { "LF" };
-        format!("Ln {line}, Col {col}  |  {} characters  |  {eol}  |  {}", text.chars().count(), st.enc.label())
+        format!(
+            "Ln {line}, Col {col}  |  {} characters  |  {eol}  |  {}",
+            text.chars().count(),
+            st.enc.label()
+        )
     };
     doc(app).set_status(status.into());
 }
 
 /// Rebuilds the preview (Markdown) or the tree (JSON) after a change.
 fn refresh(app: &Rc<App>) {
+    use slint::Model as _;
     let d = doc(app);
+    // A preview or tree left from an earlier kind of file is freed (it can be as big as that file).
+    if !d.get_markdown() && d.get_md_blocks().row_count() > 0 {
+        d.set_md_blocks(ModelRc::default());
+    }
+    if !d.get_json() && d.get_json_rows().row_count() > 0 {
+        d.set_json_rows(ModelRc::default());
+    }
     let text = text_of(app);
     if d.get_markdown() {
         d.set_md_blocks(ModelRc::new(VecModel::from(markdown_blocks(&text))));
@@ -429,6 +596,7 @@ fn set_text(app: &Rc<App>, text: &str) {
     update_status(app);
     refresh(app);
     app::update_title(app);
+    schedule_highlight(app);
 }
 
 /// Moves the caret and selects `start..end` in the editor (the editor applies it).
@@ -527,7 +695,14 @@ fn find_next(app: &Rc<App>, needle: &str) {
         (st.selection, st.caret)
     };
     let from = match sel {
-        Some((s, e)) if s < e && text.get(s..e).is_some_and(|t| t.eq_ignore_ascii_case(needle)) => e,
+        Some((s, e))
+            if s < e
+                && text
+                    .get(s..e)
+                    .is_some_and(|t| t.eq_ignore_ascii_case(needle)) =>
+        {
+            e
+        }
         _ => caret.min(text.len()),
     };
     if let Some(i) = find_bytes(&text, needle, from).or_else(|| find_bytes(&text, needle, 0)) {
@@ -549,7 +724,13 @@ fn find_prev(app: &Rc<App>, needle: &str) {
     };
     let before = sel.map(|(s, _)| s).unwrap_or(caret.min(text.len()));
     let hits = matches_of(&text, needle);
-    if let Some(i) = hits.iter().rev().find(|&&h| h < before).or(hits.last()).copied() {
+    if let Some(i) = hits
+        .iter()
+        .rev()
+        .find(|&&h| h < before)
+        .or(hits.last())
+        .copied()
+    {
         select(app, i, i + needle.len());
     }
     show_matches(app, &text, needle);
@@ -563,7 +744,14 @@ fn replace_one(app: &Rc<App>, needle: &str, repl: &str) {
     // The match the find tools selected comes first; otherwise the next one after the caret.
     let selected = app.text.borrow().selection;
     let hit = match selected {
-        Some((s, e)) if s < e && text.get(s..e).is_some_and(|t| t.eq_ignore_ascii_case(needle)) => Some(s),
+        Some((s, e))
+            if s < e
+                && text
+                    .get(s..e)
+                    .is_some_and(|t| t.eq_ignore_ascii_case(needle)) =>
+        {
+            Some(s)
+        }
         _ => {
             let from = app.text.borrow().caret.min(text.len());
             find_bytes(&text, needle, from).or_else(|| find_bytes(&text, needle, 0))
@@ -622,7 +810,11 @@ fn escape_md(text: &str) -> String {
 
 /// Markdown for a code span.
 fn code_md(text: &str) -> String {
-    if text.contains('`') { format!("`` {text} ``") } else { format!("`{text}`") }
+    if text.contains('`') {
+        format!("`` {text} ``")
+    } else {
+        format!("`{text}`")
+    }
 }
 
 /// The bullet of a list item at a nesting depth: a dot, a hollow dot, then a small square.
@@ -635,7 +827,15 @@ fn bullet(depth: i32) -> &'static str {
 }
 
 /// A block of the given kind with its inline Markdown (`md`) and plain text (`text`, for code).
-fn block(kind: i32, level: i32, indent: i32, check: i32, marker: &str, text: &str, md: &str) -> ui::MdBlock {
+fn block(
+    kind: i32,
+    level: i32,
+    indent: i32,
+    check: i32,
+    marker: &str,
+    text: &str,
+    md: &str,
+) -> ui::MdBlock {
     ui::MdBlock {
         kind,
         level,
@@ -738,7 +938,10 @@ pub fn markdown_blocks(src: &str) -> Vec<ui::MdBlock> {
             }
             Event::Start(Tag::List(start)) => {
                 b.flush();
-                b.lists.push(ListLevel { ordered: start.is_some(), next: start.unwrap_or(1) });
+                b.lists.push(ListLevel {
+                    ordered: start.is_some(),
+                    next: start.unwrap_or(1),
+                });
             }
             Event::End(TagEnd::List(_)) => {
                 b.flush();
@@ -755,7 +958,11 @@ pub fn markdown_blocks(src: &str) -> Vec<ui::MdBlock> {
                     }
                     _ => bullet(depth).to_string(),
                 };
-                b.items.push(ItemInfo { indent: depth, check: -1, marker });
+                b.items.push(ItemInfo {
+                    indent: depth,
+                    check: -1,
+                    marker,
+                });
             }
             Event::End(TagEnd::Item) => {
                 b.flush();
@@ -809,8 +1016,17 @@ pub fn markdown_blocks(src: &str) -> Vec<ui::MdBlock> {
             Event::End(TagEnd::TableCell) => {
                 let md = b.take_md();
                 // The header cells are bold.
-                let md = if b.head && !md.is_empty() { format!("**{md}**") } else { md };
-                let cell = ui::MdCell { row: b.row, col: b.col, header: b.head, styled: styled(&md) };
+                let md = if b.head && !md.is_empty() {
+                    format!("**{md}**")
+                } else {
+                    md
+                };
+                let cell = ui::MdCell {
+                    row: b.row,
+                    col: b.col,
+                    header: b.head,
+                    styled: styled(&md),
+                };
                 b.cells.push(cell);
                 b.col += 1;
                 b.cols = b.cols.max(b.col);
@@ -829,14 +1045,19 @@ pub fn markdown_blocks(src: &str) -> Vec<ui::MdBlock> {
             Event::Code(t) => b.md.push_str(&code_md(&t)),
             Event::Start(Tag::Emphasis) | Event::End(TagEnd::Emphasis) => b.md.push('*'),
             Event::Start(Tag::Strong) | Event::End(TagEnd::Strong) => b.md.push_str("**"),
-            Event::Start(Tag::Strikethrough) | Event::End(TagEnd::Strikethrough) => b.md.push_str("~~"),
+            Event::Start(Tag::Strikethrough) | Event::End(TagEnd::Strikethrough) => {
+                b.md.push_str("~~")
+            }
             Event::Start(Tag::Link { dest_url, .. }) => {
                 b.md.push('[');
                 b.links.push(dest_url.to_string());
             }
             Event::End(TagEnd::Link) => {
                 let dest = b.links.pop().unwrap_or_default();
-                let dest = dest.replace(' ', "%20").replace('(', "%28").replace(')', "%29");
+                let dest = dest
+                    .replace(' ', "%20")
+                    .replace('(', "%28")
+                    .replace(')', "%29");
                 b.md.push_str(&format!("]({dest})"));
             }
             // A soft break keeps its line (as GitHub and Obsidian show it), so a quote's two lines stay two lines.
@@ -857,8 +1078,19 @@ fn parse_json(app: &Rc<App>, text: &str) -> Option<Value> {
         Ok(v) => Some(v),
         Err(e) => {
             let msg = e.to_string();
-            let msg = msg.split(" at line ").next().unwrap_or_default().to_string();
-            doc(app).set_message(format!("Not valid JSON: line {}, column {}: {msg}", e.line(), e.column()).into());
+            let msg = msg
+                .split(" at line ")
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            doc(app).set_message(
+                format!(
+                    "Not valid JSON: line {}, column {}: {msg}",
+                    e.line(),
+                    e.column()
+                )
+                .into(),
+            );
             let off = offset_of(text, e.line(), e.column());
             select(app, off, off);
             None
@@ -884,14 +1116,19 @@ fn offset_of(text: &str, line: usize, col: usize) -> usize {
 
 fn pretty(v: &Value, indent: &[u8]) -> String {
     let mut buf = Vec::new();
-    let mut ser = serde_json::Serializer::with_formatter(&mut buf, serde_json::ser::PrettyFormatter::with_indent(indent));
+    let mut ser = serde_json::Serializer::with_formatter(
+        &mut buf,
+        serde_json::ser::PrettyFormatter::with_indent(indent),
+    );
     let _ = v.serialize(&mut ser);
     String::from_utf8(buf).unwrap_or_default()
 }
 
 fn format_json(app: &Rc<App>, indent: i32) {
     let text = text_of(app);
-    let Some(v) = parse_json(app, &text) else { return };
+    let Some(v) = parse_json(app, &text) else {
+        return;
+    };
     let spaces = if indent == 4 { "    " } else { "  " };
     set_text(app, &pretty(&v, spaces.as_bytes()));
     doc(app).set_message(format!("Formatted with {} spaces", spaces.len()).into());
@@ -899,7 +1136,9 @@ fn format_json(app: &Rc<App>, indent: i32) {
 
 fn minify_json(app: &Rc<App>) {
     let text = text_of(app);
-    let Some(v) = parse_json(app, &text) else { return };
+    let Some(v) = parse_json(app, &text) else {
+        return;
+    };
     let out = serde_json::to_string(&v).unwrap_or_default();
     let saved = text.chars().count().saturating_sub(out.chars().count());
     set_text(app, &out);
@@ -908,7 +1147,9 @@ fn minify_json(app: &Rc<App>) {
 
 fn validate_json(app: &Rc<App>) {
     let text = text_of(app);
-    let Some(v) = parse_json(app, &text) else { return };
+    let Some(v) = parse_json(app, &text) else {
+        return;
+    };
     let what = match &v {
         Value::Object(m) => format!("{} keys", m.len()),
         Value::Array(a) => format!("{} items", a.len()),
@@ -919,7 +1160,9 @@ fn validate_json(app: &Rc<App>) {
 
 fn sort_json(app: &Rc<App>) {
     let text = text_of(app);
-    let Some(mut v) = parse_json(app, &text) else { return };
+    let Some(mut v) = parse_json(app, &text) else {
+        return;
+    };
     sort_keys(&mut v);
     set_text(app, &pretty(&v, b"  "));
     doc(app).set_message("Keys sorted (A to Z, every level)".into());
@@ -952,7 +1195,14 @@ fn toggle_node(app: &Rc<App>, path: &str) {
 }
 
 /// One row of the tree: its depth, key, value summary, and whether it folds (containers with items).
-fn walk(v: &Value, path: &str, label: String, depth: i32, collapsed: &HashSet<String>, rows: &mut Vec<ui::JsonRow>) {
+fn walk(
+    v: &Value,
+    path: &str,
+    label: String,
+    depth: i32,
+    collapsed: &HashSet<String>,
+    rows: &mut Vec<ui::JsonRow>,
+) {
     let (container, value) = match v {
         Value::Object(m) if !m.is_empty() => (true, format!("{} keys", m.len())),
         Value::Array(a) if !a.is_empty() => (true, format!("{} items", a.len())),
@@ -961,21 +1211,49 @@ fn walk(v: &Value, path: &str, label: String, depth: i32, collapsed: &HashSet<St
         scalar => {
             let text = serde_json::to_string(scalar).unwrap_or_default();
             let short: String = text.chars().take(160).collect();
-            (false, if short.len() < text.len() { format!("{short}…") } else { short })
+            (
+                false,
+                if short.len() < text.len() {
+                    format!("{short}…")
+                } else {
+                    short
+                },
+            )
         }
     };
     let open = !collapsed.contains(path);
-    rows.push(ui::JsonRow { depth, label: label.into(), value: value.into(), container, open, path: path.into() });
+    rows.push(ui::JsonRow {
+        depth,
+        label: label.into(),
+        value: value.into(),
+        container,
+        open,
+        path: path.into(),
+    });
     if container && open {
         match v {
             Value::Object(m) => {
                 for (k, child) in m {
-                    walk(child, &format!("{path}/{k}"), k.to_string(), depth + 1, collapsed, rows);
+                    walk(
+                        child,
+                        &format!("{path}/{k}"),
+                        k.to_string(),
+                        depth + 1,
+                        collapsed,
+                        rows,
+                    );
                 }
             }
             Value::Array(a) => {
                 for (i, child) in a.iter().enumerate() {
-                    walk(child, &format!("{path}/{i}"), format!("[{i}]"), depth + 1, collapsed, rows);
+                    walk(
+                        child,
+                        &format!("{path}/{i}"),
+                        format!("[{i}]"),
+                        depth + 1,
+                        collapsed,
+                        rows,
+                    );
                 }
             }
             _ => {}
@@ -1016,8 +1294,12 @@ mod tests {
 
     #[test]
     fn sorts_keys_at_every_level() {
-        let mut v: Value = serde_json::from_str(r#"{"b":1,"a":{"d":2,"c":[{"z":0,"y":0}]}}"#).unwrap();
+        let mut v: Value =
+            serde_json::from_str(r#"{"b":1,"a":{"d":2,"c":[{"z":0,"y":0}]}}"#).unwrap();
         sort_keys(&mut v);
-        assert_eq!(serde_json::to_string(&v).unwrap(), r#"{"a":{"c":[{"y":0,"z":0}],"d":2},"b":1}"#);
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"a":{"c":[{"y":0,"z":0}],"d":2},"b":1}"#
+        );
     }
 }

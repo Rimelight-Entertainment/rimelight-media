@@ -17,5 +17,12 @@ pub fn screenshot() -> Result<(Picture, ScreenRect), String> {
     let vs = platform::virtual_screen();
     let mut grabber = ScreenGrabber::new(vs).ok_or("Could not reach the screen")?;
     let bgra = grabber.grab(false).ok_or("Could not copy the screen")?;
-    Ok((Picture { w: vs.w as u32, h: vs.h as u32, rgba: bgra_to_rgba(bgra) }, vs))
+    Ok((
+        Picture {
+            w: vs.w as u32,
+            h: vs.h as u32,
+            rgba: bgra_to_rgba(bgra),
+        },
+        vs,
+    ))
 }

@@ -10,7 +10,203 @@ pub const APP_NAME: &str = "Rimelight Media";
 const EXE_NAME: &str = "rimelight-media.exe";
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const CAPS_KEY: &str = r"Software\RimelightMedia\Capabilities";
-const PROGIDS: [&str; 4] = ["RimelightMedia.Image", "RimelightMedia.Video", "RimelightMedia.Audio", "RimelightMedia.Text"];
+/// The per-category ProgIDs earlier versions registered. Kept on install (a person's UserChoice may still name them, and
+/// they still open the app); removed on uninstall only.
+const OLD_PROGIDS: [&str; 4] = [
+    "RimelightMedia.Image",
+    "RimelightMedia.Video",
+    "RimelightMedia.Audio",
+    "RimelightMedia.Text",
+];
+/// Script types: "Open with" only. Never offered in Default apps, never claimed as the default, and not part of the
+/// not-default check, so double-click keeps running them.
+const SCRIPT_EXTS: [&str; 3] = ["bat", "ps1", "sh"];
+/// The categories in the order of the home page: the icon's name (rimelight-media-<name>.ico) and the extensions.
+static CATEGORIES: [(&str, &[&str]); 4] = [
+    ("picture", IMAGE_EXTS),
+    ("video", VIDEO_EXTS),
+    ("music", AUDIO_EXTS),
+    ("text", TEXT_EXTS),
+];
+/// The glyph of each category (the same icons as the home page's file-type tiles, ui/home.slint), its SVG and the two
+/// colours of the tile (ui/tokens.slint: file-picture, file-video, file-music, file-text).
+const KIND_ICONS: [(&str, &str, &str, &str); 4] = [
+    (
+        "picture",
+        include_str!("../assets/icons/image.svg"),
+        "#7DD3FC",
+        "#0284C7",
+    ),
+    (
+        "video",
+        include_str!("../assets/icons/video.svg"),
+        "#C4B5FD",
+        "#7C3AED",
+    ),
+    (
+        "music",
+        include_str!("../assets/icons/music.svg"),
+        "#FDA4AF",
+        "#E11D48",
+    ),
+    (
+        "text",
+        include_str!("../assets/icons/type.svg"),
+        "#86EFAC",
+        "#16A34A",
+    ),
+];
+
+/// Every extension the app opens, in category order.
+pub fn all_exts() -> impl Iterator<Item = &'static str> {
+    CATEGORIES.iter().flat_map(|(_, exts)| exts.iter().copied())
+}
+
+/// One ProgID per extension, so Explorer's Type column names the format.
+fn progid(ext: &str) -> String {
+    format!("RimelightMedia.{ext}")
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_script(ext: &str) -> bool {
+    SCRIPT_EXTS.contains(&ext)
+}
+
+/// What Explorer's Type column shows for an extension ("JSON File", "MP3 Audio").
+pub fn type_name(ext: &str) -> String {
+    let name = match ext {
+        "png" => "PNG Image",
+        "jpg" | "jpeg" | "jfif" => "JPEG Image",
+        "webp" => "WebP Image",
+        "svg" => "SVG Image",
+        "gif" => "GIF Image",
+        "bmp" => "Bitmap Image",
+        "ico" => "Icon File",
+        "avif" => "AVIF Image",
+        "heic" => "HEIC Image",
+        "heif" => "HEIF Image",
+        "hif" => "HEIF Image",
+        "dng" => "Digital Negative Image",
+        "cr2" | "cr3" => "Canon RAW Image",
+        "nef" | "nrw" => "Nikon RAW Image",
+        "arw" | "srf" | "sr2" => "Sony RAW Image",
+        "raf" => "Fujifilm RAW Image",
+        "orf" => "Olympus RAW Image",
+        "rw2" => "Panasonic RAW Image",
+        "rwl" => "Leica RAW Image",
+        "pef" => "Pentax RAW Image",
+        "srw" => "Samsung RAW Image",
+        "3fr" => "Hasselblad RAW Image",
+        "erf" => "Epson RAW Image",
+        "kdc" => "Kodak RAW Image",
+        "mrw" => "Minolta RAW Image",
+        "x3f" => "Sigma RAW Image",
+        "iiq" => "Phase One RAW Image",
+        "mp4" => "MP4 Video",
+        "m4v" => "M4V Video",
+        "mkv" => "Matroska Video",
+        "webm" => "WebM Video",
+        "mov" => "QuickTime Movie",
+        "avi" => "AVI Video",
+        "wmv" => "Windows Media Video",
+        "mpg" | "mpeg" => "MPEG Video",
+        "m2ts" | "mts" => "AVCHD Video",
+        "flv" => "Flash Video",
+        "3gp" => "3GP Video",
+        "ogv" => "Ogg Video",
+        "mp3" => "MP3 Audio",
+        "flac" => "FLAC Audio",
+        "wav" => "WAV Audio",
+        "ogg" | "oga" => "Ogg Audio",
+        "opus" => "Opus Audio",
+        "m4a" => "M4A Audio",
+        "aac" => "AAC Audio",
+        "wma" => "WMA Audio",
+        "aif" | "aiff" => "AIFF Audio",
+        "mka" => "Matroska Audio",
+        "txt" | "text" => "Text File",
+        "md" | "markdown" => "Markdown File",
+        "json" => "JSON File",
+        "toml" => "TOML File",
+        "yaml" | "yml" => "YAML File",
+        "ini" => "INI File",
+        "cfg" | "conf" => "Configuration File",
+        "log" => "Log File",
+        "csv" => "CSV File",
+        "xml" => "XML File",
+        "env" => "Environment File",
+        "rs" => "Rust Source File",
+        "js" => "JavaScript File",
+        "ts" => "TypeScript File",
+        "html" => "HTML File",
+        "css" => "CSS File",
+        "bat" => "Batch File",
+        "ps1" => "PowerShell Script",
+        "sh" => "Shell Script",
+        _ => return format!("{} File", ext.to_ascii_uppercase()),
+    };
+    name.to_string()
+}
+
+/// The SVG drawn at size x size, as PNG bytes.
+fn render_png(svg: &str, size: u32) -> Option<Vec<u8>> {
+    let tree =
+        resvg::usvg::Tree::from_data(svg.as_bytes(), &resvg::usvg::Options::default()).ok()?;
+    let scale = size as f32 / tree.size().width();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    let mut rgba = Vec::with_capacity(pixmap.data().len());
+    for px in pixmap.pixels() {
+        let c = px.demultiply();
+        rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    let img = image::RgbaImage::from_raw(size, size, rgba)?;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .ok()?;
+    Some(buf.into_inner())
+}
+
+/// A coloured tile with the category's white glyph, as an SVG (the glyph's own <svg> wrapper is dropped).
+fn kind_icon_svg(glyph: &str, top: &str, bottom: &str) -> String {
+    let open_end = glyph
+        .find("<svg")
+        .and_then(|i| glyph[i..].find('>').map(|j| i + j + 1))
+        .unwrap_or(0);
+    let close = glyph.rfind("</svg>").unwrap_or(glyph.len());
+    let body = &glyph[open_end..close];
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="{top}"/><stop offset="1" stop-color="{bottom}"/></linearGradient></defs><rect x="8" y="8" width="240" height="240" rx="56" fill="url(#g)"/><g transform="translate(53 53) scale(6.25)" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{body}</g></svg>"##
+    )
+}
+
+/// A multi-size .ico (PNG frames, Windows Vista and later). `frames` are (size, PNG bytes).
+fn write_ico(path: &Path, frames: &[(u32, Vec<u8>)]) -> bool {
+    let mut out = vec![0, 0, 1, 0];
+    out.extend_from_slice(&(frames.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * frames.len() as u32;
+    for (size, png) in frames {
+        let dim = if *size >= 256 { 0 } else { *size as u8 };
+        out.extend_from_slice(&[dim, dim, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(png.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += png.len() as u32;
+    }
+    for (_, png) in frames {
+        out.extend_from_slice(png);
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::write(path, out).is_ok()
+}
 
 pub fn current_exe() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from(EXE_NAME))
@@ -26,11 +222,15 @@ pub fn write_icon(path: &Path) -> bool {
 }
 
 fn write_picture_icon(path: &Path, pic: crate::picture::Picture) -> bool {
-    let Some(img) = image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba) else { return false };
+    let Some(img) = image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba) else {
+        return false;
+    };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    image::DynamicImage::ImageRgba8(img).save_with_format(path, image::ImageFormat::Ico).is_ok()
+    image::DynamicImage::ImageRgba8(img)
+        .save_with_format(path, image::ImageFormat::Ico)
+        .is_ok()
 }
 
 #[cfg(windows)]
@@ -49,88 +249,149 @@ mod reg {
     }
 
     pub fn register_file_types(exe: &Path, icon: &Path, kinds: [bool; 4]) -> std::io::Result<()> {
-        unregister_file_types();
+        remove_current_progids();
         let exe_s = exe.display().to_string();
         let open = format!("\"{exe_s}\" \"%1\"");
-        let icon_s = if icon.exists() { icon.display().to_string() } else { format!("{exe_s},0") };
-        // Each kind of file shows the logo in its own colour (pictures light blue, video purple, music red, text green).
-        let type_icon = |kind: &str| {
-            let p = icon.with_file_name(format!("rimelight-media-{kind}.ico"));
-            if p.exists() { p.display().to_string() } else { icon_s.clone() }
+        let icon_s = if icon.exists() {
+            icon.display().to_string()
+        } else {
+            format!("{exe_s},0")
         };
-        for ((progid, (name, exts)), on) in PROGIDS
-            .iter()
-            .zip([("Picture", IMAGE_EXTS), ("Video", VIDEO_EXTS), ("Music", AUDIO_EXTS), ("Text", TEXT_EXTS)])
-            .zip(kinds)
-        {
+        for ((kind, exts), on) in CATEGORIES.iter().zip(kinds) {
             if !on {
                 continue;
             }
-            let base = format!(r"Software\Classes\{progid}");
-            set(&base, "", &format!("{name} ({APP_NAME})"))?;
-            set(&format!(r"{base}\DefaultIcon"), "", &type_icon(&name.to_lowercase()))?;
-            set(&format!(r"{base}\shell\open\command"), "", &open)?;
-            // Without this, Explorer hides Open for more than 15 files and Enter runs another verb (for pictures, the
-            // desktop slideshow). Player: one start per file, gathered by app::queue_open.
-            set(&format!(r"{base}\shell\open"), "MultiSelectModel", "Player")?;
-            set(&format!(r"{base}\shell"), "", "open")?;
-            for ext in exts {
-                set(&format!(r"Software\Classes\.{ext}\OpenWithProgids"), progid, "")?;
-                set(&format!(r"{CAPS_KEY}\FileAssociations"), &format!(".{ext}"), progid)?;
-                set(&format!(r"Software\Classes\Applications\{EXE_NAME}\SupportedTypes"), &format!(".{ext}"), "")?;
+            // Each kind of file shows its glyph in its colour (pictures light blue, video purple, music red, text green).
+            let kind_icon = icon.with_file_name(format!("rimelight-media-{kind}.ico"));
+            let type_icon = if kind_icon.exists() {
+                kind_icon.display().to_string()
+            } else {
+                icon_s.clone()
+            };
+            for ext in exts.iter() {
+                let progid = progid(ext);
+                let name = type_name(ext);
+                let base = format!(r"Software\Classes\{progid}");
+                set(&base, "", &name)?;
+                set(&base, "FriendlyTypeName", &name)?;
+                set(&format!(r"{base}\DefaultIcon"), "", &type_icon)?;
+                set(&format!(r"{base}\shell\open\command"), "", &open)?;
+                // Without this, Explorer hides Open for more than 15 files and Enter runs another verb (for pictures, the
+                // desktop slideshow). Player: one start per file, gathered by app::queue_open.
+                set(&format!(r"{base}\shell\open"), "MultiSelectModel", "Player")?;
+                set(&format!(r"{base}\shell"), "", "open")?;
+                set(
+                    &format!(r"Software\Classes\.{ext}\OpenWithProgids"),
+                    &progid,
+                    "",
+                )?;
+                if is_script(ext) {
+                    continue;
+                }
+                set(
+                    &format!(r"{CAPS_KEY}\FileAssociations"),
+                    &format!(".{ext}"),
+                    &progid,
+                )?;
+                set(
+                    &format!(r"Software\Classes\Applications\{EXE_NAME}\SupportedTypes"),
+                    &format!(".{ext}"),
+                    "",
+                )?;
             }
         }
-        set(&format!(r"Software\Classes\Applications\{EXE_NAME}\shell\open\command"), "", &open)?;
-        set(&format!(r"Software\Classes\Applications\{EXE_NAME}"), "FriendlyAppName", APP_NAME)?;
+        set(
+            &format!(r"Software\Classes\Applications\{EXE_NAME}\shell\open\command"),
+            "",
+            &open,
+        )?;
+        set(
+            &format!(r"Software\Classes\Applications\{EXE_NAME}"),
+            "FriendlyAppName",
+            APP_NAME,
+        )?;
         set(CAPS_KEY, "ApplicationName", APP_NAME)?;
         set(CAPS_KEY, "ApplicationIcon", &icon_s)?;
-        set(CAPS_KEY, "ApplicationDescription", "Pictures, video, music, screenshots and screen recording in one small app.")?;
+        set(
+            CAPS_KEY,
+            "ApplicationDescription",
+            "Pictures, video, music, screenshots and screen recording in one small app.",
+        )?;
         set(r"Software\RegisteredApplications", APP_NAME, CAPS_KEY)?;
         crate::platform::file_types_changed();
         Ok(())
     }
 
-    pub fn unregister_file_types() {
+    /// Removes the current per-extension ProgIDs; register_file_types writes them again. The old per-category ProgIDs stay.
+    fn remove_current_progids() {
         let hk = hkcu();
-        for progid in PROGIDS {
+        for ext in all_exts() {
+            let progid = progid(ext);
             let _ = hk.delete_subkey_all(format!(r"Software\Classes\{progid}"));
+            if let Ok(k) = hk.open_subkey_with_flags(
+                format!(r"Software\Classes\.{ext}\OpenWithProgids"),
+                KEY_ALL_ACCESS,
+            ) {
+                let _ = k.delete_value(&progid);
+            }
         }
-        for ext in IMAGE_EXTS.iter().chain(VIDEO_EXTS).chain(AUDIO_EXTS).chain(TEXT_EXTS) {
-            if let Ok(k) = hk.open_subkey_with_flags(format!(r"Software\Classes\.{ext}\OpenWithProgids"), KEY_ALL_ACCESS) {
-                for progid in PROGIDS {
-                    let _ = k.delete_value(progid);
+    }
+
+    /// Uninstall: removes every ProgID, the old per-category ones included.
+    pub fn unregister_file_types() {
+        remove_current_progids();
+        let hk = hkcu();
+        for ext in all_exts() {
+            if let Ok(k) = hk.open_subkey_with_flags(
+                format!(r"Software\Classes\.{ext}\OpenWithProgids"),
+                KEY_ALL_ACCESS,
+            ) {
+                for old in OLD_PROGIDS {
+                    let _ = k.delete_value(old);
                 }
             }
         }
+        for old in OLD_PROGIDS {
+            let _ = hk.delete_subkey_all(format!(r"Software\Classes\{old}"));
+        }
         let _ = hk.delete_subkey_all(format!(r"Software\Classes\Applications\{EXE_NAME}"));
         let _ = hk.delete_subkey_all(r"Software\RimelightMedia");
-        if let Ok(k) = hk.open_subkey_with_flags(r"Software\RegisteredApplications", KEY_ALL_ACCESS) {
+        if let Ok(k) = hk.open_subkey_with_flags(r"Software\RegisteredApplications", KEY_ALL_ACCESS)
+        {
             let _ = k.delete_value(APP_NAME);
         }
         crate::platform::file_types_changed();
     }
 
-    /// The registered extensions whose Windows default (the per-user UserChoice) is not Rimelight Media.
+    /// The extensions (not the script types) whose Windows default is not Rimelight Media. The default is UserChoiceLatest
+    /// (Windows 11 24H2 and later) when that key has a ProgId, else UserChoice. Either an old per-category ProgID or the
+    /// current per-extension one counts as ours.
     pub fn not_default() -> Vec<&'static str> {
         let hk = hkcu();
-        IMAGE_EXTS
-            .iter()
-            .chain(VIDEO_EXTS)
-            .chain(AUDIO_EXTS)
-            .chain(TEXT_EXTS)
-            .copied()
+        all_exts()
+            .filter(|ext| !is_script(ext))
             .filter(|ext| {
-                let base = format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}");
-                let ours = ["UserChoiceLatest", "UserChoice"].iter().find_map(|k| {
-                    hk.open_subkey(format!(r"{base}\{k}")).and_then(|k| k.get_value::<String, _>("ProgId")).ok()
+                let base =
+                    format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}");
+                let chosen = ["UserChoiceLatest", "UserChoice"].iter().find_map(|k| {
+                    hk.open_subkey(format!(r"{base}\{k}"))
+                        .and_then(|k| k.get_value::<String, _>("ProgId"))
+                        .ok()
                 });
-                !ours.is_some_and(|p| p.starts_with("RimelightMedia."))
+                let ours =
+                    chosen.is_some_and(|p| p == progid(ext) || OLD_PROGIDS.contains(&p.as_str()));
+                !ours
             })
             .collect()
     }
 
     pub fn file_types_registered() -> bool {
-        hkcu().open_subkey(format!(r"Software\Classes\{}\shell\open\command", PROGIDS[0])).is_ok()
+        hkcu()
+            .open_subkey(format!(
+                r"Software\Classes\{}\shell\open\command",
+                progid(IMAGE_EXTS[0])
+            ))
+            .is_ok()
     }
 
     /// Windows' own "Use the Print screen key to open screen capture" (on when the value is missing, Windows 11).
@@ -155,7 +416,11 @@ mod reg {
             Some(exe) => {
                 let _ = set(base, "", "URL:Screen snip");
                 let _ = set(base, "URL Protocol", "");
-                let _ = set(&format!(r"{base}\shell\open\command"), "", &format!("\"{}\" \"%1\"", exe.display()));
+                let _ = set(
+                    &format!(r"{base}\shell\open\command"),
+                    "",
+                    &format!("\"{}\" \"%1\"", exe.display()),
+                );
             }
             None => {
                 let _ = hkcu().delete_subkey_all(base);
@@ -164,7 +429,9 @@ mod reg {
     }
 
     pub fn set_run_at_login(exe: Option<&Path>) {
-        let Ok((key, _)) = hkcu().create_subkey(RUN_KEY) else { return };
+        let Ok((key, _)) = hkcu().create_subkey(RUN_KEY) else {
+            return;
+        };
         match exe {
             Some(exe) => {
                 let _ = key.set_value(APP_NAME, &format!("\"{}\" --background", exe.display()));
@@ -197,22 +464,28 @@ mod reg {
     pub fn set_screenclip(_: Option<&Path>) {}
 }
 
-pub use reg::{file_types_registered, not_default, set_run_at_login, set_screenclip, set_windows_printscreen, windows_printscreen_on};
+pub use reg::{
+    file_types_registered, not_default, set_run_at_login, set_screenclip, set_windows_printscreen,
+    windows_printscreen_on,
+};
 
 /// Registers the chosen file types (pictures, video, music) for this exe; the others are removed. An installed copy keeps
 /// the same path across updates.
 pub fn register_file_types(kinds: [bool; 4]) -> Result<(), String> {
     let icon = icon_path();
     write_icon(&icon);
-    // The same colours as the home page's file-type icons (ui/tokens.slint: file-picture, file-video, file-music, file-text).
-    for (kind, top, bottom) in [
-        ("picture", "#7DD3FC", "#0284C7"),
-        ("video", "#C4B5FD", "#7C3AED"),
-        ("music", "#FDA4AF", "#E11D48"),
-        ("text", "#86EFAC", "#16A34A"),
-    ] {
-        if let Some(pic) = crate::picture::logo_tinted(256, top, bottom) {
-            write_picture_icon(&icon.with_file_name(format!("rimelight-media-{kind}.ico")), pic);
+    // Each category's glyph in white on its colour, at the sizes Explorer uses (16, 32, 48 and 256 px).
+    for (kind, glyph, top, bottom) in KIND_ICONS {
+        let svg = kind_icon_svg(glyph, top, bottom);
+        let frames: Vec<(u32, Vec<u8>)> = [16u32, 32, 48, 256]
+            .into_iter()
+            .filter_map(|size| render_png(&svg, size).map(|png| (size, png)))
+            .collect();
+        if frames.len() == 4 {
+            write_ico(
+                &icon.with_file_name(format!("rimelight-media-{kind}.ico")),
+                &frames,
+            );
         }
     }
     reg::register_file_types(&current_exe(), &icon, kinds).map_err(|e| e.to_string())
@@ -252,7 +525,12 @@ fn shortcut_script(folder: &str) -> String {
     format!(
         "New-Item -ItemType Directory -Force \"{folder}\" | Out-Null; $s=(New-Object -ComObject WScript.Shell).CreateShortcut(\"{folder}\\{APP_NAME}.lnk\"); $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.IconLocation='{},0'; $s.Description='Pictures, video, music and screen capture'; $s.Save()",
         quote(&launcher_path()),
-        quote(&current_exe().parent().map(Path::to_path_buf).unwrap_or_default()),
+        quote(
+            &current_exe()
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default()
+        ),
         quote(&current_exe()),
     )
 }
@@ -266,7 +544,9 @@ pub fn set_shortcuts(desktop: bool) {
         script.push_str("; ");
         script.push_str(&shortcut_script(DESKTOP));
     } else {
-        script.push_str(&format!("; Remove-Item -Force -ErrorAction SilentlyContinue \"{DESKTOP}\\{APP_NAME}.lnk\""));
+        script.push_str(&format!(
+            "; Remove-Item -Force -ErrorAction SilentlyContinue \"{DESKTOP}\\{APP_NAME}.lnk\""
+        ));
     }
     powershell(&script);
 }
@@ -319,7 +599,9 @@ pub fn unregister_all() {
 /// Windows Settings > Default apps, on Rimelight Media's page. (Started through the shell: Explorer given an
 /// ms-settings link with an encoded space opened the Documents folder instead.)
 pub fn open_default_apps_settings() {
-    if !crate::platform::open_uri(&format!("ms-settings:defaultapps?registeredAppUser={APP_NAME}")) {
+    if !crate::platform::open_uri(&format!(
+        "ms-settings:defaultapps?registeredAppUser={APP_NAME}"
+    )) {
         crate::platform::open_uri("ms-settings:defaultapps");
     }
 }

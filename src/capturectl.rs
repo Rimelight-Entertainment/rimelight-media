@@ -83,7 +83,12 @@ pub fn wire(app: &Rc<App>) {
             }
         })
     });
-    voice.set_formats(ModelRc::new(VecModel::from(VOICE_FORMATS.iter().map(|f| SharedString::from(*f)).collect::<Vec<_>>())));
+    voice.set_formats(ModelRc::new(VecModel::from(
+        VOICE_FORMATS
+            .iter()
+            .map(|f| SharedString::from(*f))
+            .collect::<Vec<_>>(),
+    )));
     voice.set_format_index(0);
     voice.set_mic_index(0);
     let gain = app.prefs.borrow().voice_gain_db;
@@ -96,7 +101,11 @@ pub fn wire(app: &Rc<App>) {
             set_gain(a, db, true);
         })
     });
-    app.slow_tick.start(slint::TimerMode::Repeated, Duration::from_millis(100), || with_app(slow_tick));
+    app.slow_tick.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(100),
+        || with_app(slow_tick),
+    );
 }
 
 /// The hotkey/tray entry points.
@@ -121,7 +130,11 @@ pub fn snip(app: &Rc<App>, mode: &str) {
 }
 
 pub fn record_toggle(app: &Rc<App>) {
-    if app.cap.borrow().screen.is_some() { stop_screen(app) } else { begin(app, "region", Purpose::Record) }
+    if app.cap.borrow().screen.is_some() {
+        stop_screen(app)
+    } else {
+        begin(app, "region", Purpose::Record)
+    }
 }
 
 /// Hides Rimelight Media, grabs every monitor, then shows the overlay (or, for "whole screen" snips, finishes at once).
@@ -164,14 +177,31 @@ fn begin(app: &Rc<App>, mode: &str, purpose: Purpose) {
     });
 }
 
-fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<TopWindow>, mode: &str, purpose: Purpose, main_was_visible: bool) {
-    let Some(w) = SPARE_OVERLAY.with(|s| s.borrow_mut().take()).or_else(|| ui::SnipWindow::new().ok()) else { return };
+fn show_overlay(
+    app: &Rc<App>,
+    shot: Picture,
+    rect: ScreenRect,
+    windows: Vec<TopWindow>,
+    mode: &str,
+    purpose: Purpose,
+    main_was_visible: bool,
+) {
+    // Made for each snip and dropped after it (release_overlay), so nothing is kept at rest. It never zooms in: animations
+    // are off for every window of ours from creation (platform::start_no_window_animations).
+    let Ok(w) = ui::SnipWindow::new() else { return };
     w.invoke_reset();
     w.set_shot(picture::to_slint(&shot));
     w.set_shot_w(shot.w as i32);
     w.set_shot_h(shot.h as i32);
     w.set_mode(mode.into());
-    w.set_purpose(if purpose == Purpose::Record { "record" } else { "snip" }.into());
+    w.set_purpose(
+        if purpose == Purpose::Record {
+            "record"
+        } else {
+            "snip"
+        }
+        .into(),
+    );
     let (fw, fh) = (rect.w.max(1) as f32, rect.h.max(1) as f32);
     let boxes: Vec<ui::WindowBox> = windows
         .iter()
@@ -190,7 +220,9 @@ fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<Top
         w.set_mon_y((mon.y - rect.y) as f32 / fh);
         w.set_mon_w(mon.w as f32 / fw);
         let (fx, fy) = ((cx - rect.x) as f32 / fw, (cy - rect.y) as f32 / fh);
-        let first = boxes.iter().position(|b| fx >= b.x && fx <= b.x + b.w && fy >= b.y && fy <= b.y + b.h);
+        let first = boxes
+            .iter()
+            .position(|b| fx >= b.x && fx <= b.x + b.w && fy >= b.y && fy <= b.y + b.h);
         w.set_hovered(first.map_or(-1, |i| i as i32));
     }
     w.on_hit(move |fx, fy| {
@@ -210,24 +242,49 @@ fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<Top
         out
     });
     w.on_picked(|x, y| with_app(move |a| color_picked(a, x, y)));
-    w.window().set_position(slint::PhysicalPosition::new(rect.x, rect.y));
-    w.window().set_size(slint::PhysicalSize::new(rect.w as u32, rect.h as u32));
+    w.window()
+        .set_position(slint::PhysicalPosition::new(rect.x, rect.y));
+    w.window()
+        .set_size(slint::PhysicalSize::new(rect.w as u32, rect.h as u32));
     let _ = w.show();
     // Again after showing: winit may have moved it to fit a monitor.
-    w.window().set_position(slint::PhysicalPosition::new(rect.x, rect.y));
-    w.window().set_size(slint::PhysicalSize::new(rect.w as u32, rect.h as u32));
-    // No fade or zoom in: the overlay is there at once.
-    platform::no_transitions(hwnd_of(w.window()));
+    w.window()
+        .set_position(slint::PhysicalPosition::new(rect.x, rect.y));
+    w.window()
+        .set_size(slint::PhysicalSize::new(rect.w as u32, rect.h as u32));
+    focus_overlay(w.as_weak(), 0);
+    app.cap.borrow_mut().snip = Some(Snip {
+        window: w,
+        shot,
+        rect,
+        windows,
+        purpose,
+        main_was_visible,
+        free: Vec::new(),
+    });
+}
+
+/// Gives the overlay the keyboard once its native window exists (Slint creates it inside the event loop, after show).
+/// Retried for up to 250 ms.
+fn focus_overlay(w: slint::Weak<ui::SnipWindow>, tries: u32) {
     use slint::winit_030::WinitWindowAccessor as _;
-    w.window().with_winit_window(|ww| ww.focus_window());
-    app.cap.borrow_mut().snip = Some(Snip { window: w, shot, rect, windows, purpose, main_was_visible, free: Vec::new() });
+    let Some(win) = w.upgrade() else { return };
+    let focused = win
+        .window()
+        .with_winit_window(|ww| ww.focus_window())
+        .is_some();
+    if !focused && tries < 50 {
+        slint::Timer::single_shot(Duration::from_millis(5), move || {
+            focus_overlay(w, tries + 1)
+        });
+    }
 }
 
 fn overlay_cancel(app: &Rc<App>) {
     let snip = app.cap.borrow_mut().snip.take();
     if let Some(s) = snip {
         let _ = s.window.hide();
-        keep_overlay(&s.window);
+        release_overlay(&s.window);
         if s.main_was_visible {
             show_main(app);
         }
@@ -235,17 +292,31 @@ fn overlay_cancel(app: &Rc<App>) {
 }
 
 fn overlay_done(app: &Rc<App>, x: f32, y: f32, w: f32, h: f32) {
-    let Some(s) = app.cap.borrow_mut().snip.take() else { return };
+    let Some(s) = app.cap.borrow_mut().snip.take() else {
+        return;
+    };
     let _ = s.window.hide();
-    keep_overlay(&s.window);
+    release_overlay(&s.window);
     let mode = s.window.get_mode();
     // In window mode, use the window's exact pixels.
     let px = |f: f32, total: i32| (f * total as f32).round() as i32;
-    let mut area = ScreenRect { x: px(x, s.rect.w), y: px(y, s.rect.h), w: px(w, s.rect.w), h: px(h, s.rect.h) };
+    let mut area = ScreenRect {
+        x: px(x, s.rect.w),
+        y: px(y, s.rect.h),
+        w: px(w, s.rect.w),
+        h: px(h, s.rect.h),
+    };
     if mode == "window"
-        && let Some(t) = s.windows.iter().find(|t| (t.rect.x - s.rect.x - area.x).abs() <= 2 && (t.rect.y - s.rect.y - area.y).abs() <= 2)
+        && let Some(t) = s.windows.iter().find(|t| {
+            (t.rect.x - s.rect.x - area.x).abs() <= 2 && (t.rect.y - s.rect.y - area.y).abs() <= 2
+        })
     {
-        area = ScreenRect { x: t.rect.x - s.rect.x, y: t.rect.y - s.rect.y, w: t.rect.w, h: t.rect.h };
+        area = ScreenRect {
+            x: t.rect.x - s.rect.x,
+            y: t.rect.y - s.rect.y,
+            w: t.rect.w,
+            h: t.rect.h,
+        };
     }
     // Clip to the screenshot.
     let x0 = area.x.clamp(0, s.shot.w as i32 - 1);
@@ -254,15 +325,32 @@ fn overlay_done(app: &Rc<App>, x: f32, y: f32, w: f32, h: f32) {
     let y1 = (area.y + area.h).clamp(y0 + 1, s.shot.h as i32);
     match s.purpose {
         Purpose::Snip if mode == "text" => {
-            let pic = picture::crop_px(&s.shot, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+            let pic = picture::crop_px(
+                &s.shot,
+                x0 as u32,
+                y0 as u32,
+                (x1 - x0) as u32,
+                (y1 - y0) as u32,
+            );
             copy_text(app, &pic, s.main_was_visible);
         }
         Purpose::Snip => {
-            let pic = picture::crop_px(&s.shot, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+            let pic = picture::crop_px(
+                &s.shot,
+                x0 as u32,
+                y0 as u32,
+                (x1 - x0) as u32,
+                (y1 - y0) as u32,
+            );
             finish_snip(app, pic, s.main_was_visible);
         }
         Purpose::Record => {
-            let rect = ScreenRect { x: s.rect.x + x0, y: s.rect.y + y0, w: x1 - x0, h: y1 - y0 };
+            let rect = ScreenRect {
+                x: s.rect.x + x0,
+                y: s.rect.y + y0,
+                w: x1 - x0,
+                h: y1 - y0,
+            };
             start_screen(app, rect, s.main_was_visible);
         }
     }
@@ -271,7 +359,12 @@ fn overlay_done(app: &Rc<App>, x: f32, y: f32, w: f32, h: f32) {
 fn finish_snip(app: &Rc<App>, pic: Picture, main_was_visible: bool) {
     let (copy, save, open, dir) = {
         let p = app.prefs.borrow();
-        (p.snip_copy, p.snip_save, p.snip_open, p.screenshot_dir.clone())
+        (
+            p.snip_copy,
+            p.snip_save,
+            p.snip_open,
+            p.screenshot_dir.clone(),
+        )
     };
     let mut notes = Vec::new();
     if copy {
@@ -319,10 +412,22 @@ fn hwnd_of(window: &slint::Window) -> isize {
 fn start_screen(app: &Rc<App>, rect: ScreenRect, _main_was_visible: bool) {
     let (system_audio, mic, fps, dir) = {
         let p = app.prefs.borrow();
-        (p.rec_system_audio, p.rec_mic, p.rec_fps, p.recording_dir.clone())
+        (
+            p.rec_system_audio,
+            p.rec_mic,
+            p.rec_fps,
+            p.recording_dir.clone(),
+        )
     };
     let path = recorder::new_path(&dir, "Recording", "mp4");
-    let opts = recorder::Options { screen: Some((rect, fps)), camera: None, system_audio, mic, path, mic_name: None };
+    let opts = recorder::Options {
+        screen: Some((rect, fps)),
+        camera: None,
+        system_audio,
+        mic,
+        path,
+        mic_name: None,
+    };
     match recorder::start(opts) {
         Ok(rec) => {
             let notes = rec.notes.join("; ");
@@ -350,7 +455,10 @@ fn show_bar(app: &Rc<App>, rect: ScreenRect) {
             if let Some(b) = a.cap.borrow().bar.as_ref() {
                 let pos = b.window().position();
                 let sf = b.window().scale_factor();
-                b.window().set_position(slint::PhysicalPosition::new(pos.x + (dx * sf) as i32, pos.y + (dy * sf) as i32));
+                b.window().set_position(slint::PhysicalPosition::new(
+                    pos.x + (dx * sf) as i32,
+                    pos.y + (dy * sf) as i32,
+                ));
             }
         })
     });
@@ -359,8 +467,15 @@ fn show_bar(app: &Rc<App>, rect: ScreenRect) {
     let sf = bar.window().scale_factor();
     let bw = (300.0 * sf) as i32;
     // Above the recorded area if there's room, else at the top of the screen. It never shows in the recording.
-    let y = if rect.y - vs.y > (60.0 * sf) as i32 { rect.y - (52.0 * sf) as i32 } else { vs.y + (8.0 * sf) as i32 };
-    bar.window().set_position(slint::PhysicalPosition::new(rect.x + rect.w / 2 - bw / 2, y));
+    let y = if rect.y - vs.y > (60.0 * sf) as i32 {
+        rect.y - (52.0 * sf) as i32
+    } else {
+        vs.y + (8.0 * sf) as i32
+    };
+    bar.window().set_position(slint::PhysicalPosition::new(
+        rect.x + rect.w / 2 - bw / 2,
+        y,
+    ));
     use slint::winit_030::WinitWindowAccessor as _;
     use slint::winit_030::winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
     bar.window().with_winit_window(|w| {
@@ -389,7 +504,9 @@ fn close_bar(app: &Rc<App>) {
 }
 
 pub fn stop_screen(app: &Rc<App>) {
-    let Some(rec) = app.cap.borrow_mut().screen.take() else { return };
+    let Some(rec) = app.cap.borrow_mut().screen.take() else {
+        return;
+    };
     close_bar(app);
     toast(app, "Finishing the recording…");
     std::thread::spawn(move || {
@@ -409,7 +526,9 @@ pub fn stop_screen(app: &Rc<App>) {
 }
 
 fn discard_screen(app: &Rc<App>) {
-    let Some(rec) = app.cap.borrow_mut().screen.take() else { return };
+    let Some(rec) = app.cap.borrow_mut().screen.take() else {
+        return;
+    };
     close_bar(app);
     std::thread::spawn(move || rec.discard());
     show_main(app);
@@ -459,9 +578,19 @@ fn toggle_voice(app: &Rc<App>) {
     let dir = app.prefs.borrow().voice_dir.clone();
     let (mic_name, ext) = {
         let c = app.cap.borrow();
-        (mic_name_at(c.voice_mic), VOICE_FORMATS[c.voice_format.min(VOICE_FORMATS.len() - 1)])
+        (
+            mic_name_at(c.voice_mic),
+            VOICE_FORMATS[c.voice_format.min(VOICE_FORMATS.len() - 1)],
+        )
     };
-    let opts = recorder::Options { screen: None, camera: None, system_audio: false, mic: true, path: recorder::new_path(&dir, "Recording", ext), mic_name };
+    let opts = recorder::Options {
+        screen: None,
+        camera: None,
+        system_audio: false,
+        mic: true,
+        path: recorder::new_path(&dir, "Recording", ext),
+        mic_name,
+    };
     match recorder::start(opts) {
         Ok(rec) => {
             {
@@ -478,7 +607,11 @@ fn toggle_voice(app: &Rc<App>) {
 
 /// The microphone with this index in the voice page's list (0 is the default one).
 fn mic_name_at(index: usize) -> Option<String> {
-    if index == 0 { None } else { recorder_mic_names().get(index - 1).cloned() }
+    if index == 0 {
+        None
+    } else {
+        recorder_mic_names().get(index - 1).cloned()
+    }
 }
 
 fn recorder_mic_names() -> Vec<String> {
@@ -513,8 +646,17 @@ fn add_marker(app: &Rc<App>) {
 }
 
 fn set_marker_list(app: &Rc<App>) {
-    let items: Vec<SharedString> = app.cap.borrow().voice_marks.iter().enumerate().map(|(i, ms)| format!("Marker {} · {}", i + 1, files::clock(*ms)).into()).collect();
-    app.ui.global::<ui::Voice>().set_markers(ModelRc::new(VecModel::from(items)));
+    let items: Vec<SharedString> = app
+        .cap
+        .borrow()
+        .voice_marks
+        .iter()
+        .enumerate()
+        .map(|(i, ms)| format!("Marker {} · {}", i + 1, files::clock(*ms)).into())
+        .collect();
+    app.ui
+        .global::<ui::Voice>()
+        .set_markers(ModelRc::new(VecModel::from(items)));
 }
 
 /// Saves the markers next to the recording, as <name>.json.
@@ -522,7 +664,10 @@ fn write_marks(path: &std::path::Path, marks: &[u64]) {
     let mut s = String::from("{\n  \"markers\": [\n");
     for (i, ms) in marks.iter().enumerate() {
         let comma = if i + 1 < marks.len() { "," } else { "" };
-        s.push_str(&format!("    {{\"ms\": {ms}, \"time\": \"{}\"}}{comma}\n", files::clock(*ms)));
+        s.push_str(&format!(
+            "    {{\"ms\": {ms}, \"time\": \"{}\"}}{comma}\n",
+            files::clock(*ms)
+        ));
     }
     s.push_str("  ]\n}\n");
     let _ = std::fs::write(path.with_extension("json"), s);
@@ -562,7 +707,9 @@ fn refresh_mics(app: &Rc<App>) {
 
 /// Renames a take (and its markers file), keeping its format.
 fn rename_take(app: &Rc<App>, index: i32, name: String) {
-    let Some(old) = takes(app).get(index.max(0) as usize).cloned() else { return };
+    let Some(old) = takes(app).get(index.max(0) as usize).cloned() else {
+        return;
+    };
     let name = name.trim().to_string();
     if name.is_empty() || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) {
         toast(app, "That name can't be used.");
@@ -580,13 +727,13 @@ fn rename_take(app: &Rc<App>, index: i32, name: String) {
         toast(app, "A recording with that name already exists.");
         return;
     }
-    if let Err(e) = std::fs::rename(&old, &new) {
+    if let Err(e) = crate::app::rename_file(&old, &new) {
         toast(app, format!("Could not rename it: {e}"));
         return;
     }
     let old_json = old.with_extension("json");
     if old_json.is_file() {
-        let _ = std::fs::rename(&old_json, new.with_extension("json"));
+        let _ = crate::app::rename_file(&old_json, &new.with_extension("json"));
     }
     toast(app, format!("Renamed to {}", files::file_name(&new)));
     refresh_takes(app);
@@ -594,7 +741,9 @@ fn rename_take(app: &Rc<App>, index: i32, name: String) {
 
 /// Deletes a take (and its markers file) to the Recycle Bin.
 fn delete_take(app: &Rc<App>, index: i32) {
-    let Some(p) = takes(app).get(index.max(0) as usize).cloned() else { return };
+    let Some(p) = takes(app).get(index.max(0) as usize).cloned() else {
+        return;
+    };
     let json = p.with_extension("json");
     let mut gone = crate::platform::recycle(&p) || std::fs::remove_file(&p).is_ok();
     if json.is_file() {
@@ -603,7 +752,14 @@ fn delete_take(app: &Rc<App>, index: i32) {
     if gone {
         gone = !p.exists();
     }
-    toast(app, if gone { format!("{} moved to the Recycle Bin", files::file_name(&p)) } else { "Could not delete it.".to_string() });
+    toast(
+        app,
+        if gone {
+            format!("{} moved to the Recycle Bin", files::file_name(&p))
+        } else {
+            "Could not delete it.".to_string()
+        },
+    );
     refresh_takes(app);
 }
 
@@ -614,7 +770,14 @@ fn takes(app: &Rc<App>) -> Vec<PathBuf> {
             rd.filter_map(Result::ok)
                 .map(|e| e.path())
                 .filter(|p| files::kind_of(p) == Some(files::Kind::Audio))
-                .map(|p| (std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), p))
+                .map(|p| {
+                    (
+                        std::fs::metadata(&p)
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::UNIX_EPOCH),
+                        p,
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -628,7 +791,10 @@ pub fn refresh_takes(app: &Rc<App>) {
         .enumerate()
         .map(|(i, p)| ui::RecentItem {
             name: files::file_name(p).into(),
-            detail: std::fs::metadata(p).map(|m| files::human_size(m.len())).unwrap_or_default().into(),
+            detail: std::fs::metadata(p)
+                .map(|m| files::human_size(m.len()))
+                .unwrap_or_default()
+                .into(),
             kind: "audio".into(),
             index: i as i32,
         })
@@ -701,32 +867,100 @@ fn free_point(app: &Rc<App>, x: f32, y: f32, first: bool) {
         return;
     }
     s.free.push((x, y));
+    let (sw, sh) = (s.shot.w as f32, s.shot.h as f32);
+    let smooth = smooth_outline(
+        &s.free
+            .iter()
+            .map(|(x, y)| (x * sw, y * sh))
+            .collect::<Vec<_>>(),
+    );
     let mut path = String::new();
-    for (i, (px, py)) in s.free.iter().enumerate() {
-        path.push_str(&format!("{} {:.0} {:.0} ", if i == 0 { "M" } else { "L" }, px * 10000.0, py * 10000.0));
+    for (i, (px, py)) in smooth.iter().enumerate() {
+        path.push_str(&format!(
+            "{} {:.0} {:.0} ",
+            if i == 0 { "M" } else { "L" },
+            px / sw * 10000.0,
+            py / sh * 10000.0
+        ));
     }
-    if s.free.len() > 2 {
+    if smooth.len() > 2 {
         path.push('Z');
     }
     s.window.set_free_path(path.into());
 }
 
+/// The lasso's raw pointer path (pixels) made smooth: points under 2 px apart are dropped, then two Chaikin rounds
+/// cut each corner. Used for both the live outline and the cut, so what you see is what gets kept.
+fn smooth_outline(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut pts: Vec<(f32, f32)> = Vec::with_capacity(points.len());
+    for &p in points {
+        if pts.last().is_none_or(|&(lx, ly): &(f32, f32)| {
+            ((lx - p.0).powi(2) + (ly - p.1).powi(2)).sqrt() >= 2.0
+        }) {
+            pts.push(p);
+        }
+    }
+    if pts.len() < 3 {
+        return pts;
+    }
+    for _ in 0..2 {
+        pts = chaikin_closed(&pts);
+    }
+    pts
+}
+
+/// One closed Chaikin round: each edge a-b becomes the points a+(b-a)/4 and a+3(b-a)/4.
+fn chaikin_closed(p: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let n = p.len();
+    let mut out = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let (ax, ay) = p[i];
+        let (bx, by) = p[(i + 1) % n];
+        out.push((ax * 0.75 + bx * 0.25, ay * 0.75 + by * 0.25));
+        out.push((ax * 0.25 + bx * 0.75, ay * 0.25 + by * 0.75));
+    }
+    out
+}
+
 /// Freeform: the shape's bounding box, with everything outside the shape transparent.
 fn free_end(app: &Rc<App>) {
-    let points = app.cap.borrow().snip.as_ref().map(|s| s.free.clone()).unwrap_or_default();
+    let points = app
+        .cap
+        .borrow()
+        .snip
+        .as_ref()
+        .map(|s| s.free.clone())
+        .unwrap_or_default();
     if points.len() < 3 {
         if let Some(s) = app.cap.borrow().snip.as_ref() {
             s.window.set_free_path(SharedString::new());
         }
         return;
     }
-    let Some(s) = app.cap.borrow_mut().snip.take() else { return };
+    let Some(s) = app.cap.borrow_mut().snip.take() else {
+        return;
+    };
     let _ = s.window.hide();
-    keep_overlay(&s.window);
+    release_overlay(&s.window);
     let (sw, sh) = (s.shot.w as f32, s.shot.h as f32);
-    let px: Vec<(f32, f32)> = points.iter().map(|(x, y)| (x * sw, y * sh)).collect();
-    let x0 = px.iter().map(|p| p.0).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
-    let y0 = px.iter().map(|p| p.1).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
+    let px = smooth_outline(
+        &points
+            .iter()
+            .map(|(x, y)| (x * sw, y * sh))
+            .collect::<Vec<_>>(),
+    );
+    let x0 = px
+        .iter()
+        .map(|p| p.0)
+        .fold(f32::MAX, f32::min)
+        .floor()
+        .max(0.0) as u32;
+    let y0 = px
+        .iter()
+        .map(|p| p.1)
+        .fold(f32::MAX, f32::min)
+        .floor()
+        .max(0.0) as u32;
     let x1 = (px.iter().map(|p| p.0).fold(0.0, f32::max).ceil() as u32).min(s.shot.w);
     let y1 = (px.iter().map(|p| p.1).fold(0.0, f32::max).ceil() as u32).min(s.shot.h);
     if x1 <= x0 + 1 || y1 <= y0 + 1 {
@@ -736,29 +970,41 @@ fn free_end(app: &Rc<App>) {
         return;
     }
     let mut pic = picture::crop_px(&s.shot, x0, y0, x1 - x0, y1 - y0);
-    for y in 0..pic.h {
-        for x in 0..pic.w {
-            if !inside(&px, x0 as f32 + x as f32 + 0.5, y0 as f32 + y as f32 + 0.5) {
-                pic.rgba[((y * pic.w + x) * 4 + 3) as usize] = 0;
-            }
+    // The mask is the outline filled with anti-aliasing; its coverage becomes the picture's alpha, so the edge blends.
+    if let (Some(path), Some(mut mask)) = (
+        outline_path(&px, x0 as f32, y0 as f32),
+        resvg::tiny_skia::Pixmap::new(pic.w, pic.h),
+    ) {
+        let mut paint = resvg::tiny_skia::Paint::default();
+        paint.set_color_rgba8(255, 255, 255, 255);
+        paint.anti_alias = true;
+        mask.fill_path(
+            &path,
+            &paint,
+            resvg::tiny_skia::FillRule::EvenOdd,
+            resvg::tiny_skia::Transform::identity(),
+            None,
+        );
+        for (i, p) in pic.rgba.chunks_exact_mut(4).enumerate() {
+            let cover = mask.data()[i * 4 + 3] as u32;
+            p[3] = ((p[3] as u32 * cover + 127) / 255) as u8;
         }
     }
     finish_snip(app, pic, s.main_was_visible);
 }
 
-/// Even-odd point-in-polygon test.
-fn inside(poly: &[(f32, f32)], x: f32, y: f32) -> bool {
-    let mut inside = false;
-    let mut j = poly.len() - 1;
-    for i in 0..poly.len() {
-        let (xi, yi) = poly[i];
-        let (xj, yj) = poly[j];
-        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
-            inside = !inside;
+/// The outline as a closed path in the crop's pixel space (screen pixels minus the crop's origin).
+fn outline_path(poly: &[(f32, f32)], ox: f32, oy: f32) -> Option<resvg::tiny_skia::Path> {
+    let mut pb = resvg::tiny_skia::PathBuilder::new();
+    for (i, &(x, y)) in poly.iter().enumerate() {
+        if i == 0 {
+            pb.move_to(x - ox, y - oy);
+        } else {
+            pb.line_to(x - ox, y - oy);
         }
-        j = i;
     }
-    inside
+    pb.close();
+    pb.finish()
 }
 
 fn pixel_at(s: &Snip, x: f32, y: f32) -> [u8; 3] {
@@ -771,23 +1017,36 @@ fn pixel_at(s: &Snip, x: f32, y: f32) -> [u8; 3] {
 /// The colour under the pointer as "#RRGGBB" (and the loupe's swatch).
 fn color_at(app: &Rc<App>, x: f32, y: f32) -> SharedString {
     let c = app.cap.borrow();
-    let Some(s) = c.snip.as_ref() else { return SharedString::new() };
+    let Some(s) = c.snip.as_ref() else {
+        return SharedString::new();
+    };
     let [r, g, b] = pixel_at(s, x, y);
     s.window.set_swatch(slint::Color::from_rgb_u8(r, g, b));
     format!("#{r:02X}{g:02X}{b:02X}").into()
 }
 
 fn color_picked(app: &Rc<App>, x: f32, y: f32) {
-    let Some(s) = app.cap.borrow_mut().snip.take() else { return };
+    let Some(s) = app.cap.borrow_mut().snip.take() else {
+        return;
+    };
     let _ = s.window.hide();
-    keep_overlay(&s.window);
+    release_overlay(&s.window);
     let [r, g, b] = pixel_at(&s, x, y);
     let hex = format!("#{r:02X}{g:02X}{b:02X}");
-    let copied = arboard::Clipboard::new().and_then(|mut cb| cb.set_text(hex.clone())).is_ok();
+    let copied = arboard::Clipboard::new()
+        .and_then(|mut cb| cb.set_text(hex.clone()))
+        .is_ok();
     if s.main_was_visible {
         show_main(app);
     }
-    toast(app, if copied { format!("Copied {hex} (rgb {r}, {g}, {b})") } else { format!("{hex}: could not copy it") });
+    toast(
+        app,
+        if copied {
+            format!("Copied {hex} (rgb {r}, {g}, {b})")
+        } else {
+            format!("{hex}: could not copy it")
+        },
+    );
 }
 
 /// Text extractor: Windows' text recognition on the area, copied to the clipboard.
@@ -801,34 +1060,25 @@ fn copy_text(app: &Rc<App>, pic: &Picture, main_was_visible: bool) {
         Ok(text) => {
             let lines = text.lines().count();
             match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
-                Ok(()) => toast(app, format!("Copied {lines} line{} of text", if lines == 1 { "" } else { "s" })),
+                Ok(()) => toast(
+                    app,
+                    format!(
+                        "Copied {lines} line{} of text",
+                        if lines == 1 { "" } else { "s" }
+                    ),
+                ),
                 Err(e) => toast(app, format!("Could not copy the text: {e}")),
             }
         }
         Err(e) => toast(app, format!("Could not read the text: {e}")),
     }
 }
-thread_local! {
-    /// The snip overlay is made once and kept hidden between snips. Windows animates a window's first appearance
-    /// (a zoom from the centre) before its transitions can be turned off, so the first show happens at start-up, off
-    /// screen; every snip after that appears at once.
-    static SPARE_OVERLAY: std::cell::RefCell<Option<ui::SnipWindow>> = const { std::cell::RefCell::new(None) };
-}
-
-fn keep_overlay(w: &ui::SnipWindow) {
+/// Lets go of a hidden snip overlay, so its native window and GPU surface are freed. The last handle is dropped on the
+/// next loop turn, not here: the callers run inside the overlay's own callbacks.
+fn release_overlay(w: &ui::SnipWindow) {
     w.set_shot(slint::Image::default());
-    SPARE_OVERLAY.with(|s| *s.borrow_mut() = Some(w.clone_strong()));
-}
-
-/// Makes the snip overlay ahead of time (see SPARE_OVERLAY).
-pub fn prewarm_overlay() {
-    let Ok(w) = ui::SnipWindow::new() else { return };
-    w.window().set_position(slint::PhysicalPosition::new(-32000, -32000));
-    w.window().set_size(slint::PhysicalSize::new(1, 1));
-    let _ = w.show();
-    platform::no_transitions(hwnd_of(w.window()));
-    let _ = w.hide();
-    SPARE_OVERLAY.with(|s| *s.borrow_mut() = Some(w));
+    let w = w.clone_strong();
+    slint::Timer::single_shot(Duration::ZERO, move || drop(w));
 }
 
 /// A screen or voice recording is running (the process must not hand over to another copy now).

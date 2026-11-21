@@ -32,20 +32,19 @@ fn manager() -> Option<UpdateManager> {
         return UpdateManager::new(AutoSource::new(&url), None, None).ok();
     }
     let repo = REPO?;
-    UpdateManager::new(GithubSource::new(&format!("https://github.com/{repo}"), None, false), None, None).ok()
+    UpdateManager::new(
+        GithubSource::new(&format!("https://github.com/{repo}"), None, false),
+        None,
+        None,
+    )
+    .ok()
 }
 
 /// The installed version, or None when this copy isn't installed.
 pub fn installed_version() -> Option<String> {
-    UpdateManager::new(FileSource::new("."), None, None).ok().map(|m| m.get_current_version_as_string())
-}
-
-pub fn feed_name() -> String {
-    match (std::env::var("RIMELIGHT_MEDIA_UPDATE_URL"), REPO) {
-        (Ok(url), _) => url,
-        (_, Some(repo)) => format!("github.com/{repo}/releases"),
-        _ => String::new(),
-    }
+    UpdateManager::new(FileSource::new("."), None, None)
+        .ok()
+        .map(|m| m.get_current_version_as_string())
 }
 
 pub fn releases_page() -> Option<String> {
@@ -63,7 +62,9 @@ pub enum Outcome {
 
 /// Checks and downloads (blocking; call from a worker thread).
 pub fn check_and_download() -> Outcome {
-    let Some(m) = manager() else { return Outcome::Off };
+    let Some(m) = manager() else {
+        return Outcome::Off;
+    };
     match m.check_for_updates() {
         Ok(UpdateCheck::UpdateAvailable(info)) => match m.download_updates(&info, None) {
             Ok(()) => Outcome::Ready(info),
@@ -77,12 +78,18 @@ pub fn check_and_download() -> Outcome {
 /// Applies a downloaded update and restarts into it.
 pub fn apply_now(info: &UpdateInfo) -> Result<(), String> {
     let m = manager().ok_or("not installed")?;
-    m.apply_updates_and_restart(&info.TargetFullRelease).map_err(|e| e.to_string())
+    m.apply_updates_and_restart(&info.TargetFullRelease)
+        .map_err(|e| e.to_string())
 }
 
 /// Applies a downloaded update after this process exits, without restarting.
 pub fn apply_on_exit(info: &UpdateInfo) {
     if let Some(m) = manager() {
-        let _ = m.wait_exit_then_apply_updates(&info.TargetFullRelease, true, false, Vec::<String>::new());
+        let _ = m.wait_exit_then_apply_updates(
+            &info.TargetFullRelease,
+            true,
+            false,
+            Vec::<String>::new(),
+        );
     }
 }

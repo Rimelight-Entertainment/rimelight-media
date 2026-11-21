@@ -44,8 +44,26 @@ fn is_heif(ext: &str) -> bool {
 fn is_raw(ext: &str) -> bool {
     matches!(
         ext,
-        "dng" | "cr2" | "cr3" | "nef" | "nrw" | "arw" | "srf" | "sr2" | "raf" | "orf" | "rw2" | "pef" | "srw" | "3fr"
-            | "erf" | "kdc" | "mrw" | "x3f" | "iiq" | "rwl"
+        "dng"
+            | "cr2"
+            | "cr3"
+            | "nef"
+            | "nrw"
+            | "arw"
+            | "srf"
+            | "sr2"
+            | "raf"
+            | "orf"
+            | "rw2"
+            | "pef"
+            | "srw"
+            | "3fr"
+            | "erf"
+            | "kdc"
+            | "mrw"
+            | "x3f"
+            | "iiq"
+            | "rwl"
     )
 }
 
@@ -60,39 +78,71 @@ pub fn load(path: &Path) -> Result<Picture, String> {
     if is_raw(&ext) {
         return crate::picture_raw::load(path);
     }
-    let reader = image::ImageReader::open(path)
-        .map_err(|e| e.to_string())?
+    // Read whole, so no file handle outlives this call (a rename of the open file would otherwise fail).
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
     let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
     use image::ImageDecoder as _;
-    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
     let mut img = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
     img.apply_orientation(orientation);
     let rgba = img.into_rgba8();
-    Ok(Picture { w: rgba.width(), h: rgba.height(), rgba: rgba.into_raw() })
+    Ok(Picture {
+        w: rgba.width(),
+        h: rgba.height(),
+        rgba: rgba.into_raw(),
+    })
 }
 
 /// A small version of a picture file (filmstrip), at most w x h, upright.
 pub fn thumbnail(path: &Path, w: u32, h: u32) -> Option<Picture> {
     if crate::files::ext_of(path) == "svg" {
         let pic = load_svg(path).ok()?;
-        let s = (w as f32 / pic.w as f32).min(h as f32 / pic.h as f32).min(1.0);
-        return Some(resize(&pic, ((pic.w as f32 * s) as u32).max(1), ((pic.h as f32 * s) as u32).max(1)));
+        let s = (w as f32 / pic.w as f32)
+            .min(h as f32 / pic.h as f32)
+            .min(1.0);
+        return Some(resize(
+            &pic,
+            ((pic.w as f32 * s) as u32).max(1),
+            ((pic.h as f32 * s) as u32).max(1),
+        ));
     }
     let ext = crate::files::ext_of(path);
     if is_heif(&ext) || is_raw(&ext) {
         let pic = load(path).ok()?;
-        let s = (w as f32 / pic.w as f32).min(h as f32 / pic.h as f32).min(1.0);
-        return Some(resize(&pic, ((pic.w as f32 * s) as u32).max(1), ((pic.h as f32 * s) as u32).max(1)));
+        let s = (w as f32 / pic.w as f32)
+            .min(h as f32 / pic.h as f32)
+            .min(1.0);
+        return Some(resize(
+            &pic,
+            ((pic.w as f32 * s) as u32).max(1),
+            ((pic.h as f32 * s) as u32).max(1),
+        ));
     }
     use image::ImageDecoder as _;
-    let mut decoder = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_decoder().ok()?;
-    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img = image::DynamicImage::from_decoder(decoder).ok()?.thumbnail(w, h);
+    let bytes = std::fs::read(path).ok()?;
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .ok()?
+        .thumbnail(w, h);
     img.apply_orientation(orientation);
     let rgba = img.into_rgba8();
-    Some(Picture { w: rgba.width(), h: rgba.height(), rgba: rgba.into_raw() })
+    Some(Picture {
+        w: rgba.width(),
+        h: rgba.height(),
+        rgba: rgba.into_raw(),
+    })
 }
 
 /// An animated picture (GIF or WebP): every frame, full canvas, with how long it shows.
@@ -108,11 +158,15 @@ const MAX_ANIMATION_BYTES: usize = 1_200_000_000;
 /// The frames of an animated GIF or WebP; None for a still picture (or any other format).
 pub fn load_animation(path: &Path) -> Option<Animation> {
     use image::AnimationDecoder as _;
-    let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    // Read whole, so no file handle is kept while the frames are decoded.
+    let bytes = std::fs::read(path).ok()?;
     let frames: image::Frames<'_> = match crate::files::ext_of(path).as_str() {
-        "gif" => image::codecs::gif::GifDecoder::new(file).ok()?.into_frames(),
+        "gif" => image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes))
+            .ok()?
+            .into_frames(),
         "webp" => {
-            let decoder = image::codecs::webp::WebPDecoder::new(file).ok()?;
+            let decoder =
+                image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(bytes)).ok()?;
             if !decoder.has_animation() {
                 return None;
             }
@@ -135,7 +189,14 @@ pub fn load_animation(path: &Path) -> Option<Animation> {
             cut = true;
             break;
         }
-        out.push((Picture { w: buf.width(), h: buf.height(), rgba: buf.into_raw() }, ms));
+        out.push((
+            Picture {
+                w: buf.width(),
+                h: buf.height(),
+                rgba: buf.into_raw(),
+            },
+            ms,
+        ));
     }
     (out.len() > 1).then_some(Animation { frames: out, cut })
 }
@@ -148,7 +209,11 @@ fn load_svg(path: &Path) -> Result<Picture, String> {
     let w = (size.width() * scale).ceil().max(1.0) as u32;
     let h = (size.height() * scale).ceil().max(1.0) as u32;
     let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("the drawing is too large")?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
     Ok(from_pixmap(&pixmap))
 }
 
@@ -158,7 +223,11 @@ fn from_pixmap(p: &tiny_skia::Pixmap) -> Picture {
         let c = px.demultiply();
         rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
     }
-    Picture { w: p.width(), h: p.height(), rgba }
+    Picture {
+        w: p.width(),
+        h: p.height(),
+        rgba,
+    }
 }
 
 fn to_pixmap(pic: &Picture) -> Option<tiny_skia::Pixmap> {
@@ -172,16 +241,22 @@ fn to_pixmap(pic: &Picture) -> Option<tiny_skia::Pixmap> {
 }
 
 pub fn to_slint(pic: &Picture) -> slint::Image {
-    let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pic.rgba, pic.w, pic.h);
+    let buf =
+        slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pic.rgba, pic.w, pic.h);
     slint::Image::from_rgba8(buf)
 }
 
 fn as_image(pic: &Picture) -> image::RgbaImage {
-    image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba.clone()).unwrap_or_else(|| image::RgbaImage::new(1, 1))
+    image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba.clone())
+        .unwrap_or_else(|| image::RgbaImage::new(1, 1))
 }
 
 fn from_image(img: image::RgbaImage) -> Picture {
-    Picture { w: img.width(), h: img.height(), rgba: img.into_raw() }
+    Picture {
+        w: img.width(),
+        h: img.height(),
+        rgba: img.into_raw(),
+    }
 }
 
 pub fn rotate_cw(pic: &Picture) -> Picture {
@@ -190,7 +265,11 @@ pub fn rotate_cw(pic: &Picture) -> Picture {
 
 pub fn flip(pic: &Picture, left_right: bool) -> Picture {
     let img = as_image(pic);
-    from_image(if left_right { image::imageops::flip_horizontal(&img) } else { image::imageops::flip_vertical(&img) })
+    from_image(if left_right {
+        image::imageops::flip_horizontal(&img)
+    } else {
+        image::imageops::flip_vertical(&img)
+    })
 }
 
 /// Crops to a box given as fractions of the picture.
@@ -212,8 +291,17 @@ pub fn crop_px(pic: &Picture, x: u32, y: u32, w: u32, h: u32) -> Picture {
 }
 
 pub fn resize(pic: &Picture, w: u32, h: u32) -> Picture {
-    let filter = if w < pic.w { image::imageops::FilterType::Lanczos3 } else { image::imageops::FilterType::CatmullRom };
-    from_image(image::imageops::resize(&as_image(pic), w.max(1), h.max(1), filter))
+    let filter = if w < pic.w {
+        image::imageops::FilterType::Lanczos3
+    } else {
+        image::imageops::FilterType::CatmullRom
+    };
+    from_image(image::imageops::resize(
+        &as_image(pic),
+        w.max(1),
+        h.max(1),
+        filter,
+    ))
 }
 
 /// One markup mark in picture pixels.
@@ -234,9 +322,16 @@ pub struct Mark {
 impl Mark {
     /// The box round the mark: x, y, width, height (picture pixels).
     pub fn bounds(&self) -> (f32, f32, f32, f32) {
-        let Some(&(x0, y0)) = self.points.first() else { return (0.0, 0.0, 0.0, 0.0) };
+        let Some(&(x0, y0)) = self.points.first() else {
+            return (0.0, 0.0, 0.0, 0.0);
+        };
         if self.kind == 4 {
-            return (x0, y0, self.font_size() * 0.6 * self.text.chars().count().max(1) as f32, self.font_size() * 1.3);
+            return (
+                x0,
+                y0,
+                self.font_size() * 0.6 * self.text.chars().count().max(1) as f32,
+                self.font_size() * 1.3,
+            );
         }
         let (mut x1, mut y1, mut x2, mut y2) = (x0, y0, x0, y0);
         for &(x, y) in &self.points {
@@ -303,7 +398,9 @@ impl Mark {
                     y1 + head * a2.sin()
                 )
             }
-            3 => format!("M {x0:.1} {y0:.1} L {x1:.1} {y0:.1} L {x1:.1} {y1:.1} L {x0:.1} {y1:.1} Z"),
+            3 => {
+                format!("M {x0:.1} {y0:.1} L {x1:.1} {y0:.1} L {x1:.1} {y1:.1} L {x0:.1} {y1:.1} Z")
+            }
             _ => {
                 let mut s = format!("M {x0:.1} {y0:.1}");
                 if p.len() == 1 {
@@ -319,7 +416,11 @@ impl Mark {
 
     /// Stroke width as drawn (the highlighter is wide).
     pub fn stroke_width(&self) -> f32 {
-        if self.kind == 1 { self.width * 4.0 } else { self.width }
+        if self.kind == 1 {
+            self.width * 4.0
+        } else {
+            self.width
+        }
     }
 
     /// Text size in picture pixels.
@@ -352,8 +453,16 @@ impl Mark {
                     return 0.0;
                 }
                 let grad = 2.0 * ((dx / (rx * rx)).powi(2) + (dy / (ry * ry)).powi(2)).sqrt();
-                let pixels = if grad > 1e-6 { (k - 1.0).abs() / grad } else { rx.min(ry) };
-                return if self.filled { pixels } else { (pixels - self.stroke_width() / 2.0).max(0.0) };
+                let pixels = if grad > 1e-6 {
+                    (k - 1.0).abs() / grad
+                } else {
+                    rx.min(ry)
+                };
+                return if self.filled {
+                    pixels
+                } else {
+                    (pixels - self.stroke_width() / 2.0).max(0.0)
+                };
             }
         }
         // A line is its segment (its two points); a box is its outline.
@@ -362,7 +471,10 @@ impl Mark {
             let (x1, y1) = *self.points.last().unwrap_or(&self.points[0]);
             vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
         } else if self.kind == 2 && self.points.len() >= 2 {
-            vec![self.points[0], *self.points.last().unwrap_or(&self.points[0])]
+            vec![
+                self.points[0],
+                *self.points.last().unwrap_or(&self.points[0]),
+            ]
         } else {
             self.points.clone()
         };
@@ -378,12 +490,19 @@ impl Mark {
 fn seg_dist(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len2 = dx * dx + dy * dy;
-    let t = if len2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let t = if len2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     (a.0 + t * dx - p.0).hypot(a.1 + t * dy - p.1)
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Draws the marks into the picture, in order. Vector marks are drawn through SVG onto a marks layer; a picture mark is
@@ -431,8 +550,17 @@ fn settle(out: &Picture, layer: &tiny_skia::Pixmap, on_canvas: bool) -> Picture 
     if on_canvas {
         return from_pixmap(layer);
     }
-    let Some(mut base) = to_pixmap(out) else { return out.clone() };
-    base.draw_pixmap(0, 0, layer.as_ref(), &tiny_skia::PixmapPaint::default(), tiny_skia::Transform::identity(), None);
+    let Some(mut base) = to_pixmap(out) else {
+        return out.clone();
+    };
+    base.draw_pixmap(
+        0,
+        0,
+        layer.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        tiny_skia::Transform::identity(),
+        None,
+    );
     from_pixmap(&base)
 }
 
@@ -442,7 +570,9 @@ fn draw_run(layer: &mut tiny_skia::Pixmap, marks: &[&Mark]) -> Result<(), String
         return Ok(());
     }
     let (w, h) = (layer.width(), layer.height());
-    let mut svg = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">");
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">"
+    );
     for m in marks {
         let [r, g, b, a] = m.rgba;
         let opacity = f32::from(a) / 255.0;
@@ -455,7 +585,11 @@ fn draw_run(layer: &mut tiny_skia::Pixmap, marks: &[&Mark]) -> Result<(), String
                 xml_escape(&m.text)
             ));
         } else {
-            let fill = if m.filled { format!("#{r:02x}{g:02x}{b:02x}\" fill-opacity=\"{opacity}") } else { "none".to_string() };
+            let fill = if m.filled {
+                format!("#{r:02x}{g:02x}{b:02x}\" fill-opacity=\"{opacity}")
+            } else {
+                "none".to_string()
+            };
             svg.push_str(&format!(
                 "<path d=\"{}\" fill=\"{fill}\" stroke=\"#{r:02x}{g:02x}{b:02x}\" stroke-opacity=\"{opacity}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
                 m.commands(),
@@ -471,7 +605,9 @@ fn draw_run(layer: &mut tiny_skia::Pixmap, marks: &[&Mark]) -> Result<(), String
 
 /// A pixel eraser stroke on the layer: a photo's layer clears (Clear), a canvas paints its background (Source).
 fn erase(layer: &mut tiny_skia::Pixmap, m: &Mark, on_canvas: bool) {
-    let Some(&(x0, y0)) = m.points.first() else { return };
+    let Some(&(x0, y0)) = m.points.first() else {
+        return;
+    };
     let mut pb = tiny_skia::PathBuilder::new();
     pb.move_to(x0, y0);
     if m.points.len() == 1 {
@@ -485,12 +621,22 @@ fn erase(layer: &mut tiny_skia::Pixmap, m: &Mark, on_canvas: bool) {
     paint.anti_alias = true;
     let [r, g, b, a] = m.rgba;
     paint.set_color_rgba8(r, g, b, a);
-    paint.blend_mode = if on_canvas { tiny_skia::BlendMode::Source } else { tiny_skia::BlendMode::Clear };
+    paint.blend_mode = if on_canvas {
+        tiny_skia::BlendMode::Source
+    } else {
+        tiny_skia::BlendMode::Clear
+    };
     let mut stroke = tiny_skia::Stroke::default();
     stroke.width = m.width.max(1.0);
     stroke.line_cap = tiny_skia::LineCap::Round;
     stroke.line_join = tiny_skia::LineJoin::Round;
-    layer.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+    layer.stroke_path(
+        &path,
+        &paint,
+        &stroke,
+        tiny_skia::Transform::identity(),
+        None,
+    );
 }
 
 /// A canvas resized to w x h: the pixels stay at the top-left (the picture is cropped or the new area is left), and the
@@ -508,7 +654,9 @@ pub fn canvas_fit(pic: &Picture, w: u32, h: u32, bg: [u8; 4]) -> Picture {
 
 /// Puts a picture mark's pixels over the picture, scaled to its rectangle (alpha blended, straight alpha).
 fn composite(out: &mut Picture, m: &Mark) {
-    let Some(src) = m.image.as_deref() else { return };
+    let Some(src) = m.image.as_deref() else {
+        return;
+    };
     if m.points.len() < 2 {
         return;
     }
@@ -517,7 +665,11 @@ fn composite(out: &mut Picture, m: &Mark) {
     let (left, top) = (x0.min(x1).round() as i64, y0.min(y1).round() as i64);
     let w = ((x1 - x0).abs().round() as u32).max(1);
     let h = ((y1 - y0).abs().round() as u32).max(1);
-    let scaled = if w == src.w && h == src.h { src.clone() } else { resize(src, w, h) };
+    let scaled = if w == src.w && h == src.h {
+        src.clone()
+    } else {
+        resize(src, w, h)
+    };
     for sy in 0..h {
         let dy = top + i64::from(sy);
         if dy < 0 || dy >= i64::from(out.h) {
@@ -536,7 +688,9 @@ fn composite(out: &mut Picture, m: &Mark) {
             }
             let inv = 255 - a;
             for c in 0..3 {
-                out.rgba[di + c] = ((u32::from(scaled.rgba[si + c]) * a + u32::from(out.rgba[di + c]) * inv + 127) / 255) as u8;
+                out.rgba[di + c] =
+                    ((u32::from(scaled.rgba[si + c]) * a + u32::from(out.rgba[di + c]) * inv + 127)
+                        / 255) as u8;
             }
             out.rgba[di + 3] = (a + u32::from(out.rgba[di + 3]) * inv / 255).min(255) as u8;
         }
@@ -565,9 +719,15 @@ pub fn flood_fill(pic: &Picture, x: u32, y: u32, fill: [u8; 4], tolerance: u8) -
     let (w, h) = (pic.w as usize, pic.h as usize);
     let at = |px: usize, py: usize| (py * w + px) * 4;
     let seed = at(x as usize, y as usize);
-    let target = [pic.rgba[seed], pic.rgba[seed + 1], pic.rgba[seed + 2], pic.rgba[seed + 3]];
+    let target = [
+        pic.rgba[seed],
+        pic.rgba[seed + 1],
+        pic.rgba[seed + 2],
+        pic.rgba[seed + 3],
+    ];
     let tol = i32::from(tolerance);
-    let similar = |i: usize| (0..4).all(|c| (i32::from(pic.rgba[i + c]) - i32::from(target[c])).abs() <= tol);
+    let similar =
+        |i: usize| (0..4).all(|c| (i32::from(pic.rgba[i + c]) - i32::from(target[c])).abs() <= tol);
     let mut done = vec![false; w * h];
     let mut stack = vec![(x as usize, y as usize)];
     let a = u32::from(fill[3]);
@@ -588,7 +748,9 @@ pub fn flood_fill(pic: &Picture, x: u32, y: u32, fill: [u8; 4], tolerance: u8) -
             done[sy * w + cx] = true;
             let i = at(cx, sy);
             for c in 0..3 {
-                out.rgba[i + c] = ((u32::from(fill[c]) * a + u32::from(pic.rgba[i + c]) * (255 - a) + 127) / 255) as u8;
+                out.rgba[i + c] =
+                    ((u32::from(fill[c]) * a + u32::from(pic.rgba[i + c]) * (255 - a) + 127) / 255)
+                        as u8;
             }
             out.rgba[i + 3] = pic.rgba[i + 3].max(fill[3]);
         }
@@ -615,7 +777,10 @@ pub fn flood_fill(pic: &Picture, x: u32, y: u32, fill: [u8; 4], tolerance: u8) -
 
 /// Can this extension be written back?
 pub fn can_save(path: &Path) -> bool {
-    matches!(crate::files::ext_of(path).as_str(), "png" | "jpg" | "jpeg" | "jfif" | "webp" | "bmp")
+    matches!(
+        crate::files::ext_of(path).as_str(),
+        "png" | "jpg" | "jpeg" | "jfif" | "webp" | "bmp"
+    )
 }
 
 /// Saves by extension: PNG, JPEG (quality 92), WebP (lossless) or BMP. Anything else is saved as PNG.
@@ -626,8 +791,7 @@ pub fn save(pic: &Picture, path: &Path) -> Result<(), String> {
     let result = match crate::files::ext_of(path).as_str() {
         "jpg" | "jpeg" | "jfif" => {
             let rgb = image::DynamicImage::ImageRgba8(img).into_rgb8();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92)
-                .encode_image(&rgb)
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92).encode_image(&rgb)
         }
         "webp" => image::codecs::webp::WebPEncoder::new_lossless(&mut out).encode(
             img.as_raw(),
@@ -659,18 +823,16 @@ pub fn logo(size: u32) -> Option<Picture> {
     render_logo(include_str!("../assets/icons/logo-color.svg"), size)
 }
 
-/// The logo with its gradient in other colours (one per kind of file in Explorer).
-pub fn logo_tinted(size: u32, top: &str, bottom: &str) -> Option<Picture> {
-    let svg = include_str!("../assets/icons/logo-color.svg").replace("#4DA0FF", top).replace("#1659C4", bottom);
-    render_logo(&svg, size)
-}
-
 fn render_logo(svg: &str, size: u32) -> Option<Picture> {
     let data = svg.as_bytes();
     let tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
     let scale = size as f32 / tree.size().width();
     let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
     Some(from_pixmap(&pixmap))
 }
 
@@ -702,8 +864,20 @@ mod tests {
 
     #[test]
     fn marks_burn_in() {
-        let p = Picture { w: 40, h: 40, rgba: vec![255; 40 * 40 * 4] };
-        let m = Mark { kind: 3, rgba: [255, 0, 0, 255], width: 4.0, points: vec![(5.0, 5.0), (35.0, 35.0)], text: String::new(), filled: false, image: None };
+        let p = Picture {
+            w: 40,
+            h: 40,
+            rgba: vec![255; 40 * 40 * 4],
+        };
+        let m = Mark {
+            kind: 3,
+            rgba: [255, 0, 0, 255],
+            width: 4.0,
+            points: vec![(5.0, 5.0), (35.0, 35.0)],
+            text: String::new(),
+            filled: false,
+            image: None,
+        };
         let out = burn_marks(&p, &[m], false).unwrap();
         let px = &out.rgba[((5 * 40 + 20) * 4) as usize..][..4];
         assert!(px[0] > 200 && px[1] < 80, "the box edge is red: {px:?}");

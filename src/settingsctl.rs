@@ -21,15 +21,23 @@ pub fn wire(app: &Rc<App>) {
             crate::platform::open_uri(&url);
         }
     });
+    s.on_open_link(|url| {
+        crate::platform::open_uri(url.as_str());
+    });
     s.on_register_defaults(|| {
-        with_app(|a| match install::register_file_types(a.prefs.borrow().file_types) {
-            Ok(()) => {
-                toast(a, "File types registered. Now pick Rimelight Media in Windows' default apps.");
-                install::open_default_apps_settings();
-                refresh(a);
-            }
-            Err(e) => toast(a, format!("Could not register the file types: {e}")),
-        })
+        with_app(
+            |a| match install::register_file_types(a.prefs.borrow().file_types) {
+                Ok(()) => {
+                    toast(
+                        a,
+                        "File types registered. Now pick Rimelight Media in Windows' default apps.",
+                    );
+                    install::open_default_apps_settings();
+                    refresh(a);
+                }
+                Err(e) => toast(a, format!("Could not register the file types: {e}")),
+            },
+        )
     });
     s.on_open_default_settings(install::open_default_apps_settings);
     s.on_open_printscreen_settings(install::open_printscreen_settings);
@@ -48,7 +56,11 @@ pub fn wire(app: &Rc<App>) {
     });
     s.on_pick_folder(|screenshots| {
         with_app(move |a| {
-            let current = if screenshots { a.prefs.borrow().screenshot_dir.clone() } else { a.prefs.borrow().recording_dir.clone() };
+            let current = if screenshots {
+                a.prefs.borrow().screenshot_dir.clone()
+            } else {
+                a.prefs.borrow().recording_dir.clone()
+            };
             if let Some(dir) = rfd::FileDialog::new().set_directory(current).pick_folder() {
                 {
                     let mut p = a.prefs.borrow_mut();
@@ -87,7 +99,7 @@ pub fn refresh(app: &Rc<App>) {
     s.set_installed(version.is_some());
     s.set_install_state(
         match &version {
-            Some(v) => format!("Installed, version {v}. Updates come from {}.", crate::update::feed_name()),
+            Some(v) => format!("Version {v}"),
             None => format!("Not installed: this is a build from source (version {}). Install it with RimelightMedia-win-Setup.exe from the releases page, or tools/pack.ps1 for a local installer.", env!("CARGO_PKG_VERSION")),
         }
         .into(),
@@ -103,15 +115,15 @@ pub fn refresh(app: &Rc<App>) {
         }
         .into(),
     );
-    let hk = app.hotkeys.borrow().as_ref().map(|h| h.status.clone()).unwrap_or_else(|| "The keys are off (they could not be registered).".into());
+    let hk = app
+        .hotkeys
+        .borrow()
+        .as_ref()
+        .map(|h| h.status.clone())
+        .unwrap_or_else(|| "The keys are off (they could not be registered).".into());
     s.set_hotkeys_status(hk.into());
-    s.set_about(
-        format!(
-            "Rimelight Media {}. Built with Rust and Slint. Video and sound by FFmpeg (LGPL), pictures by the image and resvg crates, icons from Lucide (ISC).",
-            env!("CARGO_PKG_VERSION")
-        )
-        .into(),
-    );
+    // The credits table is in ui/settings_page.slint (About).
+    s.set_about(format!("Rimelight Media {}", env!("CARGO_PKG_VERSION")).into());
 }
 
 fn save_from_ui(app: &Rc<App>) {
@@ -149,7 +161,14 @@ fn save_from_ui(app: &Rc<App>) {
         let on = app.prefs.borrow().background;
         install::set_run_at_login(on.then(install::launcher_path).as_deref());
         crate::capturectl::ensure_tray(app, on);
-        toast(app, if on { "Rimelight Media now starts with Windows and stays in the tray." } else { "Rimelight Media no longer starts with Windows." });
+        toast(
+            app,
+            if on {
+                "Rimelight Media now starts with Windows and stays in the tray."
+            } else {
+                "Rimelight Media no longer starts with Windows."
+            },
+        );
     }
 }
 

@@ -12,22 +12,30 @@ pub enum Kind {
 
 /// Pictures the app opens. HEIC/HEIF/HIF/AVIF and camera RAW are view-only: "Save as" writes PNG or JPEG.
 pub const IMAGE_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "jfif", "webp", "svg", "gif", "bmp", "ico", "heic", "heif", "hif", "avif", "dng", "cr2", "cr3",
-    "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "srw", "3fr", "erf", "kdc", "mrw", "x3f", "iiq", "rwl",
+    "png", "jpg", "jpeg", "jfif", "webp", "svg", "gif", "bmp", "ico", "heic", "heif", "hif",
+    "avif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef",
+    "srw", "3fr", "erf", "kdc", "mrw", "x3f", "iiq", "rwl",
 ];
+/// Video the Player opens. ".ts" is not here: it is TypeScript as often as MPEG transport stream, so it is text.
 pub const VIDEO_EXTS: &[&str] = &[
-    "mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "mpeg", "m2ts", "mts", "ts", "flv", "3gp", "ogv",
+    "mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "mpeg", "m2ts", "mts", "flv", "3gp",
+    "ogv",
 ];
-pub const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "wma", "aiff", "aif", "mka"];
+pub const AUDIO_EXTS: &[&str] = &[
+    "mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "wma", "aiff", "aif", "mka",
+];
 pub const SUBTITLE_EXTS: &[&str] = &["srt", "vtt", "ass", "ssa"];
 /// Plain text the Text tab edits (Notepad's job): notes, Markdown, JSON and config or log files.
 pub const TEXT_EXTS: &[&str] = &[
-    "txt", "md", "markdown", "json", "toml", "yaml", "yml", "ini", "cfg", "conf", "log", "csv", "xml", "env", "text", "rs",
-    "js", "html", "css", "bat", "ps1", "sh",
+    "txt", "md", "markdown", "json", "toml", "yaml", "yml", "ini", "cfg", "conf", "log", "csv",
+    "xml", "env", "text", "rs", "js", "ts", "html", "css", "bat", "ps1", "sh",
 ];
 
 pub fn ext_of(path: &Path) -> String {
-    path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase()
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 pub fn kind_of(path: &Path) -> Option<Kind> {
@@ -57,7 +65,9 @@ pub fn kind_name(kind: Kind) -> &'static str {
 
 /// The pictures in the same folder, sorted by name the way Explorer roughly does (case-insensitive, numbers in order).
 pub fn sibling_pictures(path: &Path) -> Vec<PathBuf> {
-    let Some(dir) = path.parent() else { return vec![path.to_path_buf()] };
+    let Some(dir) = path.parent() else {
+        return vec![path.to_path_buf()];
+    };
     let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(Result::ok)
@@ -74,7 +84,11 @@ pub fn sibling_pictures(path: &Path) -> Vec<PathBuf> {
 }
 
 fn natural_key(p: &Path) -> Vec<(u8, u64, String)> {
-    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
     let mut key = Vec::new();
     let mut digits = String::new();
     let mut text = String::new();
@@ -86,7 +100,11 @@ fn natural_key(p: &Path) -> Vec<(u8, u64, String)> {
             digits.push(c);
         } else {
             if !digits.is_empty() {
-                key.push((0, digits.parse().unwrap_or(u64::MAX), std::mem::take(&mut digits)));
+                key.push((
+                    0,
+                    digits.parse().unwrap_or(u64::MAX),
+                    std::mem::take(&mut digits),
+                ));
             }
             text.push(c);
         }
@@ -101,11 +119,16 @@ fn natural_key(p: &Path) -> Vec<(u8, u64, String)> {
 }
 
 pub fn file_name(path: &Path) -> String {
-    path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string()
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub fn folder_name(path: &Path) -> String {
-    path.parent().map(|p| p.display().to_string()).unwrap_or_default()
+    path.parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default()
 }
 
 pub fn human_size(bytes: u64) -> String {
@@ -116,14 +139,22 @@ pub fn human_size(bytes: u64) -> String {
         v /= 1024.0;
         unit += 1;
     }
-    if unit == 0 { format!("{bytes} bytes") } else { format!("{v:.1} {}", UNITS[unit]) }
+    if unit == 0 {
+        format!("{bytes} bytes")
+    } else {
+        format!("{v:.1} {}", UNITS[unit])
+    }
 }
 
 /// 75_000 ms -> "1:15"; an hour or more -> "1:02:03".
 pub fn clock(ms: u64) -> String {
     let s = ms / 1000;
     let (h, m, s) = (s / 3600, (s / 60) % 60, s % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 /// "Screenshot 2026-11-20 153012" style names, local time.
@@ -139,13 +170,18 @@ pub fn free_path(dir: &Path, name: &str, ext: &str) -> PathBuf {
     if !first.exists() {
         return first;
     }
-    (2..).map(|n| dir.join(format!("{name} ({n}).{ext}"))).find(|p| !p.exists()).unwrap_or(first)
+    (2..)
+        .map(|n| dir.join(format!("{name} ({n}).{ext}")))
+        .find(|p| !p.exists())
+        .unwrap_or(first)
 }
 
 /// Opens Explorer with the file selected (or the folder).
 pub fn reveal(path: &Path) {
     let _ = if path.is_file() {
-        std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn()
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
     } else {
         std::process::Command::new("explorer").arg(path).spawn()
     };
@@ -168,7 +204,11 @@ mod tests {
 
     #[test]
     fn natural_order() {
-        let mut v = vec![PathBuf::from("img10.png"), PathBuf::from("img2.png"), PathBuf::from("Img1.png")];
+        let mut v = vec![
+            PathBuf::from("img10.png"),
+            PathBuf::from("img2.png"),
+            PathBuf::from("Img1.png"),
+        ];
         v.sort_by(|a, b| natural_key(a).cmp(&natural_key(b)));
         assert_eq!(v[0], PathBuf::from("Img1.png"));
         assert_eq!(v[2], PathBuf::from("img10.png"));

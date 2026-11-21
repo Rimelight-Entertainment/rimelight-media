@@ -10,7 +10,9 @@ use crate::install;
 use crate::ui;
 
 pub fn show(app: &Rc<App>) -> bool {
-    let Ok(w) = ui::SetupWindow::new() else { return false };
+    let Ok(w) = ui::SetupWindow::new() else {
+        return false;
+    };
     {
         let p = app.prefs.borrow();
         w.set_desktop(p.desktop_shortcut);
@@ -37,7 +39,9 @@ pub fn show(app: &Rc<App>) -> bool {
 }
 
 fn finish(app: &Rc<App>) {
-    let Some(w) = app.setup.borrow_mut().take() else { return };
+    let Some(w) = app.setup.borrow_mut().take() else {
+        return;
+    };
     let kinds = [w.get_pictures(), w.get_video(), w.get_music(), w.get_text()];
     let startup = w.get_startup();
     let desktop = w.get_desktop();

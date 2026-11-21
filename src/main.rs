@@ -17,6 +17,7 @@ mod capture;
 mod capturectl;
 mod cast;
 mod files;
+mod highlight;
 mod hotkeys;
 mod install;
 mod instance;
@@ -50,23 +51,52 @@ struct Args {
     write_icon: Option<PathBuf>,
     /// Started by another copy that is handing over (tray <-> window, see app::handoff): wait for it to exit.
     takeover: bool,
+    /// The process id of the copy being replaced (with --takeover): this copy waits for it to end first.
+    after: Option<u32>,
     /// The tab to open on (with --takeover).
     page: Option<String>,
 }
 
 fn parse() -> Result<Args, String> {
-    let mut args = Args { file: None, screenshot: None, background: false, snip: None, write_icon: None, takeover: false, page: None };
+    let mut args = Args {
+        file: None,
+        screenshot: None,
+        background: false,
+        snip: None,
+        write_icon: None,
+        takeover: false,
+        after: None,
+        page: None,
+    };
     let mut it = std::env::args_os().skip(1);
     while let Some(a) = it.next() {
         match a.to_str() {
-            Some("--screenshot") => args.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
+            Some("--screenshot") => {
+                args.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into())
+            }
             Some("--background") => args.background = true,
             Some("--takeover") => args.takeover = true,
+            Some("--after") => {
+                args.after = it
+                    .next()
+                    .and_then(|s| s.into_string().ok())
+                    .and_then(|s| s.parse().ok())
+            }
             Some("--page") => args.page = it.next().and_then(|s| s.into_string().ok()),
-            Some("--write-icon") => args.write_icon = Some(it.next().ok_or("--write-icon needs a file")?.into()),
-            Some("--snip") => args.snip = Some(it.next().and_then(|s| s.into_string().ok()).ok_or("--snip needs region, window or screen")?),
+            Some("--write-icon") => {
+                args.write_icon = Some(it.next().ok_or("--write-icon needs a file")?.into())
+            }
+            Some("--snip") => {
+                args.snip = Some(
+                    it.next()
+                        .and_then(|s| s.into_string().ok())
+                        .ok_or("--snip needs region, window or screen")?,
+                )
+            }
             // Win+Shift+S (and Print Screen without the Snipping Tool) start the ms-screenclip: link.
-            Some(uri) if uri.to_ascii_lowercase().starts_with("ms-screenclip:") => args.snip = Some(instance::screenclip_mode(uri)),
+            Some(uri) if uri.to_ascii_lowercase().starts_with("ms-screenclip:") => {
+                args.snip = Some(instance::screenclip_mode(uri))
+            }
             Some(flag) if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             _ => args.file = Some(PathBuf::from(a)),
         }
@@ -82,7 +112,12 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
     let _ = std::fs::remove_file(&trimmed);
     match media::export::trim(&dir.join("sample.mkv"), &trimmed, 1000, 3000) {
         Ok(()) => match media::player::probe(&trimmed) {
-            Ok(i) => println!("trim: ok, {} ms, {} audio, {} subtitle tracks", i.duration_ms, i.audio.len(), i.subtitles.len()),
+            Ok(i) => println!(
+                "trim: ok, {} ms, {} audio, {} subtitle tracks",
+                i.duration_ms,
+                i.audio.len(),
+                i.subtitles.len()
+            ),
             Err(e) => {
                 ok = false;
                 println!("trim: written but unreadable: {e}")
@@ -105,7 +140,9 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         Ok(p.position_ms())
     }) {
         // 1.5 s at 2x is about 3 s of video (minus the start-up).
-        Ok(ms) if (2_400..=3_200).contains(&ms) => println!("speed: ok, 1.5 s at 2x reached {ms} ms"),
+        Ok(ms) if (2_400..=3_200).contains(&ms) => {
+            println!("speed: ok, 1.5 s at 2x reached {ms} ms")
+        }
         Ok(ms) => {
             ok = false;
             println!("speed: wrong, 1.5 s at 2x reached {ms} ms")
@@ -116,7 +153,9 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         }
     }
     // Every file in codecs/: video gives a frame, sound gives decoded samples.
-    let mut codec_files: Vec<_> = std::fs::read_dir(dir.join("codecs")).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    let mut codec_files: Vec<_> = std::fs::read_dir(dir.join("codecs"))
+        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
     codec_files.sort();
     for f in codec_files {
         let name = files::file_name(&f);
@@ -136,7 +175,11 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         }
     }
     // Text extractor: write text into a white picture, read it back with Windows' text recognition.
-    let blank = picture::Picture { w: 640, h: 120, rgba: vec![255; 640 * 120 * 4] };
+    let blank = picture::Picture {
+        w: 640,
+        h: 120,
+        rgba: vec![255; 640 * 120 * 4],
+    };
     let mark = picture::Mark {
         kind: 4,
         rgba: [0, 0, 0, 255],
@@ -146,7 +189,9 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         filled: false,
         image: None,
     };
-    match picture::burn_marks(&blank, &[mark], false).and_then(|p| platform::recognise_text(&p.rgba, p.w, p.h)) {
+    match picture::burn_marks(&blank, &[mark], false)
+        .and_then(|p| platform::recognise_text(&p.rgba, p.w, p.h))
+    {
         Ok(text) if text.contains("Rimelight") => println!("text extractor: ok, read {text:?}"),
         Ok(text) => {
             ok = false;
@@ -158,14 +203,21 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         }
     }
     match picture::load_animation(&dir.join("sample.gif")) {
-        Some(a) => println!("gif: ok, {} frames, first {} ms", a.frames.len(), a.frames[0].1),
+        Some(a) => println!(
+            "gif: ok, {} frames, first {} ms",
+            a.frames.len(),
+            a.frames[0].1
+        ),
         None => {
             ok = false;
             println!("gif: no frames")
         }
     }
     match capture::grab::screenshot() {
-        Ok((pic, rect)) => println!("screenshot: ok, {}x{} at {},{}", pic.w, pic.h, rect.x, rect.y),
+        Ok((pic, rect)) => println!(
+            "screenshot: ok, {}x{} at {},{}",
+            pic.w, pic.h, rect.x, rect.y
+        ),
         Err(e) => {
             ok = false;
             println!("screenshot: failed: {e}")
@@ -173,13 +225,34 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
     }
     let path = dir.join("selftest-recording.mp4");
     let _ = std::fs::remove_file(&path);
-    let rect = platform::ScreenRect { x: 0, y: 0, w: 640, h: 360 };
-    match capture::recorder::start(capture::recorder::Options { screen: Some((rect, 30)), camera: None, system_audio: true, mic: false, path, mic_name: None }) {
+    let rect = platform::ScreenRect {
+        x: 0,
+        y: 0,
+        w: 640,
+        h: 360,
+    };
+    match capture::recorder::start(capture::recorder::Options {
+        screen: Some((rect, 30)),
+        camera: None,
+        system_audio: true,
+        mic: false,
+        path,
+        mic_name: None,
+    }) {
         Ok(rec) => {
             println!("recording: started {:?}", rec.notes);
             std::thread::sleep(Duration::from_secs(2));
-            match rec.finish().and_then(|p| media::player::probe(&p).map(|i| (p, i))) {
-                Ok((p, i)) => println!("recording: ok, {} ms, video {:?}, {} audio tracks, {}", i.duration_ms, i.video, i.audio.len(), p.display()),
+            match rec
+                .finish()
+                .and_then(|p| media::player::probe(&p).map(|i| (p, i)))
+            {
+                Ok((p, i)) => println!(
+                    "recording: ok, {} ms, video {:?}, {} audio tracks, {}",
+                    i.duration_ms,
+                    i.video,
+                    i.audio.len(),
+                    p.display()
+                ),
                 Err(e) => {
                     ok = false;
                     println!("recording: failed: {e}")
@@ -191,7 +264,11 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
             println!("recording: failed to start: {e}")
         }
     }
-    if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 /// Decodes the start of a file's sound track (self-test).
@@ -199,8 +276,15 @@ fn decode_some_audio(path: &std::path::Path) -> Result<usize, String> {
     use ffmpeg_next as ff;
     let mut ictx = media::player::open_input(path)?;
     let (idx, ctx) = {
-        let st = ictx.streams().best(ff::media::Type::Audio).ok_or("no sound track")?;
-        (st.index(), ff::codec::context::Context::from_parameters(st.parameters()).map_err(|e| e.to_string())?)
+        let st = ictx
+            .streams()
+            .best(ff::media::Type::Audio)
+            .ok_or("no sound track")?;
+        (
+            st.index(),
+            ff::codec::context::Context::from_parameters(st.parameters())
+                .map_err(|e| e.to_string())?,
+        )
     };
     let mut dec = ctx.decoder().audio().map_err(|e| e.to_string())?;
     let mut frame = ff::frame::Audio::empty();
@@ -217,7 +301,11 @@ fn decode_some_audio(path: &std::path::Path) -> Result<usize, String> {
             break;
         }
     }
-    if samples == 0 { Err("no samples".into()) } else { Ok(samples) }
+    if samples == 0 {
+        Err("no samples".into())
+    } else {
+        Ok(samples)
+    }
 }
 
 fn main() -> ExitCode {
@@ -231,7 +319,11 @@ fn main() -> ExitCode {
         }
     };
     if let Some(path) = &args.write_icon {
-        return if install::write_icon(path) { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+        return if install::write_icon(path) {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
     }
     if let Some(dir) = std::env::var_os("RIMELIGHT_MEDIA_SELFTEST") {
         return selftest(&PathBuf::from(dir));
@@ -250,8 +342,13 @@ fn main() -> ExitCode {
         } else {
             instance::Request::Show
         };
+        // A hand-over names the copy it replaces: that copy has to end before this one takes the start lock.
+        if let Some(pid) = args.after {
+            platform::wait_for_exit(pid, 15_000);
+        }
         // Explorer starts one copy per file when several are opened together, all at once. Only the copy holding the
-        // start lock goes on; the others wait (up to 10 s) for it to start listening and hand it their file.
+        // start lock goes on; the others wait for it to start listening and hand it their file. A copy that still can't
+        // get the lock after 10 s says so in the hook log, and keeps trying for 30 s more before it gives up.
         let mut waited = 0;
         loop {
             if !args.takeover && instance::forward(&request) {
@@ -260,11 +357,19 @@ fn main() -> ExitCode {
             if platform::take_start_lock() {
                 break;
             }
-            if waited >= 100 {
+            if waited == 100 {
+                platform::log_line("the start lock is still held after 10 s: waiting longer");
+            }
+            if waited >= 400 {
+                platform::log_line(
+                    "gave up waiting for the start lock after 40 s: this start did nothing",
+                );
+                // The logger thread writes the line in the background: give it a moment before the exit.
+                std::thread::sleep(Duration::from_millis(300));
                 return ExitCode::FAILURE;
             }
             waited += 1;
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
     let mut selector = slint::BackendSelector::new().backend_name("winit".into());
@@ -273,19 +378,29 @@ fn main() -> ExitCode {
     if args.background && !checking {
         selector = selector.renderer_name("software".into());
     }
-    if checking {
+    selector = selector.with_winit_window_attributes_hook(move |attrs| {
+        // Our own window class: the creation hook (platform::start_no_window_animations) turns animations off for it.
+        #[cfg(windows)]
+        let attrs = {
+            use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows as _;
+            attrs.with_class_name(platform::WINDOW_CLASS)
+        };
+        if !checking {
+            return attrs;
+        }
         // A check never takes focus and stays behind the person's windows (a covered window still draws on Windows).
-        selector = selector.with_winit_window_attributes_hook(|attrs| {
-            let attrs = attrs.with_active(false);
-            #[cfg(windows)]
-            let attrs = attrs.with_window_level(slint::winit_030::winit::window::WindowLevel::AlwaysOnBottom);
-            attrs
-        });
-    }
+        let attrs = attrs.with_active(false);
+        #[cfg(windows)]
+        let attrs =
+            attrs.with_window_level(slint::winit_030::winit::window::WindowLevel::AlwaysOnBottom);
+        attrs
+    });
     if let Err(e) = selector.select() {
         eprintln!("{TOOL}: no window system: {e}");
         return ExitCode::FAILURE;
     }
+    // No window of ours zooms or fades in: animations are turned off as each one is created (on this, the UI thread).
+    platform::start_no_window_animations();
 
     let app = match app::build(args.background && !checking) {
         Ok(a) => a,
@@ -297,7 +412,6 @@ fn main() -> ExitCode {
 
     if !checking {
         app::start_hotkeys(&app);
-        capturectl::prewarm_overlay();
         instance::serve(app::handle_request);
         let keep = app.prefs.borrow().background;
         capturectl::ensure_tray(&app, keep);
@@ -310,7 +424,9 @@ fn main() -> ExitCode {
         app::queue_open(&app, file.clone());
     }
     // The installer's first run: the setup window instead of the app.
-    let first_run = !checking && update::FIRST_RUN.load(std::sync::atomic::Ordering::Relaxed) && setupctl::show(&app);
+    let first_run = !checking
+        && update::FIRST_RUN.load(std::sync::atomic::Ordering::Relaxed)
+        && setupctl::show(&app);
     if !(args.background && !checking) && !first_run {
         if let Err(e) = app.ui.show() {
             eprintln!("{TOOL}: {e}");
@@ -331,40 +447,48 @@ fn main() -> ExitCode {
     let _check_timer = args.screenshot.map(|out| {
         let timer = slint::Timer::default();
         let frames = std::cell::Cell::new(0u32);
-        timer.start(slint::TimerMode::Repeated, Duration::from_millis(16), move || {
-            app::with_app(|a| {
-                a.ui.window().request_redraw();
-                frames.set(frames.get() + 1);
-                if frames.get() < 120 {
-                    return;
-                }
-                let code = match a.ui.window().take_snapshot() {
-                    Ok(buf) => match image::RgbaImage::from_raw(buf.width(), buf.height(), buf.as_bytes().to_vec()) {
-                        Some(img) => {
-                            if let Some(dir) = out.parent() {
-                                let _ = std::fs::create_dir_all(dir);
-                            }
-                            match img.save_with_format(&out, image::ImageFormat::Png) {
-                                Ok(()) => 0,
-                                Err(e) => {
-                                    eprintln!("{TOOL}: could not save {}: {e}", out.display());
-                                    1
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(16),
+            move || {
+                app::with_app(|a| {
+                    a.ui.window().request_redraw();
+                    frames.set(frames.get() + 1);
+                    if frames.get() < 120 {
+                        return;
+                    }
+                    let code = match a.ui.window().take_snapshot() {
+                        Ok(buf) => match image::RgbaImage::from_raw(
+                            buf.width(),
+                            buf.height(),
+                            buf.as_bytes().to_vec(),
+                        ) {
+                            Some(img) => {
+                                if let Some(dir) = out.parent() {
+                                    let _ = std::fs::create_dir_all(dir);
+                                }
+                                match img.save_with_format(&out, image::ImageFormat::Png) {
+                                    Ok(()) => 0,
+                                    Err(e) => {
+                                        eprintln!("{TOOL}: could not save {}: {e}", out.display());
+                                        1
+                                    }
                                 }
                             }
+                            None => 1,
+                        },
+                        Err(e) => {
+                            eprintln!("{TOOL}: could not take the window's picture: {e}");
+                            1
                         }
-                        None => 1,
-                    },
-                    Err(e) => {
-                        eprintln!("{TOOL}: could not take the window's picture: {e}");
-                        1
+                    };
+                    if code != 0 {
+                        std::process::exit(code);
                     }
-                };
-                if code != 0 {
-                    std::process::exit(code);
-                }
-                let _ = slint::quit_event_loop();
-            });
-        });
+                    let _ = slint::quit_event_loop();
+                });
+            },
+        );
         timer
     });
 

@@ -15,7 +15,6 @@ pub struct ScreenRect {
 /// A top-level window that can be snipped or recorded.
 #[derive(Debug, Clone)]
 pub struct TopWindow {
-    pub handle: isize,
     pub title: String,
     pub rect: ScreenRect,
 }
@@ -28,6 +27,7 @@ mod imp {
     use windows_sys::Win32::Graphics::Dwm::{
         DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
     };
+    use windows_sys::Win32::UI::Accessibility::HWINEVENTHOOK;
     use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GWL_EXSTYLE, GetSystemMetrics, GetWindowLongW, GetWindowTextLengthW,
@@ -61,7 +61,12 @@ mod imp {
     }
 
     fn bounds_of(hwnd: HWND) -> Option<ScreenRect> {
-        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         // SAFETY: r is a valid RECT and the size matches DWMWA_EXTENDED_FRAME_BOUNDS's output.
         let hr = unsafe {
             DwmGetWindowAttribute(
@@ -114,7 +119,11 @@ mod imp {
                 pid,
             )
         };
-        if !visible || minimised || ex_style & WS_EX_TOOLWINDOW != 0 || (pid == collect.own_pid && hwnd as isize != collect.keep) {
+        if !visible
+            || minimised
+            || ex_style & WS_EX_TOOLWINDOW != 0
+            || (pid == collect.own_pid && hwnd as isize != collect.keep)
+        {
             return 1;
         }
         let title = title_of(hwnd);
@@ -122,13 +131,17 @@ mod imp {
             return 1;
         }
         if let Some(rect) = bounds_of(hwnd) {
-            collect.out.push(TopWindow { handle: hwnd as isize, title, rect });
+            collect.out.push(TopWindow { title, rect });
         }
         1
     }
 
     pub fn top_windows(keep: isize) -> Vec<TopWindow> {
-        let mut collect = Collect { own_pid: std::process::id(), keep, out: Vec::new() };
+        let mut collect = Collect {
+            own_pid: std::process::id(),
+            keep,
+            out: Vec::new(),
+        };
         // SAFETY: the callback only uses lparam as &mut Collect, which outlives this call.
         unsafe {
             EnumWindows(Some(each), (&mut collect as *mut Collect) as LPARAM);
@@ -138,12 +151,20 @@ mod imp {
 
     pub fn file_types_changed() {
         // SAFETY: SHCNE_ASSOCCHANGED takes no items.
-        unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, std::ptr::null(), std::ptr::null()) };
+        unsafe {
+            SHChangeNotify(
+                SHCNE_ASSOCCHANGED as i32,
+                SHCNF_IDLIST,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
     }
 
     use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
-        DeleteObject, GdiFlush, GetDC, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetDC, HBITMAP, HDC, HGDIOBJ, ReleaseDC,
+        SRCCOPY, SelectObject,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetIconInfo, ICONINFO,
@@ -182,7 +203,14 @@ mod imp {
                     ..std::mem::zeroed()
                 };
                 let mut bits: *mut c_void = std::ptr::null_mut();
-                let bitmap = CreateDIBSection(mem_dc, &info, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+                let bitmap = CreateDIBSection(
+                    mem_dc,
+                    &info,
+                    DIB_RGB_COLORS,
+                    &mut bits,
+                    std::ptr::null_mut(),
+                    0,
+                );
                 if mem_dc.is_null() || bitmap.is_null() || bits.is_null() {
                     if !bitmap.is_null() {
                         DeleteObject(bitmap);
@@ -194,12 +222,15 @@ mod imp {
                     return None;
                 }
                 let old = SelectObject(mem_dc, bitmap);
-                Some(ScreenGrabber { rect, screen_dc, mem_dc, bitmap, old, bits: bits.cast() })
+                Some(ScreenGrabber {
+                    rect,
+                    screen_dc,
+                    mem_dc,
+                    bitmap,
+                    old,
+                    bits: bits.cast(),
+                })
             }
-        }
-
-        pub fn rect(&self) -> ScreenRect {
-            self.rect
         }
 
         /// The screen area as BGRA rows (top-down, width * 4 bytes each; alpha undefined). `cursor` draws the pointer.
@@ -208,7 +239,18 @@ mod imp {
             // SAFETY: the DCs and bitmap live as long as self; `bits` points to the DIB section of r.w * r.h * 4 bytes,
             // read only after GdiFlush finished drawing into it.
             unsafe {
-                if BitBlt(self.mem_dc, 0, 0, r.w, r.h, self.screen_dc, r.x, r.y, SRCCOPY) == 0 {
+                if BitBlt(
+                    self.mem_dc,
+                    0,
+                    0,
+                    r.w,
+                    r.h,
+                    self.screen_dc,
+                    r.x,
+                    r.y,
+                    SRCCOPY,
+                ) == 0
+                {
                     return None;
                 }
                 if cursor {
@@ -241,7 +283,10 @@ mod imp {
                     }
                 }
                 GdiFlush();
-                Some(std::slice::from_raw_parts(self.bits, (r.w * r.h * 4) as usize))
+                Some(std::slice::from_raw_parts(
+                    self.bits,
+                    (r.w * r.h * 4) as usize,
+                ))
             }
         }
     }
@@ -260,7 +305,9 @@ mod imp {
 
     pub fn cursor_monitor() -> Option<((i32, i32), ScreenRect)> {
         use windows_sys::Win32::Foundation::POINT;
-        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+        };
         use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
         // SAFETY: plain queries filling structs we own; cbSize is set as GetMonitorInfoW requires.
         unsafe {
@@ -275,65 +322,127 @@ mod imp {
                 return None;
             }
             let r = info.rcMonitor;
-            Some(((p.x, p.y), ScreenRect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top }))
+            Some((
+                (p.x, p.y),
+                ScreenRect {
+                    x: r.left,
+                    y: r.top,
+                    w: r.right - r.left,
+                    h: r.bottom - r.top,
+                },
+            ))
         }
     }
 
-    /// Closes Windows' own snipping overlay (ScreenClippingHost.exe) if it is running. True when one was closed. The
-    /// backstop for a Win+Shift+S the keyboard hook never saw (another program's hook took it first): Rimelight Media
-    /// then shows its own snip instead.
-    pub fn close_windows_snip() -> bool {
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
-        };
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
-        let mut closed = false;
-        // SAFETY: a process snapshot walked with a correctly sized PROCESSENTRY32W; every handle opened is closed.
-        unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snap == INVALID_HANDLE_VALUE {
-                return false;
-            }
-            let mut e: PROCESSENTRY32W = std::mem::zeroed();
-            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-            let mut ok = Process32FirstW(snap, &mut e) != 0;
-            while ok {
-                let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-                if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case("ScreenClippingHost.exe") {
-                    let h = OpenProcess(PROCESS_TERMINATE, 0, e.th32ProcessID);
-                    if !h.is_null() {
-                        closed |= TerminateProcess(h, 0) != 0;
-                        CloseHandle(h);
-                    }
-                }
-                ok = Process32NextW(snap, &mut e) != 0;
-            }
-            CloseHandle(snap);
-        }
-        if closed {
-            hook_log("Windows' snipping overlay started anyway: closed it and snipped here".into());
-        }
-        closed
-    }
+    /// The start lock's handle (0 when this copy doesn't hold it).
+    static START_LOCK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
     /// Takes the "starting or running" lock for this user. True for the one process that holds it; Windows frees it when
-    /// that process ends. The handle is kept for the life of the process.
+    /// that process ends, or when release_start_lock closes the handle first.
     pub fn take_start_lock() -> bool {
-        use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
         use windows_sys::Win32::System::Threading::CreateMutexW;
-        let name: Vec<u16> = "Local\\RimelightMedia.Instance".encode_utf16().chain([0]).collect();
-        // SAFETY: a NUL-terminated name; the handle is deliberately never closed.
+        let name: Vec<u16> = "Local\\RimelightMedia.Instance"
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        // SAFETY: a NUL-terminated name; the handle is kept in START_LOCK, or closed when another copy already owns it.
         unsafe {
             let h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
-            !h.is_null() && GetLastError() != ERROR_ALREADY_EXISTS
+            if h.is_null() {
+                return false;
+            }
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                CloseHandle(h);
+                return false;
+            }
+            START_LOCK.store(h as isize, std::sync::atomic::Ordering::SeqCst);
+            true
         }
+    }
+
+    /// Gives the start lock up now, so the copy that takes over can start at once.
+    pub fn release_start_lock() {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        let h = START_LOCK.swap(0, std::sync::atomic::Ordering::SeqCst);
+        if h != 0 {
+            // SAFETY: the handle came from CreateMutexW in take_start_lock; the swap above makes sure it is closed once.
+            unsafe {
+                CloseHandle(h as _);
+            }
+        }
+    }
+
+    /// Ends this process at once. TerminateProcess skips the DLL detach of the audio and media threads, which could hang an
+    /// ordinary exit while the hand-over waits for this process to end.
+    pub fn exit_now(code: u32) -> ! {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        // SAFETY: the current process pseudo-handle; terminating ourselves is the point.
+        unsafe {
+            TerminateProcess(GetCurrentProcess(), code);
+        }
+        std::process::exit(code as i32)
+    }
+
+    /// Waits up to `ms` for another process to end. True when it has ended (or can't be watched, so it is no longer
+    /// running as far as this can tell).
+    pub fn wait_for_exit(pid: u32, ms: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+        // SYNCHRONIZE: the access right that lets a process wait on another's handle (0x00100000).
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        // SAFETY: the handle is checked, waited on and closed here.
+        unsafe {
+            let h = OpenProcess(SYNCHRONIZE, 0, pid);
+            if h.is_null() {
+                return true;
+            }
+            let done = WaitForSingleObject(h, ms) == WAIT_OBJECT_0;
+            CloseHandle(h);
+            done
+        }
+    }
+
+    /// Ends `pid` when it is Windows' snipping overlay (ScreenClippingHost.exe). True when it was ended.
+    fn close_snip_process(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            QueryFullProcessImageNameW, TerminateProcess,
+        };
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        // SAFETY: the handle is checked and closed here; the name buffer and its length are passed as the call needs.
+        unsafe {
+            let h = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                0,
+                pid,
+            );
+            if h.is_null() {
+                return false;
+            }
+            let named = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) != 0;
+            let killed = named && snip_exe(&buf[..len as usize]) && TerminateProcess(h, 0) != 0;
+            CloseHandle(h);
+            killed
+        }
+    }
+
+    /// True when a full image path ends in ScreenClippingHost.exe.
+    fn snip_exe(path: &[u16]) -> bool {
+        let p = String::from_utf16_lossy(path);
+        std::path::Path::new(&p).file_name().is_some_and(|n| {
+            n.to_string_lossy()
+                .eq_ignore_ascii_case("ScreenClippingHost.exe")
+        })
     }
 
     pub fn recycle(path: &std::path::Path) -> bool {
         use std::os::windows::ffi::OsStrExt as _;
         use windows_sys::Win32::UI::Shell::{
-            FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW,
+            FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+            SHFILEOPSTRUCTW, SHFileOperationW,
         };
         // Double-NUL-terminated list of one path.
         let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
@@ -352,7 +461,9 @@ mod imp {
     pub fn known_folder(which: super::UserFolder) -> Option<std::path::PathBuf> {
         use std::os::windows::ffi::OsStringExt as _;
         use windows_sys::Win32::System::Com::CoTaskMemFree;
-        use windows_sys::Win32::UI::Shell::{FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos, SHGetKnownFolderPath};
+        use windows_sys::Win32::UI::Shell::{
+            FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos, SHGetKnownFolderPath,
+        };
         let id = match which {
             super::UserFolder::Pictures => &FOLDERID_Pictures,
             super::UserFolder::Videos => &FOLDERID_Videos,
@@ -412,13 +523,28 @@ mod imp {
         let key = |vk: u16, up: bool| INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
-                ki: KEYBDINPUT { wVk: vk, wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { 0 }, time: 0, dwExtraInfo: 0 },
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
             },
         };
-        let inputs = [key(VK_LWIN, false), key(b'K' as u16, false), key(b'K' as u16, true), key(VK_LWIN, true)];
+        let inputs = [
+            key(VK_LWIN, false),
+            key(b'K' as u16, false),
+            key(b'K' as u16, true),
+            key(VK_LWIN, true),
+        ];
         // SAFETY: four well-formed keyboard inputs, sized as SendInput requires.
         unsafe {
-            SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            );
         }
     }
 
@@ -431,7 +557,9 @@ mod imp {
         let e = |e: windows::core::Error| e.message().to_string();
         let max = OcrEngine::MaxImageDimension().map_err(e)?;
         if w > max || h > max {
-            return Err(format!("the area is too large to read (at most {max} pixels a side)"));
+            return Err(format!(
+                "the area is too large to read (at most {max} pixels a side)"
+            ));
         }
         let engine = OcrEngine::TryCreateFromUserProfileLanguages()
             .map_err(|_| "Windows has no text recognition for your languages (Settings > Time & language > Language: add the OCR feature)".to_string())?;
@@ -442,8 +570,18 @@ mod imp {
         let writer = DataWriter::new().map_err(e)?;
         writer.WriteBytes(&bgra).map_err(e)?;
         let buffer = writer.DetachBuffer().map_err(e)?;
-        let bitmap = SoftwareBitmap::CreateCopyFromBuffer(&buffer, BitmapPixelFormat::Bgra8, w as i32, h as i32).map_err(e)?;
-        let result = engine.RecognizeAsync(&bitmap).map_err(e)?.join().map_err(e)?;
+        let bitmap = SoftwareBitmap::CreateCopyFromBuffer(
+            &buffer,
+            BitmapPixelFormat::Bgra8,
+            w as i32,
+            h as i32,
+        )
+        .map_err(e)?;
+        let result = engine
+            .RecognizeAsync(&bitmap)
+            .map_err(e)?
+            .join()
+            .map_err(e)?;
         let lines = result.Lines().map_err(e)?;
         let mut out = Vec::new();
         for i in 0..lines.Size().map_err(e)? {
@@ -462,20 +600,35 @@ mod imp {
         let (verb, target) = (wide("open"), wide(uri));
         // SAFETY: both strings are NUL-terminated and outlive the call; a result above 32 means success.
         let r = unsafe {
-            ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), target.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL)
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
         };
         r as isize > 32
     }
 
     /// Prints one picture, fitted to the page with a small margin, after Windows' print dialog. Ok(false) when the
     /// person cancels.
-    pub fn print_image(owner: isize, rgba: &[u8], w: u32, h: u32, title: &str) -> Result<bool, String> {
+    pub fn print_image(
+        owner: isize,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        title: &str,
+    ) -> Result<bool, String> {
         use windows_sys::Win32::Graphics::Gdi::{
-            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteDC, GetDeviceCaps, HALFTONE, HORZRES, SRCCOPY,
-            SetBrushOrgEx, SetStretchBltMode, StretchDIBits, VERTRES,
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteDC, GetDeviceCaps,
+            HALFTONE, HORZRES, SRCCOPY, SetBrushOrgEx, SetStretchBltMode, StretchDIBits, VERTRES,
         };
         use windows_sys::Win32::Storage::Xps::{DOCINFOW, EndDoc, EndPage, StartDocW, StartPage};
-        use windows_sys::Win32::UI::Controls::Dialogs::{PD_NOPAGENUMS, PD_NOSELECTION, PD_RETURNDC, PRINTDLGW, PrintDlgW};
+        use windows_sys::Win32::UI::Controls::Dialogs::{
+            PD_NOPAGENUMS, PD_NOSELECTION, PD_RETURNDC, PRINTDLGW, PrintDlgW,
+        };
         // BGRA rows for GDI.
         let mut bgra = Vec::with_capacity(rgba.len());
         for p in rgba.chunks_exact(4) {
@@ -494,7 +647,10 @@ mod imp {
                 return Ok(false);
             }
             let dc = pd.hDC;
-            let (pw, ph) = (GetDeviceCaps(dc, HORZRES as i32), GetDeviceCaps(dc, VERTRES as i32));
+            let (pw, ph) = (
+                GetDeviceCaps(dc, HORZRES as i32),
+                GetDeviceCaps(dc, VERTRES as i32),
+            );
             let margin = (pw.min(ph) as f64 * 0.04) as i32;
             let (aw, ah) = (f64::from(pw - 2 * margin), f64::from(ph - 2 * margin));
             let scale = (aw / f64::from(w)).min(ah / f64::from(h));
@@ -521,12 +677,30 @@ mod imp {
                 };
                 SetStretchBltMode(dc, HALFTONE);
                 SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut());
-                ok = StretchDIBits(dc, dx, dy, dw, dh, 0, 0, w as i32, h as i32, bgra.as_ptr().cast(), &info, DIB_RGB_COLORS, SRCCOPY) != 0;
+                ok = StretchDIBits(
+                    dc,
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                    0,
+                    0,
+                    w as i32,
+                    h as i32,
+                    bgra.as_ptr().cast(),
+                    &info,
+                    DIB_RGB_COLORS,
+                    SRCCOPY,
+                ) != 0;
                 ok &= EndPage(dc) > 0;
                 ok &= EndDoc(dc) > 0;
             }
             DeleteDC(dc);
-            if ok { Ok(true) } else { Err("the printer refused the page".into()) }
+            if ok {
+                Ok(true)
+            } else {
+                Err("the printer refused the page".into())
+            }
         }
     }
 
@@ -536,7 +710,9 @@ mod imp {
 
     /// Opens Windows' Share panel for a picture file.
     pub fn share_file(owner: isize, path: &std::path::Path, title: &str) -> Result<(), String> {
-        use windows::ApplicationModel::DataTransfer::{DataRequestedEventArgs, DataTransferManager};
+        use windows::ApplicationModel::DataTransfer::{
+            DataRequestedEventArgs, DataTransferManager,
+        };
         use windows::Foundation::TypedEventHandler;
         use windows::Storage::StorageFile;
         use windows::Storage::Streams::RandomAccessStreamReference;
@@ -545,7 +721,10 @@ mod imp {
         let e = |e: windows::core::Error| e.message().to_string();
         // Checks the file now (a clear error), then again inside the handler (Windows' file object stays on its thread).
         let path = HSTRING::from(path);
-        StorageFile::GetFileFromPathAsync(&path).map_err(e)?.join().map_err(e)?;
+        StorageFile::GetFileFromPathAsync(&path)
+            .map_err(e)?
+            .join()
+            .map_err(e)?;
         let interop = factory::<DataTransferManager, IDataTransferManagerInterop>().map_err(e)?;
         let hwnd = windows::Win32::Foundation::HWND(owner as *mut _);
         // SAFETY: hwnd is our own top-level window.
@@ -574,67 +753,203 @@ mod imp {
     }
 
     pub fn exclude_from_capture(hwnd: isize) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+        };
         // SAFETY: hwnd is one of our own live windows (from winit); a stale handle only makes the call fail.
         unsafe {
             SetWindowDisplayAffinity(hwnd as HWND, WDA_EXCLUDEFROMCAPTURE);
         }
     }
 
-    /// Turns off Windows' show/hide and move animations for one of our windows (the snip overlay appears at once).
-    pub fn no_transitions(hwnd: isize) {
-        use windows_sys::Win32::Graphics::Dwm::DWMWA_TRANSITIONS_FORCEDISABLED;
-        let on: i32 = 1;
-        // SAFETY: `on` is a BOOL-sized value that lives for the call, as DWMWA_TRANSITIONS_FORCEDISABLED expects; a
-        // stale handle only makes the call fail.
-        unsafe {
-            windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
-                hwnd as HWND,
-                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
-                (&on as *const i32).cast::<c_void>(),
-                4,
-            );
+    /// The thread-local window-message hook, once installed (0 when none).
+    static SHOW_HOOK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+    /// Watches window messages on the calling (UI) thread: just before a window of our class is made visible
+    /// (WM_SHOWWINDOW, or SetWindowPos with SWP_SHOWWINDOW), Windows' open/close animations are turned off for it, so
+    /// no window of ours zooms in. At creation (a CBT hook on HCBT_CREATEWND) DWM ignored the setting: tested, every
+    /// snip zoomed.
+    pub fn start_no_window_animations() {
+        use std::sync::atomic::Ordering;
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_CALLWNDPROC};
+        if SHOW_HOOK.load(Ordering::SeqCst) != 0 {
+            return;
         }
+        // SAFETY: a thread-local hook (no module handle needed) whose procedure is a static fn living for the process.
+        let hook = unsafe {
+            SetWindowsHookExW(
+                WH_CALLWNDPROC,
+                Some(no_animation_proc),
+                std::ptr::null_mut(),
+                GetCurrentThreadId(),
+            )
+        };
+        if hook.is_null() {
+            hook_log(
+                "could not watch window messages: our windows keep Windows' open animation".into(),
+            );
+            return;
+        }
+        SHOW_HOOK.store(hook as isize, Ordering::SeqCst);
     }
 
-    /// Starts the Win+Shift+S hook (a low-level keyboard hook on its own thread, with a message loop).
+    /// The message hook: runs before the window procedure for every message sent on the UI thread. Only a show of one
+    /// of our windows does anything.
+    unsafe extern "system" fn no_animation_proc(
+        code: i32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CWPSTRUCT, CallNextHookEx, GetClassNameW, HC_ACTION, SWP_SHOWWINDOW, WINDOWPOS,
+            WM_SHOWWINDOW, WM_WINDOWPOSCHANGING,
+        };
+        if code == HC_ACTION as i32 && lparam != 0 {
+            // SAFETY: for HC_ACTION, lparam points to a CWPSTRUCT that Windows keeps alive for the call.
+            let m = unsafe { &*(lparam as *const CWPSTRUCT) };
+            let showing = match m.message {
+                WM_SHOWWINDOW => m.wParam != 0,
+                // SAFETY: for WM_WINDOWPOSCHANGING, lParam points to the WINDOWPOS being applied.
+                WM_WINDOWPOSCHANGING => {
+                    m.lParam != 0
+                        && unsafe { (*(m.lParam as *const WINDOWPOS)).flags } & SWP_SHOWWINDOW != 0
+                }
+                _ => false,
+            };
+            if showing && !m.hwnd.is_null() {
+                let mut class = [0u16; 64];
+                // SAFETY: the buffer holds 64 u16s, as passed; GetClassNameW NUL-terminates what it writes.
+                let n = unsafe { GetClassNameW(m.hwnd, class.as_mut_ptr(), class.len() as i32) };
+                // SAFETY: `class` is NUL-terminated (zeroed, and GetClassNameW writes at most 63 characters).
+                if n > 0 && unsafe { is_our_class(class.as_ptr()) } {
+                    let on: i32 = 1;
+                    // SAFETY: m.hwnd is the window being shown; `on` is a BOOL-sized value that lives for the call.
+                    unsafe {
+                        DwmSetWindowAttribute(
+                            m.hwnd,
+                            DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                            (&on as *const i32).cast::<c_void>(),
+                            4,
+                        );
+                    }
+                }
+            }
+        }
+        // SAFETY: passes the message on to the next hook, as the hook contract requires.
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+    }
+
+    /// True when a class name (a NUL-terminated UTF-16 string; null or an atom below 0x10000 never match) is
+    /// super::WINDOW_CLASS.
+    ///
+    /// # Safety
+    /// `class` must be null, an atom, or point to a NUL-terminated UTF-16 string.
+    unsafe fn is_our_class(class: *const u16) -> bool {
+        if (class as usize) <= 0xFFFF {
+            return false;
+        }
+        let mut i = 0;
+        for want in super::WINDOW_CLASS.encode_utf16() {
+            // SAFETY: the string is NUL-terminated and read only up to its NUL (a mismatch stops the loop there).
+            if unsafe { *class.add(i) } != want {
+                return false;
+            }
+            i += 1;
+        }
+        // SAFETY: as above; index i is at most the string's NUL.
+        unsafe { *class.add(i) == 0 }
+    }
+
+    /// The Win+Shift+S hook's module and the handle of the keyboard hook now installed (0 when none).
+    static HOOK_MODULE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+    static HOOK_HANDLE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+    /// Installs the keyboard hook at the front of the chain, replacing ours. Low-level hooks run newest first, so a hook
+    /// another program installed later can let Win+Shift+S reach Windows first; installing again puts ours first.
+    /// `reason` goes to hook-log.txt with the result, so each (re)install can be matched to what caused it.
+    fn install_keyboard_hook(reason: &str) -> bool {
+        use std::sync::atomic::Ordering;
+        use windows_sys::Win32::Foundation::GetLastError;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+        };
+        let module = HOOK_MODULE.load(Ordering::SeqCst);
+        // SAFETY: the hook procedure is a static fn; the module handle is the process's own.
+        let fresh =
+            unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(win_shift_s_proc), module as _, 0) };
+        if fresh.is_null() {
+            // SAFETY: GetLastError reads this thread's last error code.
+            let err = unsafe { GetLastError() };
+            hook_log(format!(
+                "keyboard hook install FAILED ({reason}): error {err}"
+            ));
+            return false;
+        }
+        let old = HOOK_HANDLE.swap(fresh as isize, Ordering::SeqCst);
+        if old != 0 {
+            // SAFETY: `old` was returned by SetWindowsHookExW earlier and is unhooked once.
+            unsafe {
+                UnhookWindowsHookEx(old as _);
+            }
+        }
+        true
+    }
+
+    /// Starts the Win+Shift+S hooks on their own thread, with a message loop: the keyboard hook, and window-event hooks
+    /// that catch Windows' snipping overlay the moment it shows.
     pub fn start_win_shift_s_hook() {
         use std::sync::atomic::Ordering;
         use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+        };
+        use windows_sys::Win32::UI::Accessibility::SetWinEventHook;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, MSG, SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-            WH_KEYBOARD_LL, WM_TIMER,
+            DispatchMessageW, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, GetMessageW, MSG,
+            TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
         };
         if HOOK_STARTED.swap(true, Ordering::SeqCst) {
             return;
         }
         std::thread::spawn(|| {
-            // SAFETY: the hook procedure is a static fn; the module handle is the process's own; the message loop only
-            // dispatches messages to the hook.
+            // SAFETY: the module handle is the process's own; the thread handle is this thread's pseudo-handle.
             unsafe {
-                let module = GetModuleHandleW(std::ptr::null());
-                let mut hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(win_shift_s_proc), module as _, 0);
-                hook_log(format!("hook installed: {}", if hook.is_null() { "FAILED" } else { "ok" }));
-                if hook.is_null() {
-                    HOOK_STARTED.store(false, Ordering::SeqCst);
-                    return;
+                // Windows drops a low-level hook that answers too slowly: this thread gets the top priority it can have.
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+                HOOK_MODULE.store(
+                    GetModuleHandleW(std::ptr::null()) as isize,
+                    Ordering::SeqCst,
+                );
+            }
+            let installed = install_keyboard_hook("startup");
+            if !installed {
+                HOOK_STARTED.store(false, Ordering::SeqCst);
+                return;
+            }
+            // Windows' snipping overlay shows (and takes focus) as a window of ScreenClippingHost.exe: these events come
+            // here as it happens, so there is no poll. Out-of-context, so the callbacks run on this thread's loop.
+            for event in [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_SHOW] {
+                // SAFETY: the callback is a static fn that lives for the whole process.
+                unsafe {
+                    SetWinEventHook(
+                        event,
+                        event,
+                        std::ptr::null_mut(),
+                        Some(snip_window_event),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                    );
                 }
-                // Low-level hooks run newest first, so a hook installed later by another process (or a hook Windows
-                // dropped as too slow) can let Win+Shift+S reach Windows first. Re-installing puts this one first again.
-                // Not proven to be the cause of the occasional misses: hook-log.txt records what the hook sees.
-                SetTimer(std::ptr::null_mut(), 0, 30_000, None);
+            }
+            // SAFETY: the loop only dispatches messages to the hooks installed above.
+            unsafe {
                 let mut msg: MSG = std::mem::zeroed();
                 while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
-                    if msg.message == WM_TIMER {
-                        let fresh = SetWindowsHookExW(WH_KEYBOARD_LL, Some(win_shift_s_proc), module as _, 0);
-                        if fresh.is_null() {
-                            hook_log("hook refresh FAILED".into());
-                        } else {
-                            UnhookWindowsHookEx(hook);
-                            hook = fresh;
-                        }
-                        continue;
-                    }
                     TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
@@ -642,10 +957,54 @@ mod imp {
         });
     }
 
-    /// Appends a line to %APPDATA%\Rimelight Media\hook-log.txt (from a background thread; the hook never waits).
-    fn hook_log(line: String) {
-        use std::sync::{Mutex, OnceLock, mpsc};
-        static TX: OnceLock<Mutex<mpsc::Sender<String>>> = OnceLock::new();
+    /// A window-event hook: when a window of Windows' snipping overlay (ScreenClippingHost.exe) shows or takes focus, it
+    /// is closed, the snip starts here (take_win_shift_s), and the keyboard hook goes back to the front.
+    unsafe extern "system" fn snip_window_event(
+        _hook: HWINEVENTHOOK,
+        event: u32,
+        hwnd: HWND,
+        id_object: i32,
+        _id_child: i32,
+        _thread: u32,
+        _time: u32,
+    ) {
+        use std::sync::atomic::Ordering;
+        use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW};
+        if hwnd.is_null() || id_object != OBJID_WINDOW {
+            return;
+        }
+        if event == EVENT_SYSTEM_FOREGROUND {
+            // Another window took focus: our keyboard hook may have fallen behind hooks installed since, so put it
+            // back at the front before the user presses keys there. At most once per 2 s (leading edge; no timer).
+            // SAFETY: a plain tick-count query.
+            let now = unsafe { GetTickCount64() };
+            let last = LAST_FOREGROUND_REINSTALL_MS.load(Ordering::SeqCst);
+            if last == 0 || now.saturating_sub(last) >= 2000 {
+                LAST_FOREGROUND_REINSTALL_MS.store(now, Ordering::SeqCst);
+                install_keyboard_hook("foreground window changed");
+            }
+        }
+        let mut pid = 0u32;
+        // SAFETY: a plain query on a window handle Windows gave us; `pid` is a valid out value.
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid == 0 || !close_snip_process(pid) {
+            return;
+        }
+        WIN_S_PENDING.store(true, Ordering::SeqCst);
+        hook_log("ScreenClippingHost killed, snipping here (missed by hook)".into());
+        install_keyboard_hook("after ScreenClippingHost was killed");
+    }
+
+    /// Tick count (GetTickCount64) of the last foreground-driven keyboard hook re-install; 0 when none yet.
+    static LAST_FOREGROUND_REINSTALL_MS: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    /// Appends a line to %APPDATA%\Rimelight Media\hook-log.txt. One logger thread takes the lines from a channel, so the
+    /// caller (the keyboard hook included) never waits for the disk.
+    pub fn hook_log(line: String) {
+        use std::sync::{OnceLock, mpsc};
+        static TX: OnceLock<mpsc::Sender<String>> = OnceLock::new();
         let tx = TX.get_or_init(|| {
             let (tx, rx) = mpsc::channel::<String>();
             std::thread::spawn(move || {
@@ -653,16 +1012,45 @@ mod imp {
                 let path = crate::prefs::data_dir().join("hook-log.txt");
                 for line in rx {
                     let t = local_time();
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                        let _ = writeln!(f, "{:04}-{:02}-{:02} {:02}:{:02}:{:02} {line}", t[0], t[1], t[2], t[3], t[4], t[5]);
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        let _ = writeln!(
+                            f,
+                            "{:04}-{:02}-{:02} {:02}:{:02}:{:02} {line}",
+                            t[0], t[1], t[2], t[3], t[4], t[5]
+                        );
                     }
+                    trim_hook_log(&path);
                 }
             });
-            Mutex::new(tx)
+            tx
         });
-        if let Ok(tx) = tx.lock() {
-            let _ = tx.send(line);
+        let _ = tx.send(line);
+    }
+
+    /// Keeps hook-log.txt near 200 KB: once it grows past that, the oldest lines go and the newest 150 KB stay.
+    fn trim_hook_log(path: &std::path::Path) {
+        const CAP: u64 = 200 * 1024;
+        const KEEP: usize = 150 * 1024;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return;
+        };
+        if meta.len() <= CAP {
+            return;
         }
+        let Ok(data) = std::fs::read(path) else {
+            return;
+        };
+        let start = data.len().saturating_sub(KEEP);
+        // Start the kept part at a line boundary so no line is cut in half.
+        let cut = data[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(data.len(), |p| start + p + 1);
+        let _ = std::fs::write(path, &data[cut..]);
     }
 
     static HOOK_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -674,46 +1062,56 @@ mod imp {
     /// Swallows Win+Shift+S and flags it for the app to snip. The Win and Shift states are tracked here from the hook's
     /// own events (the low-level hook sees VK_LSHIFT/VK_RSHIFT, and the async key state lags behind it). The Win key-up
     /// is passed on: Shift was pressed in between, so the Start menu stays shut.
-    unsafe extern "system" fn win_shift_s_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe extern "system" fn win_shift_s_proc(
+        code: i32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         use std::sync::atomic::Ordering;
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_LSHIFT, VK_LWIN, VK_RSHIFT, VK_RWIN, VK_SHIFT};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_LSHIFT, VK_LWIN, VK_RSHIFT, VK_RWIN, VK_SHIFT,
         };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
+            WM_SYSKEYUP,
+        };
+        /// KBDLLHOOKSTRUCT.flags bit set for keys sent by SendInput or another program (not the user's keyboard).
+        const LLKHF_INJECTED: u32 = 0x10;
         if code == HC_ACTION as i32 {
             // SAFETY: for HC_ACTION, lparam points to a KBDLLHOOKSTRUCT that Windows keeps alive for the call.
             let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-            let msg = wparam as u32;
-            let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-            let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
-            let vk = kb.vkCode;
-            if vk == VK_LWIN as u32 || vk == VK_RWIN as u32 {
-                WIN_HELD.store(down, Ordering::SeqCst);
-            } else if vk == VK_LSHIFT as u32 || vk == VK_RSHIFT as u32 || vk == VK_SHIFT as u32 {
-                SHIFT_HELD.store(down, Ordering::SeqCst);
-            } else if vk == b'S' as u32 {
-                let (win, shift) = (WIN_HELD.load(Ordering::SeqCst), SHIFT_HELD.load(Ordering::SeqCst));
-                if down && (win || shift) {
-                    // Diagnostics for the Win+Shift+S cases that still reach Windows' own snipping: what this hook saw
-                    // against the system's key state. Sent to a logger thread so the hook itself stays fast.
-                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-                    // SAFETY: plain key-state queries.
-                    let async_win = unsafe { GetAsyncKeyState(VK_LWIN as i32) < 0 || GetAsyncKeyState(VK_RWIN as i32) < 0 };
-                    // SAFETY: as above.
-                    let async_shift = unsafe { GetAsyncKeyState(VK_SHIFT as i32) < 0 };
-                    hook_log(format!(
-                        "S down: tracked win={win} shift={shift}, system win={async_win} shift={async_shift}, flags={:#x}, swallowed={}",
-                        kb.flags,
-                        win && shift
-                    ));
-                }
-                if down && win && shift {
-                    SWALLOW_S_UP.store(true, Ordering::SeqCst);
-                    WIN_S_PENDING.store(true, Ordering::SeqCst);
-                    return 1;
-                }
-                if up && SWALLOW_S_UP.swap(false, Ordering::SeqCst) {
-                    return 1;
+            // Injected keys are not the user's: they change no state here and are never swallowed.
+            if kb.flags & LLKHF_INJECTED == 0 {
+                let msg = wparam as u32;
+                let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+                let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+                let vk = kb.vkCode;
+                if vk == VK_LWIN as u32 || vk == VK_RWIN as u32 {
+                    WIN_HELD.store(down, Ordering::SeqCst);
+                } else if vk == VK_LSHIFT as u32 || vk == VK_RSHIFT as u32 || vk == VK_SHIFT as u32
+                {
+                    SHIFT_HELD.store(down, Ordering::SeqCst);
+                } else if vk == b'S' as u32 {
+                    if down {
+                        // Cross-check against the system key state, so a Win or Shift press this hook missed (or saw
+                        // late) does not break Win+Shift+S. Only read here, on S, not on every key.
+                        // SAFETY: plain key-state queries.
+                        let sys_win = unsafe {
+                            GetAsyncKeyState(VK_LWIN as i32) < 0
+                                || GetAsyncKeyState(VK_RWIN as i32) < 0
+                        };
+                        // SAFETY: as above.
+                        let sys_shift = unsafe { GetAsyncKeyState(VK_SHIFT as i32) < 0 };
+                        let win = WIN_HELD.load(Ordering::SeqCst) || sys_win;
+                        let shift = SHIFT_HELD.load(Ordering::SeqCst) || sys_shift;
+                        if win && shift {
+                            SWALLOW_S_UP.store(true, Ordering::SeqCst);
+                            WIN_S_PENDING.store(true, Ordering::SeqCst);
+                            return 1;
+                        }
+                    } else if up && SWALLOW_S_UP.swap(false, Ordering::SeqCst) {
+                        return 1;
+                    }
                 }
             }
         }
@@ -749,7 +1147,7 @@ mod imp {
     }
     pub fn file_types_changed() {}
     pub fn exclude_from_capture(_: isize) {}
-    pub fn no_transitions(_: isize) {}
+    pub fn start_no_window_animations() {}
     pub fn start_win_shift_s_hook() {}
     pub fn take_win_shift_s() -> bool {
         false
@@ -760,9 +1158,14 @@ mod imp {
     pub fn take_start_lock() -> bool {
         true
     }
-    pub fn close_windows_snip() -> bool {
-        false
+    pub fn release_start_lock() {}
+    pub fn exit_now(code: u32) -> ! {
+        std::process::exit(code as i32)
     }
+    pub fn wait_for_exit(_: u32, _: u32) -> bool {
+        true
+    }
+    pub fn hook_log(_: String) {}
     pub fn recycle(path: &std::path::Path) -> bool {
         std::fs::remove_file(path).is_ok()
     }
@@ -787,9 +1190,6 @@ mod imp {
     impl ScreenGrabber {
         pub fn new(_: ScreenRect) -> Option<ScreenGrabber> {
             None
-        }
-        pub fn rect(&self) -> ScreenRect {
-            ScreenRect::default()
         }
         pub fn grab(&mut self, _: bool) -> Option<&[u8]> {
             None
@@ -857,9 +1257,24 @@ pub fn take_start_lock() -> bool {
     imp::take_start_lock()
 }
 
-/// Closes Windows' own snipping overlay if it started (see the Windows implementation). True when one was closed.
-pub fn close_windows_snip() -> bool {
-    imp::close_windows_snip()
+/// Gives the start lock up now, before this process exits (a hand-over).
+pub fn release_start_lock() {
+    imp::release_start_lock()
+}
+
+/// Ends this process at once (no DLL detach hang, see the Windows implementation).
+pub fn exit_now(code: u32) -> ! {
+    imp::exit_now(code)
+}
+
+/// Waits up to `ms` milliseconds for process `pid` to end. True when it has ended.
+pub fn wait_for_exit(pid: u32, ms: u32) -> bool {
+    imp::wait_for_exit(pid, ms)
+}
+
+/// Appends a line to the hook log (%APPDATA%\Rimelight Media\hook-log.txt).
+pub fn log_line(line: &str) {
+    imp::hook_log(line.to_string())
 }
 
 /// Keeps one of our windows (the recording bar) out of screenshots and recordings.
@@ -885,9 +1300,14 @@ pub fn top_windows(keep: isize) -> Vec<TopWindow> {
     imp::top_windows(keep)
 }
 
-/// Turns off Windows' animations for one of our windows, so it appears at once.
-pub fn no_transitions(hwnd: isize) {
-    imp::no_transitions(hwnd)
+/// The window class every window of ours is created with (set in main.rs through winit's attributes), so the
+/// creation hook below can tell our windows from anyone else's.
+pub const WINDOW_CLASS: &str = "RimelightMediaWindow";
+
+/// Turns off Windows' open/close animations (the zoom in) for every window of ours, from its creation on. Call once on
+/// the UI thread, before any window is shown.
+pub fn start_no_window_animations() {
+    imp::start_no_window_animations()
 }
 
 /// Starts the Win+Shift+S hook (once). Win+Shift+S is then swallowed and reported by `take_win_shift_s`.

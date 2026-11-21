@@ -1,6 +1,6 @@
 [package]
 name = "rimelight-media"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 license = "LicenseRef-Proprietary"
 publish = false
@@ -47,6 +47,10 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # Text tab: JSON format, minify, validate, sort keys and the tree view (key order kept).
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = "1"
+# Text tab: syntax colours (pure-Rust fancy-regex engine, no onig C build).
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# Text tab: the extra syntaxes (TOML, TypeScript, PowerShell, INI, ...) and the One Half themes for syntect.
+two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 
 [target.'cfg(windows)'.dependencies]
 # File types, default apps and the start-up entry (all per user, no admin).
@@ -66,6 +70,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_Security",
+    "Win32_UI_Accessibility",
 ] }
 # Windows' Share panel and its built-in text recognition (WinRT). Already in the build through cpal; only these parts
 # are added.
@@ -107,24 +112,10 @@ opt-level = 2
 [profile.dev.build-override]
 opt-level = 3
 
-# Small and fast: one codegen unit, whole-program optimisation, no symbols, size-leaning optimisation, no unwinding.
+# Fast first, then small: full optimisation, one codegen unit, whole-program optimisation, no symbols, no unwinding.
 [profile.release]
-opt-level = "s"
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
-
-# The decoders that run per pixel or per sample stay at full speed.
-[profile.release.package.image]
-opt-level = 3
-[profile.release.package.zune-jpeg]
-opt-level = 3
-[profile.release.package.png]
-opt-level = 3
-[profile.release.package.image-webp]
-opt-level = 3
-[profile.release.package.gif]
-opt-level = 3
-[profile.release.package.tiny-skia]
-opt-level = 3

@@ -48,7 +48,7 @@ export component SnipWindow inherits Window {
     in property <float> mon-y: 0;
     in property <float> mon-w: 1;
     property <bool> dragging: false;
-    // The overlay is kept between snips (capturectl SPARE_OVERLAY): each snip starts with no selection.
+    // A fresh overlay is made for each snip (capturectl), so each snip starts with no selection.
     public function reset() { self.dragging = false; self.ax = 0; self.ay = 0; self.bx = 0; self.by = 0; self.hovered = -1; }
     property <float> ax;
     property <float> ay;

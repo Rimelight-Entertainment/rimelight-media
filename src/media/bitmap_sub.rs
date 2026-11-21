@@ -32,9 +32,20 @@ pub fn read(rect: &ff::subtitle::Bitmap) -> Option<SubPicture> {
             let row = std::slice::from_raw_parts(r.data[0].add(y * stride), w as usize);
             for &i in row {
                 let c = colours.get(usize::from(i)).copied().unwrap_or(0);
-                rgba.extend_from_slice(&[(c >> 16) as u8, (c >> 8) as u8, c as u8, (c >> 24) as u8]);
+                rgba.extend_from_slice(&[
+                    (c >> 16) as u8,
+                    (c >> 8) as u8,
+                    c as u8,
+                    (c >> 24) as u8,
+                ]);
             }
         }
-        Some(SubPicture { x: r.x, y: r.y, w: w as u32, h: h as u32, rgba })
+        Some(SubPicture {
+            x: r.x,
+            y: r.y,
+            w: w as u32,
+            h: h as u32,
+            rgba,
+        })
     }
 }

@@ -8,15 +8,26 @@ use image::DynamicImage;
 use crate::picture::Picture;
 
 pub fn load(path: &Path) -> Result<Picture, String> {
-    let developed = rawler::decode_file(path).map_err(|e| e.to_string()).and_then(|raw| {
+    // Read whole (rawler maps nothing from the file afterwards), so no handle outlives this call.
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let developed = rawler::decode(
+        &rawler::rawsource::RawSource::new_from_slice(&bytes),
+        &rawler::decoders::RawDecodeParams::default(),
+    )
+    .map_err(|e| e.to_string())
+    .and_then(|raw| {
         let intermediate = rawler::imgop::develop::RawDevelop::default()
             .develop_intermediate(&raw)
             .map_err(|e| e.to_string())?;
-        intermediate.to_dynamic_image().ok_or_else(|| "the picture has no pixels".to_string())
+        intermediate
+            .to_dynamic_image()
+            .ok_or_else(|| "the picture has no pixels".to_string())
     });
     match developed {
         Ok(img) => Ok(to_picture(img)),
-        Err(develop_err) => preview(path).map(to_picture).map_err(|e| format!("{develop_err} ({e})")),
+        Err(develop_err) => preview(path)
+            .map(to_picture)
+            .map_err(|e| format!("{develop_err} ({e})")),
     }
 }
 
@@ -39,5 +50,9 @@ fn preview(path: &Path) -> Result<DynamicImage, String> {
 
 fn to_picture(img: DynamicImage) -> Picture {
     let rgba = img.into_rgba8();
-    Picture { w: rgba.width(), h: rgba.height(), rgba: rgba.into_raw() }
+    Picture {
+        w: rgba.width(),
+        h: rgba.height(),
+        rgba: rgba.into_raw(),
+    }
 }

@@ -182,6 +182,23 @@ component TrimHandle inherits Rectangle {
     }
 }
 
+// The waveform's bars at fixed places across its box: bar i sits at i / count of the width, so two WaveBars of the same
+// size and data line up exactly.
+component WaveBars inherits Rectangle {
+    in property <[float]> bars;
+    in property <color> tint;
+    for v[i] in root.bars: Rectangle {
+        // The first bar touches the left edge and the last one the right edge, so the bars span the whole width.
+        property <length> bar-w: max(1px, root.width / max(1, root.bars.length) * 0.6);
+        x: (root.width - bar-w) * (i * 1.0 / max(1, root.bars.length - 1));
+        width: bar-w;
+        height: max(2px, v * root.height * 0.9);
+        y: (root.height - self.height) / 2;
+        border-radius: 1px;
+        background: root.tint;
+    }
+}
+
 export component MediaPage inherits Rectangle {
     background: Tokens.stage;
 
@@ -193,9 +210,12 @@ export component MediaPage inherits Rectangle {
     property <length> vh: root.vw / root.aspect;
     property <length> vx: (root.width - root.vw) / 2;
     property <length> vy: root.top-h + (root.area-h - root.vh) / 2;
-    // The waveform track's height (0 when hidden), and the gap of 8px above the seek bar when it is shown.
+    // The waveform track's height (0 when hidden). The gap below it is Tokens.space-2, the same as the gap above it (the
+    // padding of the timeline), so the waveform sits centred between them.
     property <length> wave-h: (Player.has-wave && (Player.trim-mode || Player.wave-seek)) ? 48px : 0px;
-    property <length> wave-gap: root.wave-h > 0px ? 8px : 0px;
+    // Top of the seek bar's 24px row. Its 4px track is centred in the row (10px down), so the track starts Tokens.space-2
+    // below the waveform.
+    property <length> seek-y: root.wave-h > 0px ? root.wave-h + Tokens.space-2 - 10px : 0px;
 
     property <bool> bars-visible: !Shell.full-screen || (stage-ta.has-hover && stage-ta.mouse-y > self.height - 160px) || !Player.playing;
 
@@ -350,86 +370,114 @@ export component MediaPage inherits Rectangle {
                     spacing: Tokens.space-3;
                     timeline := Rectangle {
                         horizontal-stretch: 1;
-                        height: root.wave-h + root.wave-gap + 24px;
+                        height: root.seek-y + 24px;
                         wave-box := Rectangle {
-                            width: parent.width;
+                            x: 0; y: 0; width: parent.width;
                             height: root.wave-h;
                             clip: true;
                             if Player.trim-mode: Rectangle {
-                                x: Player.trim-start * wave-box.width;
+                                y: 0; x: Player.trim-start * wave-box.width;
                                 width: (Player.trim-end - Player.trim-start) * wave-box.width;
                                 height: parent.height;
                                 background: #FFC14D26;
                             }
-                            for v[i] in Player.wave-bars: Rectangle {
-                                property <float> start: i * 1.0 / max(1, Player.wave-bars.length);
-                                x: wave-box.width * start;
-                                width: max(1px, wave-box.width / max(1, Player.wave-bars.length) * 0.6);
-                                height: max(2px, v * wave-box.height * 0.9);
-                                y: (wave-box.height - self.height) / 2;
-                                border-radius: 1px;
-                                background: #FFFFFF59;
-                            }
+                            // Grey: every bar, once. Blue: the same bars (same WaveBars geometry) in a box clipped to the
+                            // played part. Only the clip's width changes during playback; the bars never move.
+                            WaveBars { x: 0; y: 0; width: wave-box.width; height: wave-box.height; bars: Player.wave-bars; tint: #FFFFFF59; }
                             played := Rectangle {
-                                x: 0;
-                                width: wave-box.width * Player.position;
+                                x: 0; y: 0;
+                                // While scrubbing (here or on the seek bar) the blue follows the shared scrub position.
+                                width: wave-box.width * (Player.scrubbing ? Player.scrub-pos : Player.position);
                                 height: wave-box.height;
                                 clip: true;
-                                Rectangle {
-                                    width: wave-box.width;
-                                    height: wave-box.height;
-                                    for v[i] in Player.wave-bars: Rectangle {
-                                        property <float> start: i * 1.0 / max(1, Player.wave-bars.length);
-                                        x: wave-box.width * start;
-                                        width: max(1px, wave-box.width / max(1, Player.wave-bars.length) * 0.6);
-                                        height: max(2px, v * wave-box.height * 0.9);
-                                        y: (wave-box.height - self.height) / 2;
-                                        border-radius: 1px;
-                                        background: Tokens.accent-default;
-                                    }
-                                }
+                                WaveBars { x: 0; y: 0; width: wave-box.width; height: wave-box.height; bars: Player.wave-bars; tint: Tokens.accent-default; }
                             }
                         }
                         // The waveform seeks like the seek bar: a click or a drag moves to that spot.
                         wave-ta := TouchArea {
-                            x: 0;
+                            x: 0; y: 0;
                             width: wave-box.width;
                             height: wave-box.height;
                             mouse-cursor: pointer;
                             moved => {
-                                if self.pressed { Player.seek-preview(clamp(self.mouse-x / wave-box.width, 0, 1)); }
+                                if self.pressed {
+                                    Player.scrub-pos = clamp(self.mouse-x / wave-box.width, 0, 1);
+                                    Player.seek-preview(Player.scrub-pos);
+                                }
                             }
                             pointer-event(e) => {
-                                if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                                if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                                    Player.scrubbing = true;
+                                    Player.scrub-pos = clamp(self.mouse-x / wave-box.width, 0, 1);
+                                    Player.seek-preview(Player.scrub-pos);
+                                }
+                                if e.button == PointerEventButton.left && e.kind == PointerEventKind.up {
                                     Player.seek(clamp(self.mouse-x / wave-box.width, 0, 1));
+                                    Player.scrubbing = false;
                                 }
                             }
                         }
                         Slider {
-                            y: root.wave-h + root.wave-gap;
+                            y: root.seek-y;
                             width: parent.width;
                             height: 24px;
-                            value: Player.position;
+                            // While scrubbing (here or on the waveform) the handle shows the shared scrub position.
+                            value: Player.scrubbing ? Player.scrub-pos : Player.position;
                             show-range: Player.trim-mode;
                             range-start: Player.trim-start;
                             range-end: Player.trim-end;
-                            changed(v) => { Player.seek-preview(v); }
-                            released(v) => { Player.seek(v); }
+                            changed(v) => {
+                                Player.scrubbing = true;
+                                Player.scrub-pos = v;
+                                Player.seek-preview(v);
+                            }
+                            released(v) => {
+                                Player.seek(v);
+                                Player.scrubbing = false;
+                            }
+                        }
+                        // Markers saved with the recording: a tick on the seek bar. Click seeks to it; hovering shows its label.
+                        for m[i] in Player.marker-ticks: Rectangle {
+                            x: m * timeline.width - 1.5px;
+                            y: root.seek-y + 4px;
+                            width: 3px;
+                            height: 16px;
+                            border-radius: 1px;
+                            background: #FFC14D;
+                            mark-ta := TouchArea {
+                                x: -5px;
+                                y: -4px;
+                                width: 13px;
+                                height: 24px;
+                                mouse-cursor: pointer;
+                                clicked => { Player.seek-marker(i); }
+                            }
+                            if mark-ta.has-hover: Rectangle {
+                                x: (parent.width - self.width) / 2;
+                                y: -self.height - 6px;
+                                width: mark-txt.preferred-width + 16px;
+                                height: mark-txt.preferred-height + 8px;
+                                border-radius: Tokens.radius-control;
+                                background: Tokens.surface-overlay;
+                                mark-txt := Text {
+                                    x: 8px;
+                                    y: 4px;
+                                    text: Player.marker-labels[i];
+                                    color: Tokens.text-primary;
+                                    font-size: Type.caption;
+                                }
+                            }
                         }
                         if Player.trim-mode: TrimHandle {
                             x: Player.trim-start * timeline.width - 5px;
-                            y: root.wave-h + root.wave-gap + (24px - self.height) / 2;
+                            y: root.seek-y + (24px - self.height) / 2;
                             drag(ax) => { Player.trim-drag(true, (ax - timeline.absolute-position.x) / timeline.width); }
                         }
                         if Player.trim-mode: TrimHandle {
                             x: Player.trim-end * timeline.width - 5px;
-                            y: root.wave-h + root.wave-gap + (24px - self.height) / 2;
+                            y: root.seek-y + (24px - self.height) / 2;
                             drag(ax) => { Player.trim-drag(false, (ax - timeline.absolute-position.x) / timeline.width); }
                         }
-                    }
-                    Rectangle {
-                        width: 52px;
-                        Text { y: root.wave-h + root.wave-gap; width: parent.width; height: 24px; text: Player.length-text; color: Tokens.text-on-stage; font-size: Type.caption; vertical-alignment: center; horizontal-alignment: right; }
                     }
                 }
 

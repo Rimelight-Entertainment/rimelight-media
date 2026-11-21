@@ -6,27 +6,72 @@ import { Icons } from "icons.slint";
 import { Button, ButtonKind, IconButton, ToolBar, ActionRow, StatusBar, ToolDivider, EmptyState } from "widgets.slint";
 import { Shell, TextDoc, MdBlock, MdCell, JsonRow } from "state.slint";
 
-// The editor: a TextInput in a scroll view (wrapping, or scrolling sideways when wrap is off). It takes the focus when a
-// new document is made (focus-serial changes) and when it is created.
+// The editor: a TextInput in a scroll view (wrapping, or scrolling sideways when wrap is off; a code file never wraps).
+// The syntax colours are Text layers under the TextInput, whose own text is transparent (its caret and selection stay).
+// It takes the focus when a new document is made (focus-serial changes) and when it is created.
 component Editor inherits ScrollView {
     in property <int> focus-serial;
+    // Whether the lines wrap: the word-wrap switch, except for a code file (its colour layers need one line per line).
+    property <bool> wrapping: TextDoc.word-wrap && !TextDoc.code-file;
+    // The face: code files are always mono; plain text uses the font chosen in the toolbar (0 Mono, 1 Sans, 2 Serif).
+    property <string> face: (TextDoc.code-file || TextDoc.text-font == 0) ? "Consolas" : (TextDoc.text-font == 1 ? "Segoe UI" : "Georgia");
+    // The height of one line, and of the text up to the caret (a hidden Text lays out caret-prefix as the editor does).
+    property <length> line-h: probe.preferred-height;
+    property <length> caret-bottom: input.y + measure.preferred-height;
     horizontal-stretch: 1;
     vertical-stretch: 1;
-    content-width: TextDoc.word-wrap ? self.visible-width : max(self.visible-width, input.preferred-width + 2 * Tokens.space-3);
+    content-width: root.wrapping ? self.visible-width : max(self.visible-width, input.preferred-width + 2 * Tokens.space-3);
     content-height: max(self.visible-height, input.preferred-height + 2 * Tokens.space-3);
 
     changed focus-serial => { input.focus(); }
     init => { input.focus(); }
+    // Keeps the caret in view: scrolls down when it is under the bottom edge, up when it is above the top.
+    changed caret-bottom => { root.reveal(); }
+    function reveal() {
+        if (root.content-y + root.caret-bottom > root.visible-height - Tokens.space-3) {
+            root.content-y = min(0px, root.visible-height - Tokens.space-3 - root.caret-bottom);
+        }
+        if (root.content-y + root.caret-bottom - root.line-h < Tokens.space-3) {
+            root.content-y = min(0px, Tokens.space-3 + root.line-h - root.caret-bottom);
+        }
+    }
+
+
+    probe := Text { x: 0px; y: 0px; text: "Mg"; font-family: root.face; font-size: 14px; opacity: 0; }
+    measure := Text {
+        x: Tokens.space-3;
+        y: 0px;
+        width: input.width;
+        text: TextDoc.caret-prefix;
+        font-family: root.face;
+        font-size: 14px;
+        wrap: root.wrapping ? TextWrap.word-wrap : TextWrap.no-wrap;
+        opacity: 0;
+    }
+
+    // The colour layers (highlight.rs): each kind's characters in its colour, in a monospace copy of the text. Drawn
+    // under the TextInput.
+    for layer[i] in TextDoc.hl-texts: Text {
+        x: Tokens.space-3;
+        y: Tokens.space-3;
+        text: layer;
+        font-family: root.face;
+        font-size: 14px;
+        color: TextDoc.hl-colours[i];
+        wrap: TextWrap.no-wrap;
+        visible: TextDoc.hl-on;
+    }
 
     input := TextInput {
         x: Tokens.space-3;
         y: Tokens.space-3;
-        width: TextDoc.word-wrap ? root.visible-width - 2 * Tokens.space-3 : self.preferred-width;
-        font-family: "Consolas";
+        width: root.wrapping ? root.visible-width - 2 * Tokens.space-3 : self.preferred-width;
+        font-family: root.face;
         font-size: 14px;
-        color: Tokens.text-primary;
+        // Transparent while the colour layers show the text (the caret and selection still draw).
+        color: TextDoc.hl-on ? transparent : Tokens.text-primary;
         selection-background-color: Tokens.selection;
-        wrap: TextDoc.word-wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
+        wrap: root.wrapping ? TextWrap.word-wrap : TextWrap.no-wrap;
         single-line: false;
         text <=> TextDoc.text;
         // The selection the find tools ask for (applied again each time the serial changes).
@@ -249,7 +294,6 @@ export component TextPage inherits Rectangle {
                 overflow: elide;
                 max-width: 260px;
             }
-            if TextDoc.dirty: Text { text: "● Unsaved"; color: Tokens.status-warning; font-size: Type.caption; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
             // Markdown views, as JetBrains' editor and preview switch: editor only, split, preview only.
             if TextDoc.markdown: IconButton { icon: Icons.md-editor; label: "Editor only"; active: TextDoc.view == 0; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 0; } }
@@ -259,6 +303,16 @@ export component TextPage inherits Rectangle {
             if TextDoc.json: IconButton { icon: Icons.file-code; label: "Editor: edit the JSON text"; active: TextDoc.view == 0; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 0; } }
             if TextDoc.json: IconButton { icon: Icons.list-tree; label: "Tree: browse the JSON, folding its objects and arrays"; active: TextDoc.view == 1; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 1; } }
             if TextDoc.markdown || TextDoc.json: ToolDivider { }
+            // The font of plain text (hidden for a code file, which is always mono).
+            if !TextDoc.code-file: ComboBox {
+                model: ["Mono", "Sans", "Serif"];
+                current-index <=> TextDoc.text-font;
+                enabled: TextDoc.has-doc;
+                width: 100px;
+                height: Tokens.control-height;
+                changed current-index => { TextDoc.set-text-font(self.current-index); }
+            }
+            if !TextDoc.code-file: ToolDivider { }
             IconButton { icon: Icons.text-wrap; label: "Word wrap"; active: TextDoc.word-wrap; enabled: TextDoc.has-doc; clicked => { TextDoc.word-wrap = !TextDoc.word-wrap; } }
             IconButton { icon: Icons.search; label: "Find (Ctrl+F)"; active: TextDoc.find-open; enabled: TextDoc.has-doc; clicked => { TextDoc.find-open = !TextDoc.find-open; } }
             ToolDivider { }
@@ -271,6 +325,10 @@ export component TextPage inherits Rectangle {
                 height: Tokens.control-height;
                 changed current-index => { TextDoc.set-kind(self.current-index); }
             }
+            if Shell.recording || TextDoc.has-doc: ToolDivider { }
+            if Shell.recording: IconButton { icon: Icons.stop; label: "Stop recording"; clicked => { Shell.stop-recording(); } }
+            // Closes the text back to the empty tab (shown only when a document is open).
+            if TextDoc.has-doc: IconButton { icon: Icons.x; label: "Close the text"; clicked => { Shell.close-tab(); } }
         }
 
         // JSON tools, as an edit row under the toolbar: icons only, each with a tooltip that says what it does, and the
@@ -334,7 +392,7 @@ export component TextPage inherits Rectangle {
                 icon: Icons.text;
                 icon-colour: Tokens.file-text;
                 title: "Open a text file";
-                formats: ".txt, .md, .json, .toml, .yaml, .xml, .csv, .log, .rs, .html, .css and more";
+                formats: ".bat, .cfg, .conf, .css, .csv, .env, .html, .ini, .js, .json, .log, .markdown, .md, .ps1, .rs, .sh, .text, .toml, .ts, .txt, .xml, .yaml, .yml";
                 open-text: "Open a file";
                 new-text: "New text file";
                 new-icon: Icons.file-plus;
@@ -356,6 +414,36 @@ export component TextPage inherits Rectangle {
         }
 
         // The status bar, as on every tab: "Ln 1, Col 1 | 0 characters | LF | UTF-8" (empty with no document).
-        StatusBar { left-text: TextDoc.status; }
+        // The saved state comes first, always shown (no layout shift on edit): "Saved" when clean, "Unsaved" when
+        // dirty or never saved. It is as wide as "Unsaved" and is followed by the same " | "
+        // separator as the rest.
+        StatusBar {
+          // One row with no spacing, so the " | " after the saved state matches the separators inside the status text.
+          HorizontalLayout {
+            spacing: 0;
+            horizontal-stretch: 1;
+            if TextDoc.has-doc: Rectangle {
+                // As wide as the longest label, so the bar never shifts when the state changes.
+                width: widest.preferred-width;
+                widest := Text { text: "Unsaved"; font-size: Type.caption; opacity: 0; }
+                saved-state := Text {
+                    x: 0; width: parent.width;
+                    text: (TextDoc.dirty || TextDoc.file-name == "") ? "Unsaved" : "Saved";
+                    color: (TextDoc.dirty || TextDoc.file-name == "") ? Tokens.status-warning : Tokens.text-muted;
+                    font-size: Type.caption;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+            Text {
+                text: TextDoc.has-doc ? " | " + TextDoc.status : TextDoc.status;
+                color: Tokens.text-muted;
+                font-size: Type.caption;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+          }
+        }
     }
 }

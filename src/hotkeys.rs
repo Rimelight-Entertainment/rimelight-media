@@ -30,10 +30,26 @@ pub fn start(on_action: impl Fn(Action) + 'static) -> Option<Hotkeys> {
         }
     };
     let keys = [
-        (HotKey::new(None, Code::PrintScreen), Action::SnipRegion, "Print Screen"),
-        (HotKey::new(Some(Modifiers::ALT), Code::PrintScreen), Action::SnipWindow, "Alt + Print Screen"),
-        (HotKey::new(Some(Modifiers::CONTROL), Code::PrintScreen), Action::SnipScreen, "Ctrl + Print Screen"),
-        (HotKey::new(Some(Modifiers::SHIFT), Code::PrintScreen), Action::ToggleRecording, "Shift + Print Screen"),
+        (
+            HotKey::new(None, Code::PrintScreen),
+            Action::SnipRegion,
+            "Print Screen",
+        ),
+        (
+            HotKey::new(Some(Modifiers::ALT), Code::PrintScreen),
+            Action::SnipWindow,
+            "Alt + Print Screen",
+        ),
+        (
+            HotKey::new(Some(Modifiers::CONTROL), Code::PrintScreen),
+            Action::SnipScreen,
+            "Ctrl + Print Screen",
+        ),
+        (
+            HotKey::new(Some(Modifiers::SHIFT), Code::PrintScreen),
+            Action::ToggleRecording,
+            "Shift + Print Screen",
+        ),
     ];
     let mut registered = Vec::new();
     let mut failed = Vec::new();
@@ -51,27 +67,30 @@ pub fn start(on_action: impl Fn(Action) + 'static) -> Option<Hotkeys> {
             failed.join(", ")
         )
     };
-    // Win+Shift+S: the low-level hook swallows it and asks for an area snip here.
+    // Win+Shift+S: the low-level hook swallows it, and Windows' own snipping overlay (if it starts anyway) is caught by a
+    // window-event hook. Both set the flag that is read here.
     crate::platform::start_win_shift_s_hook();
-    let ticks = std::cell::Cell::new(0u32);
     let timer = slint::Timer::default();
-    timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), move || {
-        if crate::platform::take_win_shift_s() {
-            on_action(Action::SnipRegion);
-        }
-        // Every 250 ms: if Windows' own snipping started anyway (a Win+Shift+S the hook never saw), close it and snip here.
-        ticks.set(ticks.get().wrapping_add(1));
-        if ticks.get() % 5 == 0 && crate::platform::close_windows_snip() {
-            on_action(Action::SnipRegion);
-        }
-        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.state != HotKeyState::Pressed {
-                continue;
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(50),
+        move || {
+            if crate::platform::take_win_shift_s() {
+                on_action(Action::SnipRegion);
             }
-            if let Some((_, action)) = registered.iter().find(|(id, _)| *id == event.id) {
-                on_action(*action);
+            while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+                if event.state != HotKeyState::Pressed {
+                    continue;
+                }
+                if let Some((_, action)) = registered.iter().find(|(id, _)| *id == event.id) {
+                    on_action(*action);
+                }
             }
-        }
-    });
-    Some(Hotkeys { _manager: manager, _timer: timer, status })
+        },
+    );
+    Some(Hotkeys {
+        _manager: manager,
+        _timer: timer,
+        status,
+    })
 }

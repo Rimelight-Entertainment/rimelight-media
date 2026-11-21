@@ -19,9 +19,12 @@ type Input = ff::format::context::Input;
 type Scaler = ff::software::scaling::Context;
 type Resampler = ff::software::resampling::Context;
 
-// Decoded frames waiting to be shown. Each is a full RGBA picture (8 MB at 1080p, 33 MB at 4K), so this is the biggest
-// part of the memory while a video plays; 5 still covers the decoder's hiccups at 60 fps.
+// Decoded frames waiting to be shown. Each is a full RGBA picture at the window's size (8 MB at 1080p, 33 MB at 4K),
+// so this is the biggest part of the memory while a video plays. 5 covers the decoder's hiccups; the clock drops late
+// frames anyway, so a longer queue only adds memory.
 const MAX_QUEUED_FRAMES: usize = 5;
+/// The sound output is retried at most this often after it was lost.
+const OUTPUT_RETRY: Duration = Duration::from_secs(1);
 const NO_DEVICE_RATE: u32 = 48_000;
 /// `sub_stream` value for "subtitles from a file" (the cues are set from outside).
 pub const SUB_EXTERNAL: i64 = -2;
@@ -52,7 +55,11 @@ fn to_av_ts(secs: f64) -> i64 {
 
 fn duration_ms(ictx: &Input) -> u64 {
     let d = ictx.duration();
-    if d <= 0 { 0 } else { (d as f64 / f64::from(ff::ffi::AV_TIME_BASE) * 1000.0) as u64 }
+    if d <= 0 {
+        0
+    } else {
+        (d as f64 / f64::from(ff::ffi::AV_TIME_BASE) * 1000.0) as u64
+    }
 }
 
 fn secs_to_ms(secs: f64) -> u64 {
@@ -78,27 +85,44 @@ fn unpack_size(v: u64) -> (u32, u32) {
 /// Fits (w, h) inside `max`, keeping the shape, never enlarging. Even sides, at least 2 px.
 pub fn fit(w: u32, h: u32, max: (u32, u32)) -> (u32, u32) {
     let (w, h) = (f64::from(w.max(1)), f64::from(h.max(1)));
-    let scale = (f64::from(max.0.max(2)) / w).min(f64::from(max.1.max(2)) / h).min(1.0);
+    let scale = (f64::from(max.0.max(2)) / w)
+        .min(f64::from(max.1.max(2)) / h)
+        .min(1.0);
     let even = |v: f64| ((v.round() as u32) & !1).max(2);
     (even(w * scale), even(h * scale))
 }
 
-/// Copies the scaled frame straight into the buffer the window shows (one copy per frame, not two).
-fn copy_rgba(f: &ff::frame::Video, (w, h): (u32, u32)) -> slint::SharedPixelBuffer<slint::Rgba8Pixel> {
-    let mut out = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+/// Copies the scaled frame's rows into `bytes` (w x h RGBA, no padding between rows).
+fn copy_into(f: &ff::frame::Video, (w, h): (u32, u32), bytes: &mut [u8]) {
     let row = w as usize * 4;
     let stride = f.stride(0);
     let data = f.data(0);
-    let bytes = out.make_mut_bytes();
     for y in 0..h as usize {
         bytes[y * row..(y + 1) * row].copy_from_slice(&data[y * stride..y * stride + row]);
     }
+}
+
+/// Copies the scaled frame straight into the buffer the window shows (one copy per frame, not two).
+fn copy_rgba(
+    f: &ff::frame::Video,
+    size: (u32, u32),
+) -> slint::SharedPixelBuffer<slint::Rgba8Pixel> {
+    let mut out = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(size.0, size.1);
+    copy_into(f, size, out.make_mut_bytes());
     out
 }
 
 fn scaler(dec: &ff::decoder::Video, (w, h): (u32, u32)) -> Result<Scaler, String> {
-    Scaler::get(dec.format(), dec.width(), dec.height(), ff::format::Pixel::RGBA, w, h, ff::software::scaling::Flags::BILINEAR)
-        .map_err(|e| e.to_string())
+    Scaler::get(
+        dec.format(),
+        dec.width(),
+        dec.height(),
+        ff::format::Pixel::RGBA,
+        w,
+        h,
+        ff::software::scaling::Flags::BILINEAR,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// An audio or subtitle track of a file.
@@ -158,8 +182,14 @@ fn language_name(code: &str) -> String {
 
 pub fn probe(path: &Path) -> Result<MediaInfo, String> {
     let ictx = open_input(path)?;
-    let mut info = MediaInfo { duration_ms: duration_ms(&ictx), ..MediaInfo::default() };
-    let best_video = ictx.streams().best(ff::media::Type::Video).map(|s| s.index());
+    let mut info = MediaInfo {
+        duration_ms: duration_ms(&ictx),
+        ..MediaInfo::default()
+    };
+    let best_video = ictx
+        .streams()
+        .best(ff::media::Type::Video)
+        .map(|s| s.index());
     let mut n_audio = 0;
     let mut n_subs = 0;
     for st in ictx.streams() {
@@ -173,7 +203,9 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
         let default = disp.contains(ff::format::stream::Disposition::DEFAULT);
         match kind {
             ff::media::Type::Video => {
-                if Some(st.index()) == best_video && !disp.contains(ff::format::stream::Disposition::ATTACHED_PIC) {
+                if Some(st.index()) == best_video
+                    && !disp.contains(ff::format::stream::Disposition::ATTACHED_PIC)
+                {
                     info.video = Some(st.index());
                     if let Ok(ctx) = ff::codec::context::Context::from_parameters(params.clone())
                         && let Ok(dec) = ctx.decoder().video()
@@ -183,12 +215,20 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
                     }
                     info.video_codec = codec.to_uppercase();
                     let r = st.avg_frame_rate();
-                    info.fps = if r.denominator() > 0 { f64::from(r.numerator()) / f64::from(r.denominator()) } else { 0.0 };
+                    info.fps = if r.denominator() > 0 {
+                        f64::from(r.numerator()) / f64::from(r.denominator())
+                    } else {
+                        0.0
+                    };
                 }
             }
             ff::media::Type::Audio => {
                 n_audio += 1;
-                let mut label = if !title.is_empty() { title.clone() } else { format!("Track {n_audio}") };
+                let mut label = if !title.is_empty() {
+                    title.clone()
+                } else {
+                    format!("Track {n_audio}")
+                };
                 if !lang.is_empty() && !label.contains(&lang) {
                     label = format!("{label} ({lang})");
                 }
@@ -210,27 +250,69 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
                     0 => String::new(),
                     n => format!("{n} channels"),
                 };
-                info.audio.push(Track { index: st.index(), label, detail: format!("{} {layout}", codec.to_uppercase()).trim().to_string(), bitmap: false, default });
+                info.audio.push(Track {
+                    index: st.index(),
+                    label,
+                    detail: format!("{} {layout}", codec.to_uppercase())
+                        .trim()
+                        .to_string(),
+                    bitmap: false,
+                    default,
+                });
             }
             ff::media::Type::Subtitle => {
                 n_subs += 1;
-                let bitmap = matches!(codec.as_str(), "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvb_subtitle" | "xsub");
-                let mut label = if !title.is_empty() { title.clone() } else if !lang.is_empty() { lang.clone() } else { format!("Track {n_subs}") };
+                let bitmap = matches!(
+                    codec.as_str(),
+                    "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvb_subtitle" | "xsub"
+                );
+                let mut label = if !title.is_empty() {
+                    title.clone()
+                } else if !lang.is_empty() {
+                    lang.clone()
+                } else {
+                    format!("Track {n_subs}")
+                };
                 if !lang.is_empty() && !label.contains(&lang) {
                     label = format!("{label} ({lang})");
                 }
-                let detail = if bitmap { format!("{} - picture subtitles, not shown yet", codec.to_uppercase()) } else { codec.to_uppercase() };
-                info.subtitles.push(Track { index: st.index(), label, detail, bitmap, default });
+                let detail = if bitmap {
+                    format!(
+                        "{} - picture subtitles, not shown yet",
+                        codec.to_uppercase()
+                    )
+                } else {
+                    codec.to_uppercase()
+                };
+                info.subtitles.push(Track {
+                    index: st.index(),
+                    label,
+                    detail,
+                    bitmap,
+                    default,
+                });
             }
             _ => {}
         }
     }
     info.bitrate = ictx.bit_rate().max(0) as u64;
     let meta = ictx.metadata();
-    info.title =meta.get("title").filter(|t| !t.trim().is_empty()).map(str::to_string).unwrap_or_else(|| crate::files::file_name(path));
-    let artist = meta.get("artist").or_else(|| meta.get("album_artist")).unwrap_or_default();
+    info.title = meta
+        .get("title")
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::files::file_name(path));
+    let artist = meta
+        .get("artist")
+        .or_else(|| meta.get("album_artist"))
+        .unwrap_or_default();
     let album = meta.get("album").unwrap_or_default();
-    info.detail = [artist, album].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join("  ·  ");
+    info.detail = [artist, album]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("  ·  ");
     if info.video.is_none() && info.audio.is_empty() {
         return Err("This file has no video or sound that Rimelight Media can play.".into());
     }
@@ -241,8 +323,16 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
 pub fn frame_at(path: &Path, ms: u64) -> Result<crate::picture::Picture, String> {
     let mut ictx = open_input(path)?;
     let (idx, tb, ctx) = {
-        let st = ictx.streams().best(ff::media::Type::Video).ok_or("no video")?;
-        (st.index(), f64::from(st.time_base()), ff::codec::context::Context::from_parameters(st.parameters()).map_err(|e| e.to_string())?)
+        let st = ictx
+            .streams()
+            .best(ff::media::Type::Video)
+            .ok_or("no video")?;
+        (
+            st.index(),
+            f64::from(st.time_base()),
+            ff::codec::context::Context::from_parameters(st.parameters())
+                .map_err(|e| e.to_string())?,
+        )
     };
     let mut dec = ctx.decoder().video().map_err(|e| e.to_string())?;
     let target = ms as f64 / 1000.0;
@@ -253,10 +343,17 @@ pub fn frame_at(path: &Path, ms: u64) -> Result<crate::picture::Picture, String>
     let mut sc = scaler(&dec, size)?;
     let mut decoded = ff::frame::Video::empty();
     let mut last: Option<crate::picture::Picture> = None;
+    // The bytes go straight into the Vec the picture keeps (no intermediate shared buffer, no second copy).
     let grab = |f: &ff::frame::Video, sc: &mut Scaler| -> Result<crate::picture::Picture, String> {
         let mut rgba = ff::frame::Video::empty();
         sc.run(f, &mut rgba).map_err(|e| e.to_string())?;
-        Ok(crate::picture::Picture { w: size.0, h: size.1, rgba: copy_rgba(&rgba, size).as_bytes().to_vec() })
+        let mut bytes = vec![0u8; size.0 as usize * size.1 as usize * 4];
+        copy_into(&rgba, size, &mut bytes);
+        Ok(crate::picture::Picture {
+            w: size.0,
+            h: size.1,
+            rgba: bytes,
+        })
     };
     for (st, pkt) in ictx.packets() {
         if st.index() != idx {
@@ -277,7 +374,12 @@ pub fn frame_at(path: &Path, ms: u64) -> Result<crate::picture::Picture, String>
 /// The loudest sample in each of `buckets` slices of one sound track, for the waveform (0..1). Runs on a worker thread.
 /// The track is decoded at a low rate and first reduced to one peak per 10 ms, so the track's length need not be known
 /// (the length in the file header can be missing or wrong). An empty result means no sound was decoded.
-pub fn peaks(path: &Path, idx: usize, buckets: usize) -> Result<Vec<f32>, String> {
+pub fn peaks(
+    path: &Path,
+    idx: usize,
+    buckets: usize,
+    cancel: &AtomicBool,
+) -> Result<Vec<f32>, String> {
     const RATE: u32 = 8_000;
     const HOP: usize = 80; // samples per peak: 10 ms at RATE
     let buckets = buckets.max(1);
@@ -292,12 +394,26 @@ pub fn peaks(path: &Path, idx: usize, buckets: usize) -> Result<Vec<f32>, String
     let mut rs: Option<Resampler> = None;
     let mut decoded = ff::frame::Audio::empty();
 
-    let take = |frame: &ff::frame::Audio, rs: &mut Option<Resampler>, acc: &mut (Vec<f32>, f32, usize)| -> Result<(), String> {
+    let take = |frame: &ff::frame::Audio,
+                rs: &mut Option<Resampler>,
+                acc: &mut (Vec<f32>, f32, usize)|
+     -> Result<(), String> {
         if rs.is_none() {
-            let layout = if frame.channel_layout().channels() > 0 { frame.channel_layout() } else { ff::ChannelLayout::default(i32::from(frame.channels())) };
+            let layout = if frame.channel_layout().channels() > 0 {
+                frame.channel_layout()
+            } else {
+                ff::ChannelLayout::default(i32::from(frame.channels()))
+            };
             *rs = Some(
-                Resampler::get(frame.format(), layout, frame.rate(), ff::format::Sample::F32(ff::format::sample::Type::Packed), ff::ChannelLayout::default(1), RATE)
-                    .map_err(|e| e.to_string())?,
+                Resampler::get(
+                    frame.format(),
+                    layout,
+                    frame.rate(),
+                    ff::format::Sample::F32(ff::format::sample::Type::Packed),
+                    ff::ChannelLayout::default(1),
+                    RATE,
+                )
+                .map_err(|e| e.to_string())?,
             );
         }
         let Some(r) = rs.as_mut() else { return Ok(()) };
@@ -318,6 +434,9 @@ pub fn peaks(path: &Path, idx: usize, buckets: usize) -> Result<Vec<f32>, String
     };
 
     for (st, pkt) in ictx.packets() {
+        if cancel.load(Relaxed) {
+            return Ok(Vec::new());
+        }
         if st.index() != idx || dec.send_packet(&pkt).is_err() {
             continue;
         }
@@ -355,8 +474,6 @@ pub fn peaks(path: &Path, idx: usize, buckets: usize) -> Result<Vec<f32>, String
 }
 
 pub struct VideoFrame {
-    pub w: u32,
-    pub h: u32,
     pub rgba: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     pub pts_ms: u64,
 }
@@ -375,9 +492,14 @@ struct Shared {
     wall: Mutex<Option<Instant>>,
     playing: AtomicBool,
     prerolled: AtomicBool,
+    /// Set once the first picture or sound is ready. Seeks clear `prerolled` again, but only the first open shows
+    /// "Opening...".
+    opened: AtomicBool,
     video_done: AtomicBool,
     audio_done: AtomicBool,
     audio_on: AtomicBool,
+    /// Set by the output stream's error callback (device removed or changed); `Player::check_output` rebuilds it.
+    stream_lost: AtomicBool,
     stop: AtomicBool,
     ended: AtomicBool,
     looping: AtomicBool,
@@ -392,6 +514,26 @@ struct Shared {
     /// Subtitle delay in ms (positive shows them later).
     sub_delay_ms: AtomicI64,
     error: Mutex<Option<String>>,
+    /// The decoding threads of the current and earlier spots (a seek starts new ones; old ones stop by themselves).
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+/// Waits up to `limit` for the threads to finish, joining the ones that did. Threads still busy after that (a read
+/// stuck in the OS) are left to end on their own; they hold no UI state.
+pub fn join_within(handles: Vec<std::thread::JoinHandle<()>>, limit: Duration) {
+    let until = Instant::now() + limit;
+    let mut left = handles;
+    loop {
+        let (done, busy): (Vec<_>, Vec<_>) = left.into_iter().partition(|h| h.is_finished());
+        for h in done {
+            let _ = h.join();
+        }
+        left = busy;
+        if left.is_empty() || Instant::now() >= until {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 impl Shared {
@@ -405,6 +547,14 @@ impl Shared {
 
     fn set_error(&self, message: String) {
         *lock(&self.error) = Some(message);
+    }
+
+    /// Clears a sound output error (only that kind: decoding errors stay until the next file).
+    fn clear_output_error(&self) {
+        let mut e = lock(&self.error);
+        if e.as_deref().is_some_and(|m| m.starts_with("Sound output")) {
+            *e = None;
+        }
     }
 
     fn finish_video(&self, epoch: u64) {
@@ -429,14 +579,18 @@ impl Shared {
         let base = self.clock_base_us.load(Relaxed);
         let speed = self.speed();
         if self.audio_on.load(Relaxed) {
-            base + (self.played.load(Relaxed) as f64 * 1_000_000.0 / f64::from(self.out_rate) * speed) as u64
+            base + (self.played.load(Relaxed) as f64 * 1_000_000.0 / f64::from(self.out_rate)
+                * speed) as u64
         } else {
             base + lock(&self.wall).map_or(0, |t| (micros(t.elapsed()) as f64 * speed) as u64)
         }
     }
 
     fn start_wall(&self) {
-        if self.audio_on.load(Relaxed) || !self.playing.load(Relaxed) || !self.prerolled.load(Relaxed) {
+        if self.audio_on.load(Relaxed)
+            || !self.playing.load(Relaxed)
+            || !self.prerolled.load(Relaxed)
+        {
             return;
         }
         let mut wall = lock(&self.wall);
@@ -450,7 +604,8 @@ impl Shared {
         if !self.audio_on.load(Relaxed)
             && let Some(t) = lock(&self.wall).take()
         {
-            self.clock_base_us.fetch_add((micros(t.elapsed()) as f64 * self.speed()) as u64, Relaxed);
+            self.clock_base_us
+                .fetch_add((micros(t.elapsed()) as f64 * self.speed()) as u64, Relaxed);
         }
     }
 
@@ -458,20 +613,31 @@ impl Shared {
         if self.prerolled.load(Relaxed) {
             return;
         }
-        if self.video_idx.is_some() && lock(&self.frames).is_empty() && !self.video_done.load(Relaxed) {
+        if self.video_idx.is_some()
+            && lock(&self.frames).is_empty()
+            && !self.video_done.load(Relaxed)
+        {
             return;
         }
         let need = self.out_rate as usize * usize::from(self.out_channels) / 10;
-        if self.audio_on.load(Relaxed) && !self.audio_done.load(Relaxed) && lock(&self.audio).len() < need {
+        if self.audio_on.load(Relaxed)
+            && !self.audio_done.load(Relaxed)
+            && lock(&self.audio).len() < need
+        {
             return;
         }
         self.prerolled.store(true, Relaxed);
+        self.opened.store(true, Relaxed);
         self.start_wall();
     }
 
     fn add_cue(&self, cue: Cue) {
         let mut cues = lock(&self.cues);
-        if !cues.iter().any(|c| c.start_ms == cue.start_ms && c.text == cue.text && c.picture.is_some() == cue.picture.is_some()) {
+        if !cues.iter().any(|c| {
+            c.start_ms == cue.start_ms
+                && c.text == cue.text
+                && c.picture.is_some() == cue.picture.is_some()
+        }) {
             cues.push(cue);
         }
     }
@@ -479,15 +645,26 @@ impl Shared {
     /// A picture subtitle event: ends the picture still showing, then adds the new one (if it has a picture).
     fn picture_event(&self, start_ms: u64, end_ms: Option<u64>, picture: Option<SubPicture>) {
         let mut cues = lock(&self.cues);
-        for c in cues.iter_mut().filter(|c| c.open && c.start_ms < start_ms && c.end_ms > start_ms) {
+        for c in cues
+            .iter_mut()
+            .filter(|c| c.open && c.start_ms < start_ms && c.end_ms > start_ms)
+        {
             c.end_ms = start_ms;
             c.open = false;
         }
         if let Some(p) = picture
-            && !cues.iter().any(|c| c.picture.is_some() && c.start_ms == start_ms)
+            && !cues
+                .iter()
+                .any(|c| c.picture.is_some() && c.start_ms == start_ms)
         {
             let open = end_ms.is_none();
-            cues.push(Cue { start_ms, end_ms: end_ms.unwrap_or(start_ms + 10_000), text: String::new(), picture: Some(Arc::new(p)), open });
+            cues.push(Cue {
+                start_ms,
+                end_ms: end_ms.unwrap_or(start_ms + 10_000),
+                text: String::new(),
+                picture: Some(Arc::new(p)),
+                open,
+            });
         }
     }
 }
@@ -553,7 +730,13 @@ fn merge_pictures(parts: Vec<SubPicture>) -> Option<SubPicture> {
             rgba[at..at + src.len()].copy_from_slice(src);
         }
     }
-    Some(SubPicture { x: x0, y: y0, w, h, rgba })
+    Some(SubPicture {
+        x: x0,
+        y: y0,
+        w,
+        h,
+        rgba,
+    })
 }
 
 impl SubPipe {
@@ -566,7 +749,10 @@ impl SubPipe {
             self.stream = want;
             self.tb = f64::from(ictx_stream.time_base());
             let codec = ictx_stream.parameters().id().name().to_string();
-            self.bitmap = matches!(codec.as_str(), "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvb_subtitle" | "xsub");
+            self.bitmap = matches!(
+                codec.as_str(),
+                "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvb_subtitle" | "xsub"
+            );
             self.dec = ff::codec::context::Context::from_parameters(ictx_stream.parameters())
                 .ok()
                 .and_then(|c| c.decoder().subtitle().ok());
@@ -598,13 +784,20 @@ impl SubPipe {
         let start_ms = start.max(0.0) as u64;
         if self.bitmap {
             // Picture subtitles: an event without a picture clears the screen; an unknown end lasts until the next.
-            let known_end = (sub.end() > sub.start() && sub.end() != u32::MAX).then(|| end.max(start) as u64);
+            let known_end =
+                (sub.end() > sub.start() && sub.end() != u32::MAX).then(|| end.max(start) as u64);
             sh.picture_event(start_ms, known_end, merge_pictures(pictures));
             return;
         }
         let text = text.join("\n");
         if !text.trim().is_empty() {
-            sh.add_cue(Cue { start_ms, end_ms: end.max(start) as u64, text, picture: None, open: false });
+            sh.add_cue(Cue {
+                start_ms,
+                end_ms: end.max(start) as u64,
+                text,
+                picture: None,
+                open: false,
+            });
         }
     }
 }
@@ -613,19 +806,37 @@ fn video_run(sh: &Shared, start_ms: u64, epoch: u64, idx: usize) -> Result<(), S
     let mut ictx = open_input(&sh.path)?;
     let (tb, ctx) = {
         let st = ictx.stream(idx).ok_or("the video stream is gone")?;
-        (f64::from(st.time_base()), ff::codec::context::Context::from_parameters(st.parameters()).map_err(|e| e.to_string())?)
+        (
+            f64::from(st.time_base()),
+            ff::codec::context::Context::from_parameters(st.parameters())
+                .map_err(|e| e.to_string())?,
+        )
     };
     let mut dec = ctx.decoder().video().map_err(|e| e.to_string())?;
     let start = start_ms as f64 / 1000.0;
     if start > 0.0 {
         ictx.seek(to_av_ts(start), ..).map_err(|e| e.to_string())?;
     }
-    let mut size = fit(dec.width(), dec.height(), unpack_size(sh.output_size.load(Relaxed)));
+    let mut size = fit(
+        dec.width(),
+        dec.height(),
+        unpack_size(sh.output_size.load(Relaxed)),
+    );
     let mut sc = scaler(&dec, size)?;
     let mut decoded = ff::frame::Video::empty();
-    let mut subs = SubPipe { stream: SUB_OFF, dec: None, tb: 0.0, bitmap: false };
+    let mut subs = SubPipe {
+        stream: SUB_OFF,
+        dec: None,
+        tb: 0.0,
+        bitmap: false,
+    };
+    // The scaler's output frame is kept from one frame to the next (not a new frame object per picture).
+    let mut scaled = ff::frame::Video::empty();
 
-    let mut drain = |dec: &mut ff::decoder::Video, sc: &mut Scaler, size: &mut (u32, u32)| -> Result<bool, String> {
+    let mut drain = |dec: &mut ff::decoder::Video,
+                     sc: &mut Scaler,
+                     size: &mut (u32, u32)|
+     -> Result<bool, String> {
         while dec.receive_frame(&mut decoded).is_ok() {
             if sh.is_stale(epoch) {
                 return Ok(false);
@@ -634,14 +845,20 @@ fn video_run(sh: &Shared, start_ms: u64, epoch: u64, idx: usize) -> Result<(), S
             if pts + 0.001 < start {
                 continue;
             }
-            let want = fit(dec.width(), dec.height(), unpack_size(sh.output_size.load(Relaxed)));
+            let want = fit(
+                dec.width(),
+                dec.height(),
+                unpack_size(sh.output_size.load(Relaxed)),
+            );
             if want != *size {
                 *sc = scaler(dec, want)?;
                 *size = want;
             }
-            let mut rgba = ff::frame::Video::empty();
-            sc.run(&decoded, &mut rgba).map_err(|e| e.to_string())?;
-            let frame = VideoFrame { w: size.0, h: size.1, rgba: copy_rgba(&rgba, *size), pts_ms: secs_to_ms(pts) };
+            sc.run(&decoded, &mut scaled).map_err(|e| e.to_string())?;
+            let frame = VideoFrame {
+                rgba: copy_rgba(&scaled, *size),
+                pts_ms: secs_to_ms(pts),
+            };
             if !push_frame(sh, epoch, frame) {
                 return Ok(false);
             }
@@ -676,7 +893,11 @@ fn audio_run(sh: &Shared, start_ms: u64, epoch: u64, idx: usize) -> Result<(), S
     let mut ictx = open_input(&sh.path)?;
     let (tb, ctx) = {
         let st = ictx.stream(idx).ok_or("the sound track is gone")?;
-        (f64::from(st.time_base()), ff::codec::context::Context::from_parameters(st.parameters()).map_err(|e| e.to_string())?)
+        (
+            f64::from(st.time_base()),
+            ff::codec::context::Context::from_parameters(st.parameters())
+                .map_err(|e| e.to_string())?,
+        )
     };
     let mut dec = ctx.decoder().audio().map_err(|e| e.to_string())?;
     let start = start_ms as f64 / 1000.0;
@@ -689,7 +910,10 @@ fn audio_run(sh: &Shared, start_ms: u64, epoch: u64, idx: usize) -> Result<(), S
     let speed = sh.speed();
     let mut stretch = ((speed - 1.0).abs() > 0.001).then(|| Stretch::new(channels, speed));
 
-    let mut drain = |dec: &mut ff::decoder::Audio, rs: &mut Option<Resampler>, stretch: &mut Option<Stretch>| -> Result<bool, String> {
+    let mut drain = |dec: &mut ff::decoder::Audio,
+                     rs: &mut Option<Resampler>,
+                     stretch: &mut Option<Stretch>|
+     -> Result<bool, String> {
         while dec.receive_frame(&mut decoded).is_ok() {
             if sh.is_stale(epoch) {
                 return Ok(false);
@@ -721,7 +945,10 @@ fn audio_run(sh: &Shared, start_ms: u64, epoch: u64, idx: usize) -> Result<(), S
             r.run(&decoded, &mut out).map_err(|e| e.to_string())?;
             let count = out.samples() * channels;
             let bytes = out.data(0).get(..count * 4).unwrap_or_default();
-            let mut samples: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+            let mut samples: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
             if let Some(st) = stretch.as_mut() {
                 samples = st.process(&samples);
             }
@@ -752,32 +979,37 @@ fn audio_run(sh: &Shared, start_ms: u64, epoch: u64, idx: usize) -> Result<(), S
 }
 
 fn spawn_workers(sh: &Arc<Shared>, start_ms: u64, epoch: u64) {
+    let mut handles = Vec::new();
     if let Some(idx) = sh.video_idx {
         let v = Arc::clone(sh);
-        std::thread::spawn(move || {
+        handles.push(std::thread::spawn(move || {
             if let Err(e) = video_run(&v, start_ms, epoch, idx)
                 && !v.is_stale(epoch)
             {
                 v.set_error(e);
             }
             v.finish_video(epoch);
-        });
+        }));
     } else {
         sh.video_done.store(true, Relaxed);
     }
     if let (Some(idx), true) = (sh.audio_idx, sh.audio_on.load(Relaxed)) {
         let a = Arc::clone(sh);
-        std::thread::spawn(move || {
+        handles.push(std::thread::spawn(move || {
             if let Err(e) = audio_run(&a, start_ms, epoch, idx)
                 && !a.is_stale(epoch)
             {
                 a.set_error(e);
             }
             a.finish_audio(epoch);
-        });
+        }));
     } else {
         sh.audio_done.store(true, Relaxed);
     }
+    // Earlier threads that have ended are forgotten; the rest stay listed so release() can wait for them.
+    let mut workers = lock(&sh.workers);
+    workers.retain(|h| !h.is_finished());
+    workers.extend(handles);
 }
 
 fn fill_audio(sh: &Shared, data: &mut [f32]) {
@@ -785,12 +1017,20 @@ fn fill_audio(sh: &Shared, data: &mut [f32]) {
         data.fill(0.0);
         return;
     }
-    let gain = if sh.muted.load(Relaxed) { 0.0 } else { f32::from_bits(sh.volume.load(Relaxed)).powi(2) };
+    let gain = if sh.muted.load(Relaxed) {
+        0.0
+    } else {
+        f32::from_bits(sh.volume.load(Relaxed)).powi(2)
+    };
     let channels = usize::from(sh.out_channels).max(1);
     let mut q = lock(&sh.audio);
     let have = q.len().min(data.len());
     for (i, s) in data.iter_mut().enumerate() {
-        *s = if i < have { q.pop_front().unwrap_or(0.0) * gain } else { 0.0 };
+        *s = if i < have {
+            q.pop_front().unwrap_or(0.0) * gain
+        } else {
+            0.0
+        };
     }
     drop(q);
     sh.played.fetch_add((have / channels) as u64, Relaxed);
@@ -802,14 +1042,21 @@ fn open_device() -> Option<(cpal::Device, cpal::SupportedStreamConfig)> {
     (config.sample_format() == cpal::SampleFormat::F32).then_some((device, config))
 }
 
-fn build_stream(device: &cpal::Device, config: &cpal::SupportedStreamConfig, sh: &Arc<Shared>) -> Option<cpal::Stream> {
+fn build_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    sh: &Arc<Shared>,
+) -> Option<cpal::Stream> {
     let cb = Arc::clone(sh);
     let err = Arc::clone(sh);
     let stream = device
         .build_output_stream(
             config.config(),
             move |data: &mut [f32], _| fill_audio(&cb, data),
-            move |e| err.set_error(format!("Sound output: {e}")),
+            move |e| {
+                err.stream_lost.store(true, Relaxed);
+                err.set_error(format!("Sound output: {e}"));
+            },
             None,
         )
         .ok()?;
@@ -819,15 +1066,35 @@ fn build_stream(device: &cpal::Device, config: &cpal::SupportedStreamConfig, sh:
 
 pub struct Player {
     shared: Arc<Shared>,
-    _stream: Option<cpal::Stream>,
+    stream: Mutex<Option<cpal::Stream>>,
+    /// When the next rebuild may be tried (see `check_output`).
+    retry_at: Mutex<Option<Instant>>,
 }
 
 impl Player {
     /// Opens a file and starts decoding at `start_ms`, paused. `audio` picks the sound track (stream index).
-    pub fn open(path: &Path, info: &MediaInfo, audio: Option<usize>, start_ms: u64, max_size: (u32, u32)) -> Result<Player, String> {
-        let audio_idx = audio.or_else(|| info.audio.iter().find(|t| t.default).or(info.audio.first()).map(|t| t.index));
-        let device = if audio_idx.is_some() { open_device() } else { None };
-        let (out_rate, out_channels) = device.as_ref().map_or((NO_DEVICE_RATE, 2), |(_, c)| (c.sample_rate(), c.channels()));
+    pub fn open(
+        path: &Path,
+        info: &MediaInfo,
+        audio: Option<usize>,
+        start_ms: u64,
+        max_size: (u32, u32),
+    ) -> Result<Player, String> {
+        let audio_idx = audio.or_else(|| {
+            info.audio
+                .iter()
+                .find(|t| t.default)
+                .or(info.audio.first())
+                .map(|t| t.index)
+        });
+        let device = if audio_idx.is_some() {
+            open_device()
+        } else {
+            None
+        };
+        let (out_rate, out_channels) = device.as_ref().map_or((NO_DEVICE_RATE, 2), |(_, c)| {
+            (c.sample_rate(), c.channels())
+        });
         let shared = Arc::new(Shared {
             path: path.to_path_buf(),
             duration_ms: info.duration_ms,
@@ -842,9 +1109,11 @@ impl Player {
             wall: Mutex::new(None),
             playing: AtomicBool::new(false),
             prerolled: AtomicBool::new(false),
+            opened: AtomicBool::new(false),
             video_done: AtomicBool::new(false),
             audio_done: AtomicBool::new(false),
             audio_on: AtomicBool::new(false),
+            stream_lost: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             ended: AtomicBool::new(false),
             looping: AtomicBool::new(false),
@@ -857,11 +1126,57 @@ impl Player {
             speed: AtomicU32::new(1.0f32.to_bits()),
             sub_delay_ms: AtomicI64::new(0),
             error: Mutex::new(None),
+            workers: Mutex::new(Vec::new()),
         });
         let stream = device.and_then(|(d, c)| build_stream(&d, &c, &shared));
         shared.audio_on.store(stream.is_some(), Relaxed);
         spawn_workers(&shared, start_ms, 1);
-        Ok(Player { shared, _stream: stream })
+        Ok(Player {
+            shared,
+            stream: Mutex::new(stream),
+            retry_at: Mutex::new(None),
+        })
+    }
+
+    /// Rebuilds the sound output on the default device after it was lost (the device changed or the stream was
+    /// invalidated). Called from the UI tick; tries at most once a second. A rebuilt stream clears the error. If the
+    /// new device runs at another rate or channel count, the rebuild is skipped and the error stays.
+    pub fn check_output(&self) {
+        let sh = &self.shared;
+        if !sh.stream_lost.load(Relaxed) {
+            return;
+        }
+        {
+            let mut next = lock(&self.retry_at);
+            if next.is_some_and(|t| Instant::now() < t) {
+                return;
+            }
+            *next = Some(Instant::now() + OUTPUT_RETRY);
+        }
+        sh.stream_lost.store(false, Relaxed);
+        let rebuilt = open_device()
+            .filter(|(_, c)| c.sample_rate() == sh.out_rate && c.channels() == sh.out_channels)
+            .and_then(|(d, c)| build_stream(&d, &c, sh));
+        match rebuilt {
+            Some(stream) => {
+                // Replacing the stream drops the invalid one.
+                *lock(&self.stream) = Some(stream);
+                *lock(&self.retry_at) = None;
+                sh.clear_output_error();
+            }
+            None => sh.stream_lost.store(true, Relaxed),
+        }
+    }
+
+    /// Stops every decoding thread and waits up to 500 ms for them to close their files (so the file can be renamed or
+    /// deleted). Safe to call more than once.
+    pub fn release(&self) {
+        self.shared.stop.store(true, Relaxed);
+        self.shared.playing.store(false, Relaxed);
+        join_within(
+            std::mem::take(&mut *lock(&self.shared.workers)),
+            Duration::from_millis(500),
+        );
     }
 
     pub fn play(&self) {
@@ -901,7 +1216,9 @@ impl Player {
     }
 
     pub fn set_volume(&self, v: f32) {
-        self.shared.volume.store(v.clamp(0.0, 1.0).to_bits(), Relaxed);
+        self.shared
+            .volume
+            .store(v.clamp(0.0, 1.0).to_bits(), Relaxed);
     }
 
     pub fn set_muted(&self, m: bool) {
@@ -962,8 +1279,9 @@ impl Player {
         self.shared.ended.load(Relaxed)
     }
 
+    /// True only while the file is first being opened. A seek does not count (it shows the old picture until the new one).
     pub fn is_buffering(&self) -> bool {
-        !self.shared.prerolled.load(Relaxed)
+        !self.shared.prerolled.load(Relaxed) && !self.shared.opened.load(Relaxed)
     }
 
     /// The newest frame that is due (older ones are dropped). Also ends or loops playback when everything ran out.
@@ -975,7 +1293,12 @@ impl Player {
             let mut q = lock(&sh.frames);
             let mut pick = None;
             // While paused before the first frame is shown, show the first one at once.
-            while q.front().is_some_and(|f| f.pts_ms.saturating_mul(1000) <= clock || (pick.is_none() && !sh.playing.load(Relaxed) && f.pts_ms.saturating_mul(1000) <= clock + 60_000)) {
+            while q.front().is_some_and(|f| {
+                f.pts_ms.saturating_mul(1000) <= clock
+                    || (pick.is_none()
+                        && !sh.playing.load(Relaxed)
+                        && f.pts_ms.saturating_mul(1000) <= clock + 60_000)
+            }) {
                 pick = q.pop_front();
                 if !sh.playing.load(Relaxed) {
                     break;
@@ -991,13 +1314,18 @@ impl Player {
 
     fn check_end(&self) {
         let sh = &self.shared;
-        if !sh.playing.load(Relaxed) || !sh.video_done.load(Relaxed) || !lock(&sh.frames).is_empty() {
+        if !sh.playing.load(Relaxed) || !sh.video_done.load(Relaxed) || !lock(&sh.frames).is_empty()
+        {
             return;
         }
-        if sh.audio_on.load(Relaxed) && !(sh.audio_done.load(Relaxed) && lock(&sh.audio).is_empty()) {
+        if sh.audio_on.load(Relaxed) && !(sh.audio_done.load(Relaxed) && lock(&sh.audio).is_empty())
+        {
             return;
         }
-        if sh.video_idx.is_none() && !sh.audio_on.load(Relaxed) && self.position_ms() < sh.duration_ms {
+        if sh.video_idx.is_none()
+            && !sh.audio_on.load(Relaxed)
+            && self.position_ms() < sh.duration_ms
+        {
             return;
         }
         if sh.looping.load(Relaxed) {
@@ -1015,6 +1343,6 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Relaxed);
+        self.release();
     }
 }

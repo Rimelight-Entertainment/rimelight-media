@@ -72,7 +72,10 @@ pub fn wire(app: &Rc<App>) {
 pub fn enter(app: &Rc<App>) {
     let names = camera::devices();
     let cam = app.ui.global::<ui::Camera>();
-    let items: Vec<SharedString> = names.iter().map(|n| SharedString::from(n.as_str())).collect();
+    let items: Vec<SharedString> = names
+        .iter()
+        .map(|n| SharedString::from(n.as_str()))
+        .collect();
     cam.set_devices(ModelRc::new(VecModel::from(items)));
     cam.set_save_folder(camera_roll().display().to_string().into());
     let has_open = app.camera.borrow().cam.is_some();
@@ -88,7 +91,11 @@ pub fn enter(app: &Rc<App>) {
     cam.set_video_mode(app.camera.borrow().video);
     cam.set_timer_index(app.camera.borrow().timer as i32);
     cam.set_grid(app.camera.borrow().grid);
-    app.camera.borrow().preview.start(slint::TimerMode::Repeated, Duration::from_millis(33), || with_app(tick));
+    app.camera.borrow().preview.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(33),
+        || with_app(tick),
+    );
 }
 
 /// Called when another page is opened: the preview stops, any video is saved and the camera is closed.
@@ -153,9 +160,16 @@ fn shutter(app: &Rc<App>) {
     {
         let mut c = app.camera.borrow_mut();
         c.countdown = TIMER_SECS[timer];
-        app.ui.global::<ui::Camera>().set_countdown(c.countdown as i32);
-        app.ui.global::<ui::Camera>().set_countdown_text(c.countdown.to_string().into());
-        c.count.start(slint::TimerMode::Repeated, Duration::from_secs(1), || with_app(count_down));
+        app.ui
+            .global::<ui::Camera>()
+            .set_countdown(c.countdown as i32);
+        app.ui
+            .global::<ui::Camera>()
+            .set_countdown_text(c.countdown.to_string().into());
+        c.count
+            .start(slint::TimerMode::Repeated, Duration::from_secs(1), || {
+                with_app(count_down)
+            });
     }
 }
 
@@ -164,8 +178,12 @@ fn count_down(app: &Rc<App>) {
     let done = {
         let mut c = app.camera.borrow_mut();
         c.countdown = c.countdown.saturating_sub(1);
-        app.ui.global::<ui::Camera>().set_countdown(c.countdown as i32);
-        app.ui.global::<ui::Camera>().set_countdown_text(c.countdown.to_string().into());
+        app.ui
+            .global::<ui::Camera>()
+            .set_countdown(c.countdown as i32);
+        app.ui
+            .global::<ui::Camera>()
+            .set_countdown_text(c.countdown.to_string().into());
         if c.countdown == 0 {
             c.count.stop();
             true
@@ -188,7 +206,10 @@ fn take_photo(app: &Rc<App>) {
     let rgb = rgb_bytes(&frame, mirror);
     let saved = image::RgbImage::from_raw(frame.w, frame.h, rgb)
         .ok_or_else(|| "the picture is the wrong size".to_string())
-        .and_then(|img| img.save_with_format(&path, image::ImageFormat::Jpeg).map_err(|e| e.to_string()));
+        .and_then(|img| {
+            img.save_with_format(&path, image::ImageFormat::Jpeg)
+                .map_err(|e| e.to_string())
+        });
     match saved {
         Ok(()) => {
             set_last(app, &path, &frame, mirror);
@@ -211,7 +232,12 @@ fn start_video(app: &Rc<App>) {
     let path = stamped("VID", "mp4");
     let opts = recorder::Options {
         screen: None,
-        camera: Some(recorder::CameraSource { feed, w, h, fps: VIDEO_FPS }),
+        camera: Some(recorder::CameraSource {
+            feed,
+            w,
+            h,
+            fps: VIDEO_FPS,
+        }),
         system_audio: false,
         mic: true,
         path,
@@ -253,7 +279,9 @@ fn stop_video(app: &Rc<App>) {
 fn set_device(app: &Rc<App>, index: usize) {
     if app.camera.borrow().rec.is_some() {
         toast(app, "Stop the video first");
-        app.ui.global::<ui::Camera>().set_device_index(app.camera.borrow().device as i32);
+        app.ui
+            .global::<ui::Camera>()
+            .set_device_index(app.camera.borrow().device as i32);
         return;
     }
     if app.camera.borrow().device == index && app.camera.borrow().cam.is_some() {
@@ -308,7 +336,11 @@ fn open_last(app: &Rc<App>) {
     let Some(path) = path else { return };
     let kind = files::kind_of(&path);
     open_path(app, &path);
-    let page = if matches!(kind, Some(Kind::Video | Kind::Audio)) { "video" } else { "image" };
+    let page = if matches!(kind, Some(Kind::Video | Kind::Audio)) {
+        "video"
+    } else {
+        "image"
+    };
     go(app, page);
 }
 
@@ -323,7 +355,12 @@ fn set_last(app: &Rc<App>, path: &std::path::Path, frame: &camera::Frame, mirror
 fn grab_latest(app: &Rc<App>) -> Option<camera::Frame> {
     let c = app.camera.borrow();
     let guard = c.cam.as_ref()?.feed.lock().ok()?;
-    guard.as_ref().map(|f| camera::Frame { w: f.w, h: f.h, seq: f.seq, bgra: f.bgra.clone() })
+    guard.as_ref().map(|f| camera::Frame {
+        w: f.w,
+        h: f.h,
+        seq: f.seq,
+        bgra: f.bgra.clone(),
+    })
 }
 
 /// The frame as a picture for the page: BGRA to RGBA, mirrored when the mirror is on.
@@ -365,11 +402,17 @@ fn rgb_bytes(frame: &camera::Frame, mirror: bool) -> Vec<u8> {
 /// A new file in the Camera Roll (Pictures\Camera Roll), named like Windows' Camera app: IMG_YYYYMMDD_HHMMSS.
 fn stamped(prefix: &str, ext: &str) -> PathBuf {
     let [y, mo, d, h, mi, s] = crate::platform::local_time();
-    files::free_path(&camera_roll(), &format!("{prefix}_{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}"), ext)
+    files::free_path(
+        &camera_roll(),
+        &format!("{prefix}_{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}"),
+        ext,
+    )
 }
 
 /// The folder photos and videos are saved to (Pictures\Camera Roll).
 fn camera_roll() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let home = std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     home.join("Pictures").join("Camera Roll")
 }

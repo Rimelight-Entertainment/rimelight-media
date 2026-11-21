@@ -254,8 +254,10 @@ export global Player {
     in property <bool> has-video;
     in property <bool> playing;
     in property <float> position; // 0..1
-    in property <string> time-text;
-    in property <string> length-text;
+    // Scrubbing: while the seek bar or the waveform is dragged, scrub-pos is the spot under the pointer, and both show it.
+    in-out property <bool> scrubbing: false;
+    in-out property <float> scrub-pos: 0;
+    in property <string> time-text; // "2:42 / 6:16"
     in-out property <float> volume: 1;
     in property <bool> muted;
     // Repeat: 0 off, 1 once more, 2 forever.
@@ -288,6 +290,9 @@ export global Player {
     // Waveform of the sound track: about 300 bar heights (0..1), and whether it is ready.
     in property <[float]> wave-bars;
     in property <bool> has-wave;
+    // Markers saved with the recording (<name>.json): each one's place on the seek bar (0..1) and its label.
+    in property <[float]> marker-ticks;
+    in property <[string]> marker-labels;
     // Show the waveform as the seek bar too (the trim range always shows it).
     in-out property <bool> wave-seek: false;
     // Subtitle controls: delay, size, and a picture subtitle placed as fractions of the video.
@@ -303,6 +308,7 @@ export global Player {
     callback toggle-play();
     callback seek(float);
     callback seek-preview(float);
+    callback seek-marker(int); // index into marker-ticks
     callback skip(int); // seconds
     callback set-volume(float);
     callback toggle-mute();
@@ -457,6 +463,17 @@ export global TextDoc {
     in property <int> sel-start;
     in property <int> sel-end;
     in property <int> sel-serial;
+    // The editor's syntax colours (highlight.rs): one layer per kind, each a monospace copy of the text with only that
+    // kind showing. hl-on is off while the text is being typed (the layers would not match it), and for plain or big files.
+    in property <bool> hl-on: false;
+    in property <[color]> hl-colours;
+    in-out property <int> text-font: 0;
+    callback set-text-font(int);
+    in property <[string]> hl-texts;
+    // A code file (a kind highlight.rs knows, and not too big): the editor does not wrap, so the colour layers line up.
+    in property <bool> code-file: false;
+    // The text up to the caret, with a mark after it: the editor lays it out to scroll the caret into view.
+    in property <string> caret-prefix;
 
     callback caret-moved(int);
     callback edited();
@@ -507,4 +524,5 @@ export global Settings {
     callback pick-folder(bool); // true: screenshots
     in property <string> canvas-folder;
     callback pick-canvas-folder();
+    callback open-link(string);
 }

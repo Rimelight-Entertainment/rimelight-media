@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFMediaSource, IMFMediaType, IMFSample, IMFSourceReader, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION, MFCreateAttributes,
-    MFCreateMediaType, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFMediaType_Video, MFStartup, MFVideoFormat_RGB32,
+    IMFActivate, IMFAttributes, IMFMediaSource, IMFMediaType, IMFSample, IMFSourceReader,
+    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
+    MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+    MF_VERSION, MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromMediaSource,
+    MFEnumDeviceSources, MFMediaType_Video, MFStartup, MFVideoFormat_RGB32,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree};
 use windows::core::PWSTR;
@@ -64,7 +66,12 @@ fn sources() -> Result<Vec<IMFActivate>, String> {
     startup()?;
     let attrs = create_attributes()?;
     unsafe {
-        attrs.SetGUID(&MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID).map_err(err)?;
+        attrs
+            .SetGUID(
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+            )
+            .map_err(err)?;
         let mut list: *mut Option<IMFActivate> = std::ptr::null_mut();
         let mut count = 0u32;
         MFEnumDeviceSources(&attrs, &mut list, &mut count).map_err(err)?;
@@ -86,7 +93,10 @@ fn friendly_name(activate: &IMFActivate) -> String {
     unsafe {
         let mut name = PWSTR::null();
         let mut len = 0u32;
-        if activate.GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &mut name, &mut len).is_err() {
+        if activate
+            .GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &mut name, &mut len)
+            .is_err()
+        {
             return "Camera".into();
         }
         let text = name.to_string().unwrap_or_else(|_| "Camera".into());
@@ -97,7 +107,9 @@ fn friendly_name(activate: &IMFActivate) -> String {
 
 /// The names of the cameras the computer has (empty when there are none or Media Foundation fails).
 pub fn devices() -> Vec<String> {
-    sources().map(|list| list.iter().map(friendly_name).collect()).unwrap_or_default()
+    sources()
+        .map(|list| list.iter().map(friendly_name).collect())
+        .unwrap_or_default()
 }
 
 /// Opens the camera at this index of `devices()` and starts reading its frames.
@@ -135,17 +147,27 @@ fn start_reader(index: usize) -> Result<(IMFSourceReader, u32, u32), String> {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
     let list = sources()?;
-    let activate = list.get(index).ok_or("That camera is no longer connected")?;
+    let activate = list
+        .get(index)
+        .ok_or("That camera is no longer connected")?;
     unsafe {
         let source: IMFMediaSource = activate.ActivateObject::<IMFMediaSource>().map_err(err)?;
         let attrs = create_attributes()?;
-        attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1).map_err(err)?;
+        attrs
+            .SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)
+            .map_err(err)?;
         let reader = MFCreateSourceReaderFromMediaSource(&source, &attrs).map_err(err)?;
         let mt: IMFMediaType = MFCreateMediaType().map_err(err)?;
-        mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(err)?;
-        mt.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32).map_err(err)?;
-        reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, None, &mt).map_err(err)?;
-        let current = reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32).map_err(err)?;
+        mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+            .map_err(err)?;
+        mt.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)
+            .map_err(err)?;
+        reader
+            .SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, None, &mt)
+            .map_err(err)?;
+        let current = reader
+            .GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32)
+            .map_err(err)?;
         // The frame size packs the width in the high 32 bits and the height in the low 32 bits.
         let size = current.GetUINT64(&MF_MT_FRAME_SIZE).map_err(err)?;
         let (w, h) = ((size >> 32) as u32, (size & 0xFFFF_FFFF) as u32);
@@ -163,19 +185,32 @@ fn read_loop(reader: &IMFSourceReader, w: u32, h: u32, feed: &Feed, stop: &Atomi
     while !stop.load(Relaxed) {
         unsafe {
             let mut sample: Option<IMFSample> = None;
-            let read = reader.ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, 0, None, None, None, Some(&mut sample as *mut _));
+            let read = reader.ReadSample(
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
+                0,
+                None,
+                None,
+                None,
+                Some(&mut sample as *mut _),
+            );
             let Some(sample) = sample.filter(|_| read.is_ok()) else {
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             };
-            let Ok(buffer) = sample.ConvertToContiguousBuffer() else { continue };
+            let Ok(buffer) = sample.ConvertToContiguousBuffer() else {
+                continue;
+            };
             let mut data: *mut u8 = std::ptr::null_mut();
             let mut len = 0u32;
             if buffer.Lock(&mut data, None, Some(&mut len)).is_err() {
                 continue;
             }
             let n = want.min(len as usize);
-            let bgra = if data.is_null() || n == 0 { Vec::new() } else { std::slice::from_raw_parts(data, n).to_vec() };
+            let bgra = if data.is_null() || n == 0 {
+                Vec::new()
+            } else {
+                std::slice::from_raw_parts(data, n).to_vec()
+            };
             let _ = buffer.Unlock();
             if bgra.len() < want {
                 continue;

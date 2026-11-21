@@ -31,10 +31,14 @@ pub struct Prefs {
     pub printscreen_changed: bool,
     /// The voice recorder's microphone gain in dB (-12 to +24).
     pub voice_gain_db: f32,
+    /// The font of plain (non-code) text in the Text tab: 0 Mono (Consolas), 1 Sans (Segoe UI), 2 Serif (Georgia).
+    pub text_font: i32,
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn user_folder(which: UserFolder, home: &Path, fallback: &str) -> PathBuf {
@@ -42,7 +46,10 @@ fn user_folder(which: UserFolder, home: &Path, fallback: &str) -> PathBuf {
 }
 
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home).join("Rimelight Media")
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(home)
+        .join("Rimelight Media")
 }
 
 impl Default for Prefs {
@@ -59,7 +66,8 @@ impl Default for Prefs {
             rec_fps: 30,
             volume: 1.0,
             // Each kind in its own user folder (where Windows keeps it, OneDrive included).
-            screenshot_dir: user_folder(UserFolder::Pictures, &home, "Pictures").join("Screenshots"),
+            screenshot_dir: user_folder(UserFolder::Pictures, &home, "Pictures")
+                .join("Screenshots"),
             recording_dir: user_folder(UserFolder::Videos, &home, "Videos").join("Captures"),
             voice_dir: user_folder(UserFolder::Music, &home, "Music").join("Recordings"),
             canvas_dir: user_folder(UserFolder::Pictures, &home, "Pictures").join("Canvas"),
@@ -67,6 +75,7 @@ impl Default for Prefs {
             file_types: [true; 4],
             printscreen_changed: false,
             voice_gain_db: 0.0,
+            text_font: 0,
         }
     }
 }
@@ -78,9 +87,13 @@ fn flag(v: &str) -> bool {
 impl Prefs {
     pub fn load() -> Prefs {
         let mut p = Prefs::default();
-        let Ok(text) = std::fs::read_to_string(data_dir().join("settings.txt")) else { return p };
+        let Ok(text) = std::fs::read_to_string(data_dir().join("settings.txt")) else {
+            return p;
+        };
         for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             let v = v.trim();
             match k.trim() {
                 "theme" => p.theme = v.parse().unwrap_or(2).clamp(0, 2),
@@ -93,10 +106,13 @@ impl Prefs {
                 "rec_fps" => p.rec_fps = if v == "60" { 60 } else { 30 },
                 "volume" => p.volume = v.parse().unwrap_or(1.0f32).clamp(0.0, 1.0),
                 "voice_gain_db" => p.voice_gain_db = v.parse().unwrap_or(0.0f32).clamp(-12.0, 24.0),
+                "text_font" => p.text_font = v.parse().unwrap_or(0).clamp(0, 2),
                 "screenshot_dir" if !v.is_empty() => p.screenshot_dir = PathBuf::from(v),
                 "recording_dir" if !v.is_empty() => p.recording_dir = PathBuf::from(v),
                 // 0.1.x saved Documents\Sound Recordings as the default: voice notes now go to Music\Recordings.
-                "voice_dir" if !v.is_empty() && !v.ends_with(r"Documents\Sound Recordings") => p.voice_dir = PathBuf::from(v),
+                "voice_dir" if !v.is_empty() && !v.ends_with(r"Documents\Sound Recordings") => {
+                    p.voice_dir = PathBuf::from(v)
+                }
                 "canvas_dir" if !v.is_empty() => p.canvas_dir = PathBuf::from(v),
                 "desktop_shortcut" => p.desktop_shortcut = flag(v),
                 "printscreen_changed" => p.printscreen_changed = flag(v),
@@ -113,7 +129,7 @@ impl Prefs {
     pub fn save(&self) {
         let b = |v: bool| if v { "1" } else { "0" };
         let text = format!(
-            "theme={}\nbackground={}\nsnip_copy={}\nsnip_save={}\nsnip_open={}\nrec_system_audio={}\nrec_mic={}\nrec_fps={}\nvolume={}\nscreenshot_dir={}\nrecording_dir={}\nvoice_dir={}\ncanvas_dir={}\ndesktop_shortcut={}\nprintscreen_changed={}\nfile_types={}{}{}{}\nvoice_gain_db={}\n",
+            "theme={}\nbackground={}\nsnip_copy={}\nsnip_save={}\nsnip_open={}\nrec_system_audio={}\nrec_mic={}\nrec_fps={}\nvolume={}\nscreenshot_dir={}\nrecording_dir={}\nvoice_dir={}\ncanvas_dir={}\ndesktop_shortcut={}\nprintscreen_changed={}\nfile_types={}{}{}{}\nvoice_gain_db={}\ntext_font={}\n",
             self.theme,
             b(self.background),
             b(self.snip_copy),
@@ -134,6 +150,7 @@ impl Prefs {
             b(self.file_types[2]),
             b(self.file_types[3]),
             self.voice_gain_db,
+            self.text_font,
         );
         write(&data_dir().join("settings.txt"), &text);
     }
@@ -151,7 +168,12 @@ fn write(path: &Path, text: &str) {
 
 pub fn load_recents() -> Vec<PathBuf> {
     std::fs::read_to_string(data_dir().join("recents.txt"))
-        .map(|t| t.lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).collect())
+        .map(|t| {
+            t.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(PathBuf::from)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
