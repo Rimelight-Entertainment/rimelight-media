@@ -83,13 +83,15 @@ pub fn fit(w: u32, h: u32, max: (u32, u32)) -> (u32, u32) {
     (even(w * scale), even(h * scale))
 }
 
-fn copy_rgba(f: &ff::frame::Video, (w, h): (u32, u32)) -> Vec<u8> {
-    let (w, h) = (w as usize, h as usize);
+/// Copies the scaled frame straight into the buffer the window shows (one copy per frame, not two).
+fn copy_rgba(f: &ff::frame::Video, (w, h): (u32, u32)) -> slint::SharedPixelBuffer<slint::Rgba8Pixel> {
+    let mut out = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+    let row = w as usize * 4;
     let stride = f.stride(0);
     let data = f.data(0);
-    let mut out = Vec::with_capacity(w * h * 4);
-    for y in 0..h {
-        out.extend_from_slice(&data[y * stride..y * stride + w * 4]);
+    let bytes = out.make_mut_bytes();
+    for y in 0..h as usize {
+        bytes[y * row..(y + 1) * row].copy_from_slice(&data[y * stride..y * stride + row]);
     }
     out
 }
@@ -254,7 +256,7 @@ pub fn frame_at(path: &Path, ms: u64) -> Result<crate::picture::Picture, String>
     let grab = |f: &ff::frame::Video, sc: &mut Scaler| -> Result<crate::picture::Picture, String> {
         let mut rgba = ff::frame::Video::empty();
         sc.run(f, &mut rgba).map_err(|e| e.to_string())?;
-        Ok(crate::picture::Picture { w: size.0, h: size.1, rgba: copy_rgba(&rgba, size) })
+        Ok(crate::picture::Picture { w: size.0, h: size.1, rgba: copy_rgba(&rgba, size).as_bytes().to_vec() })
     };
     for (st, pkt) in ictx.packets() {
         if st.index() != idx {
@@ -272,10 +274,12 @@ pub fn frame_at(path: &Path, ms: u64) -> Result<crate::picture::Picture, String>
     last.ok_or_else(|| "no frame there".into())
 }
 
-/// Loudest sample per bucket of one sound track, for the waveform (0..1). Runs on a worker thread; decodes the whole
-/// track at a low rate and keeps only the peaks.
-pub fn peaks(path: &Path, idx: usize, duration_ms: u64, buckets: usize) -> Result<Vec<f32>, String> {
+/// The loudest sample in each of `buckets` slices of one sound track, for the waveform (0..1). Runs on a worker thread.
+/// The track is decoded at a low rate and first reduced to one peak per 10 ms, so the track's length need not be known
+/// (the length in the file header can be missing or wrong). An empty result means no sound was decoded.
+pub fn peaks(path: &Path, idx: usize, buckets: usize) -> Result<Vec<f32>, String> {
     const RATE: u32 = 8_000;
+    const HOP: usize = 80; // samples per peak: 10 ms at RATE
     let buckets = buckets.max(1);
     let mut ictx = open_input(path)?;
     let ctx = {
@@ -283,14 +287,12 @@ pub fn peaks(path: &Path, idx: usize, duration_ms: u64, buckets: usize) -> Resul
         ff::codec::context::Context::from_parameters(st.parameters()).map_err(|e| e.to_string())?
     };
     let mut dec = ctx.decoder().audio().map_err(|e| e.to_string())?;
-    let total = (duration_ms as f64 / 1000.0 * f64::from(RATE)).max(1.0);
-    let per_bucket = (total / buckets as f64).max(1.0);
-    let mut out = vec![0f32; buckets];
-    let mut seen = 0usize;
+    // The peaks so far, the largest sample in the current 10 ms, and how many samples it holds.
+    let mut acc: (Vec<f32>, f32, usize) = (Vec::new(), 0.0, 0);
     let mut rs: Option<Resampler> = None;
     let mut decoded = ff::frame::Audio::empty();
 
-    let mut take = |frame: &ff::frame::Audio, rs: &mut Option<Resampler>, seen: &mut usize| -> Result<(), String> {
+    let take = |frame: &ff::frame::Audio, rs: &mut Option<Resampler>, acc: &mut (Vec<f32>, f32, usize)| -> Result<(), String> {
         if rs.is_none() {
             let layout = if frame.channel_layout().channels() > 0 { frame.channel_layout() } else { ff::ChannelLayout::default(i32::from(frame.channels())) };
             *rs = Some(
@@ -304,11 +306,13 @@ pub fn peaks(path: &Path, idx: usize, duration_ms: u64, buckets: usize) -> Resul
         let bytes = res.data(0).get(..res.samples() * 4).unwrap_or_default();
         for b in bytes.chunks_exact(4) {
             let v = f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs();
-            let slot = ((*seen as f64 / per_bucket) as usize).min(buckets - 1);
-            if v > out[slot] {
-                out[slot] = v;
+            acc.1 = acc.1.max(v);
+            acc.2 += 1;
+            if acc.2 == HOP {
+                acc.0.push(acc.1);
+                acc.1 = 0.0;
+                acc.2 = 0;
             }
-            *seen += 1;
         }
         Ok(())
     };
@@ -318,13 +322,29 @@ pub fn peaks(path: &Path, idx: usize, duration_ms: u64, buckets: usize) -> Resul
             continue;
         }
         while dec.receive_frame(&mut decoded).is_ok() {
-            take(&decoded, &mut rs, &mut seen)?;
+            take(&decoded, &mut rs, &mut acc)?;
         }
     }
     let _ = dec.send_eof();
     while dec.receive_frame(&mut decoded).is_ok() {
-        take(&decoded, &mut rs, &mut seen)?;
+        take(&decoded, &mut rs, &mut acc)?;
     }
+    if acc.2 > 0 {
+        acc.0.push(acc.1);
+    }
+    let cols = acc.0;
+    let n = cols.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    // Each bucket takes the loudest of its share of the peaks.
+    let mut out: Vec<f32> = (0..buckets)
+        .map(|i| {
+            let a = i * n / buckets;
+            let b = ((i + 1) * n / buckets).max(a + 1).min(n);
+            cols[a..b].iter().copied().fold(0f32, f32::max)
+        })
+        .collect();
     let max = out.iter().copied().fold(0f32, f32::max);
     if max > 0.0 {
         for v in &mut out {
@@ -337,7 +357,7 @@ pub fn peaks(path: &Path, idx: usize, duration_ms: u64, buckets: usize) -> Resul
 pub struct VideoFrame {
     pub w: u32,
     pub h: u32,
-    pub rgba: Vec<u8>,
+    pub rgba: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     pub pts_ms: u64,
 }
 

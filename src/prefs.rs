@@ -29,6 +29,8 @@ pub struct Prefs {
     pub file_types: [bool; 4],
     /// True when Rimelight Media turned off Windows' own Print Screen snipping (uninstall turns it back on).
     pub printscreen_changed: bool,
+    /// The voice recorder's microphone gain in dB (-12 to +24).
+    pub voice_gain_db: f32,
 }
 
 fn home() -> PathBuf {
@@ -64,6 +66,7 @@ impl Default for Prefs {
             desktop_shortcut: true,
             file_types: [true; 4],
             printscreen_changed: false,
+            voice_gain_db: 0.0,
         }
     }
 }
@@ -89,6 +92,7 @@ impl Prefs {
                 "rec_mic" => p.rec_mic = flag(v),
                 "rec_fps" => p.rec_fps = if v == "60" { 60 } else { 30 },
                 "volume" => p.volume = v.parse().unwrap_or(1.0f32).clamp(0.0, 1.0),
+                "voice_gain_db" => p.voice_gain_db = v.parse().unwrap_or(0.0f32).clamp(-12.0, 24.0),
                 "screenshot_dir" if !v.is_empty() => p.screenshot_dir = PathBuf::from(v),
                 "recording_dir" if !v.is_empty() => p.recording_dir = PathBuf::from(v),
                 // 0.1.x saved Documents\Sound Recordings as the default: voice notes now go to Music\Recordings.
@@ -109,7 +113,7 @@ impl Prefs {
     pub fn save(&self) {
         let b = |v: bool| if v { "1" } else { "0" };
         let text = format!(
-            "theme={}\nbackground={}\nsnip_copy={}\nsnip_save={}\nsnip_open={}\nrec_system_audio={}\nrec_mic={}\nrec_fps={}\nvolume={}\nscreenshot_dir={}\nrecording_dir={}\nvoice_dir={}\ncanvas_dir={}\ndesktop_shortcut={}\nprintscreen_changed={}\nfile_types={}{}{}{}\n",
+            "theme={}\nbackground={}\nsnip_copy={}\nsnip_save={}\nsnip_open={}\nrec_system_audio={}\nrec_mic={}\nrec_fps={}\nvolume={}\nscreenshot_dir={}\nrecording_dir={}\nvoice_dir={}\ncanvas_dir={}\ndesktop_shortcut={}\nprintscreen_changed={}\nfile_types={}{}{}{}\nvoice_gain_db={}\n",
             self.theme,
             b(self.background),
             b(self.snip_copy),
@@ -129,6 +133,7 @@ impl Prefs {
             b(self.file_types[1]),
             b(self.file_types[2]),
             b(self.file_types[3]),
+            self.voice_gain_db,
         );
         write(&data_dir().join("settings.txt"), &text);
     }

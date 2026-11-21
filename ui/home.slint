@@ -1,40 +1,9 @@
-// Home: two panels. Left: the drop zone. Right: recent files. Narrow windows stack them.
+// Home: one centred column (max 640 px): the drop zone, then the recent files under it.
 import { ScrollView } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { Button, ButtonKind, Card } from "widgets.slint";
-import { Shell, RecentItem } from "state.slint";
-
-component RecentRow inherits Rectangle {
-    in property <RecentItem> item;
-    callback clicked();
-    height: 48px;
-    border-radius: Tokens.radius-control;
-    background: ta.has-hover ? Tokens.surface-hover : transparent;
-    HorizontalLayout {
-        padding-left: Tokens.space-3;
-        padding-right: Tokens.space-3;
-        spacing: Tokens.space-3;
-        Rectangle {
-            width: Tokens.icon-medium;
-            Image {
-                source: root.item.kind == "image" ? Icons.image : root.item.kind == "video" ? Icons.video : root.item.kind == "text" ? Icons.text : Icons.music;
-                width: Tokens.icon-medium;
-                height: Tokens.icon-medium;
-                colorize: root.item.kind == "image" ? Tokens.file-picture : root.item.kind == "video" ? Tokens.file-video : root.item.kind == "text" ? Tokens.file-text : Tokens.file-music;
-            }
-        }
-        VerticalLayout {
-            alignment: center;
-            Text { text: root.item.name; color: Tokens.text-primary; font-size: Type.body; overflow: elide; }
-            Text { text: root.item.detail; color: Tokens.text-muted; font-size: Type.caption; overflow: elide; }
-        }
-    }
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-}
+import { Button, ButtonKind, Card, RecentRow } from "widgets.slint";
+import { Shell } from "state.slint";
 
 // The drop zone: drop a file here, or open one.
 component StartPanel inherits VerticalLayout {
@@ -85,11 +54,11 @@ component RecentPanel inherits VerticalLayout {
     spacing: Tokens.space-3;
     HorizontalLayout {
         Text { text: "Recent"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; vertical-alignment: center; }
-        Rectangle { }
+        Rectangle { horizontal-stretch: 1; }
         if Shell.recents.length > 0: Button {
             text: "Clear";
             kind: ButtonKind.ghost;
-            clicked => { Shell.clear-recents(); }
+            clicked => { Shell.clear-recents(""); }
         }
     }
     if Shell.recents.length == 0: Text {
@@ -103,7 +72,7 @@ component RecentPanel inherits VerticalLayout {
             padding: Tokens.space-1;
             for r[i] in Shell.recents: RecentRow {
                 item: r;
-                clicked => { Shell.open-recent(i); }
+                clicked => { Shell.open-recent(r.index); }
             }
         }
     }
@@ -111,41 +80,22 @@ component RecentPanel inherits VerticalLayout {
 
 export component HomePage inherits Rectangle {
     background: Tokens.surface-base;
-    property <bool> wide: self.width >= 900px;
 
-    if root.wide: HorizontalLayout {
-        padding: Tokens.space-6;
-        spacing: Tokens.space-6;
-        ScrollView {
-            horizontal-stretch: 3;
-            VerticalLayout {
-                padding-right: Tokens.space-2;
-                StartPanel { }
-            }
-        }
-        Rectangle {
-            width: 1px;
-            background: Tokens.border-subtle;
-        }
-        ScrollView {
-            horizontal-stretch: 2;
-            min-width: 280px;
-            max-width: 480px;
-            VerticalLayout {
-                padding-right: Tokens.space-2;
-                alignment: start;
-                RecentPanel { }
-            }
-        }
-    }
-
-    if !root.wide: ScrollView {
+    ScrollView {
         VerticalLayout {
-            padding: Tokens.space-5;
+            padding: Tokens.space-6;
             spacing: Tokens.space-6;
             alignment: start;
-            StartPanel { }
-            RecentPanel { }
+            HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    width: min(640px, root.width - 2 * Tokens.space-6);
+                    spacing: Tokens.space-6;
+                    alignment: start;
+                    StartPanel { }
+                    RecentPanel { }
+                }
+            }
         }
     }
 }

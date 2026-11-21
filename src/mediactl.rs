@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
@@ -48,12 +47,15 @@ pub struct MediaState {
     sub_before_off: Option<SubChoice>,
 }
 
-/// Playback speeds offered (VLC-like steps).
+/// Playback speeds offered by the step keys (VLC-like steps).
 const SPEEDS: [f32; 10] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 
+/// How many bars the waveform track draws.
+const WAVE_BARS: usize = 300;
+
+/// The speed as the button shows it: always two decimals ("1.00×", "1.25×").
 fn speed_label(s: f32) -> String {
-    let t = format!("{s:.2}");
-    format!("{}×", t.trim_end_matches('0').trim_end_matches('.'))
+    format!("{s:.2}×")
 }
 
 impl Default for MediaState {
@@ -135,11 +137,11 @@ pub fn wire(app: &Rc<App>) {
     p.on_trim_save(|| with_app(trim_save));
     p.on_pick_speed(|i| with_app(move |a| set_speed(a, SPEEDS.get(i as usize).copied().unwrap_or(1.0))));
     p.on_speed_step(|d| with_app(move |a| speed_step(a, d)));
-    // The slider: 0.25x to 3x in steps of 0.05; it updates the speed without a toast on every step.
-    p.on_set_speed(|v| {
+    // The speed flyout (slider and presets): a speed from 0.25x to 3x, rounded to steps of 0.05. No toast.
+    p.on_set_speed(|s| {
         with_app(move |a| {
-            let speed = ((0.25 + v.clamp(0.0, 1.0) * 2.75) / 0.05).round() * 0.05;
-            apply_speed(a, speed.clamp(0.25, 3.0));
+            let speed = ((s.clamp(0.25, 3.0) / 0.05).round() * 0.05).clamp(0.25, 3.0);
+            apply_speed(a, speed);
         })
     });
     p.on_trim_drag(|start, frac| with_app(move |a| trim_drag(a, start, frac)));
@@ -166,7 +168,7 @@ pub fn open(app: &Rc<App>, path: &Path) {
     p.set_subtitle(SharedString::new());
     p.set_meta_text(SharedString::new());
     p.set_has_wave(false);
-    p.set_wave_commands(SharedString::new());
+    p.set_wave_bars(ModelRc::default());
     p.set_playing(false);
     p.set_position(0.0);
     p.set_trim_mode(false);
@@ -221,17 +223,19 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
     p.set_meta_text(meta_text(path, &info).into());
     // The waveform is decoded in the background, from the sound track that plays.
     if let Some(idx) = info.audio.iter().find(|t| t.default).or(info.audio.first()).map(|t| t.index) {
-        let (wave_path, duration) = (path.to_path_buf(), info.duration_ms);
+        let wave_path = path.to_path_buf();
         std::thread::spawn(move || {
-            if let Ok(peaks) = player::peaks(&wave_path, idx, duration, 1500) {
-                let commands = wave_commands(&peaks);
-                post(move |a| {
-                    if a.media.borrow().path.as_deref() == Some(wave_path.as_path()) {
-                        let p = player_ui(a);
-                        p.set_wave_commands(commands.into());
-                        p.set_has_wave(true);
-                    }
-                });
+            // Only a track with real sound gets a waveform (an all-silent or undecodable track keeps none).
+            if let Ok(peaks) = player::peaks(&wave_path, idx, WAVE_BARS) {
+                if peaks.iter().any(|v| *v > 0.0) {
+                    post(move |a| {
+                        if a.media.borrow().path.as_deref() == Some(wave_path.as_path()) {
+                            let p = player_ui(a);
+                            p.set_wave_bars(ModelRc::new(VecModel::from(peaks)));
+                            p.set_has_wave(true);
+                        }
+                    });
+                }
             }
         });
     }
@@ -317,8 +321,7 @@ fn tick(app: &Rc<App>) {
 
     let p = player_ui(app);
     if let Some(f) = frame {
-        let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&f.rgba, f.w, f.h);
-        p.set_frame(slint::Image::from_rgba8(buf));
+        p.set_frame(slint::Image::from_rgba8(f.rgba));
     }
     if preview.is_none() {
         let frac = (pos as f64 / dur as f64) as f32;
@@ -539,7 +542,7 @@ fn update_trim_text(app: &Rc<App>) {
     let p = player_ui(app);
     p.set_trim_start((s as f64 / dur as f64) as f32);
     p.set_trim_end((e as f64 / dur as f64) as f32);
-    p.set_trim_text(format!("Keep {} to {}  ({})", files::clock(s), files::clock(e), files::clock(e.saturating_sub(s))).into());
+    p.set_trim_text(format!("Keep {} to {} ({})", files::clock(s), files::clock(e), files::clock(e.saturating_sub(s))).into());
 }
 
 fn trim_set(app: &Rc<App>, start: bool) {
@@ -638,26 +641,27 @@ pub fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool) -> bool {
     true
 }
 
+/// Pushes the speed to the control's label and value. Each is set only when it differs, so the slider in the
+/// flyout is not reset by its own change.
 fn refresh_speeds(app: &Rc<App>) {
     let current = app.media.borrow().speed;
-    let list: Vec<ui::Choice> = SPEEDS
-        .iter()
-        .map(|s| ui::Choice {
-            label: speed_label(*s).into(),
-            detail: if (*s - 1.0).abs() < 0.001 { "Normal".into() } else { SharedString::new() },
-            selected: (*s - current).abs() < 0.001,
-        })
-        .collect();
     let p = player_ui(app);
-    p.set_speeds(ModelRc::new(VecModel::from(list)));
-    p.set_speed_text(speed_label(current).into());
-    p.set_speed_value(current);
+    let text = speed_label(current);
+    if p.get_speed_text().as_str() != text {
+        p.set_speed_text(text.into());
+    }
+    if (p.get_speed_value() - current).abs() > 0.0001 {
+        p.set_speed_value(current);
+    }
 }
 
-/// Sets the speed without a message (the slider calls this on every step).
+/// Sets the speed without a message (the flyout's slider and presets call this). Does nothing when it is unchanged.
 fn apply_speed(app: &Rc<App>, speed: f32) {
     {
         let mut m = app.media.borrow_mut();
+        if (m.speed - speed).abs() < 0.001 {
+            return;
+        }
         m.speed = speed;
         if let Some(pl) = m.player.as_ref() {
             pl.set_speed(speed);
@@ -725,20 +729,6 @@ fn meta_text(path: &Path, info: &MediaInfo) -> String {
     parts.join(" | ")
 }
 
-/// An SVG-style path for the waveform: a mirrored bar per bucket, in a 1 x 2 box centred on y = 1.
-fn wave_commands(peaks: &[f32]) -> String {
-    let n = peaks.len().max(1);
-    let x = |i: usize| i as f32 / n as f32;
-    let mut s = String::with_capacity(n * 40);
-    for (i, p) in peaks.iter().enumerate() {
-        let _ = write!(s, "{} {:.4} {:.4} ", if i == 0 { "M" } else { "L" }, x(i), 1.0 - p * 0.95);
-    }
-    for (i, p) in peaks.iter().enumerate().rev() {
-        let _ = write!(s, "L {:.4} {:.4} ", x(i), 1.0 + p * 0.95);
-    }
-    s.push('Z');
-    s
-}
 
 fn speed_step(app: &Rc<App>, delta: i32) {
     let current = app.media.borrow().speed;
@@ -865,7 +855,7 @@ pub fn close(app: &Rc<App>) {
     p.set_audio_tracks(ModelRc::default());
     p.set_subtitle_tracks(ModelRc::default());
     p.set_has_wave(false);
-    p.set_wave_commands(SharedString::new());
+    p.set_wave_bars(ModelRc::default());
     p.set_meta_text(SharedString::new());
     crate::app::update_title(app);
 }

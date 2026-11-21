@@ -279,6 +279,19 @@ mod imp {
         }
     }
 
+    /// Takes the "starting or running" lock for this user. True for the one process that holds it; Windows frees it when
+    /// that process ends. The handle is kept for the life of the process.
+    pub fn take_start_lock() -> bool {
+        use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+        let name: Vec<u16> = "Local\\RimelightMedia.Instance".encode_utf16().chain([0]).collect();
+        // SAFETY: a NUL-terminated name; the handle is deliberately never closed.
+        unsafe {
+            let h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+            !h.is_null() && GetLastError() != ERROR_ALREADY_EXISTS
+        }
+    }
+
     pub fn recycle(path: &std::path::Path) -> bool {
         use std::os::windows::ffi::OsStrExt as _;
         use windows_sys::Win32::UI::Shell::{
@@ -551,7 +564,8 @@ mod imp {
         use std::sync::atomic::Ordering;
         use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, MSG, SetWindowsHookExW, TranslateMessage, WH_KEYBOARD_LL,
+            DispatchMessageW, GetMessageW, MSG, SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+            WH_KEYBOARD_LL, WM_TIMER,
         };
         if HOOK_STARTED.swap(true, Ordering::SeqCst) {
             return;
@@ -561,18 +575,56 @@ mod imp {
             // dispatches messages to the hook.
             unsafe {
                 let module = GetModuleHandleW(std::ptr::null());
-                let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(win_shift_s_proc), module as _, 0);
+                let mut hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(win_shift_s_proc), module as _, 0);
+                hook_log(format!("hook installed: {}", if hook.is_null() { "FAILED" } else { "ok" }));
                 if hook.is_null() {
                     HOOK_STARTED.store(false, Ordering::SeqCst);
                     return;
                 }
+                // Low-level hooks run newest first, so a hook installed later by another process (or a hook Windows
+                // dropped as too slow) can let Win+Shift+S reach Windows first. Re-installing puts this one first again.
+                // Not proven to be the cause of the occasional misses: hook-log.txt records what the hook sees.
+                SetTimer(std::ptr::null_mut(), 0, 30_000, None);
                 let mut msg: MSG = std::mem::zeroed();
                 while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                    if msg.message == WM_TIMER {
+                        let fresh = SetWindowsHookExW(WH_KEYBOARD_LL, Some(win_shift_s_proc), module as _, 0);
+                        if fresh.is_null() {
+                            hook_log("hook refresh FAILED".into());
+                        } else {
+                            UnhookWindowsHookEx(hook);
+                            hook = fresh;
+                        }
+                        continue;
+                    }
                     TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
             }
         });
+    }
+
+    /// Appends a line to %APPDATA%\Rimelight Media\hook-log.txt (from a background thread; the hook never waits).
+    fn hook_log(line: String) {
+        use std::sync::{Mutex, OnceLock, mpsc};
+        static TX: OnceLock<Mutex<mpsc::Sender<String>>> = OnceLock::new();
+        let tx = TX.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<String>();
+            std::thread::spawn(move || {
+                use std::io::Write as _;
+                let path = crate::prefs::data_dir().join("hook-log.txt");
+                for line in rx {
+                    let t = local_time();
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                        let _ = writeln!(f, "{:04}-{:02}-{:02} {:02}:{:02}:{:02} {line}", t[0], t[1], t[2], t[3], t[4], t[5]);
+                    }
+                }
+            });
+            Mutex::new(tx)
+        });
+        if let Ok(tx) = tx.lock() {
+            let _ = tx.send(line);
+        }
     }
 
     static HOOK_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -602,7 +654,22 @@ mod imp {
             } else if vk == VK_LSHIFT as u32 || vk == VK_RSHIFT as u32 || vk == VK_SHIFT as u32 {
                 SHIFT_HELD.store(down, Ordering::SeqCst);
             } else if vk == b'S' as u32 {
-                if down && WIN_HELD.load(Ordering::SeqCst) && SHIFT_HELD.load(Ordering::SeqCst) {
+                let (win, shift) = (WIN_HELD.load(Ordering::SeqCst), SHIFT_HELD.load(Ordering::SeqCst));
+                if down && (win || shift) {
+                    // Diagnostics for the Win+Shift+S cases that still reach Windows' own snipping: what this hook saw
+                    // against the system's key state. Sent to a logger thread so the hook itself stays fast.
+                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+                    // SAFETY: plain key-state queries.
+                    let async_win = unsafe { GetAsyncKeyState(VK_LWIN as i32) < 0 || GetAsyncKeyState(VK_RWIN as i32) < 0 };
+                    // SAFETY: as above.
+                    let async_shift = unsafe { GetAsyncKeyState(VK_SHIFT as i32) < 0 };
+                    hook_log(format!(
+                        "S down: tracked win={win} shift={shift}, system win={async_win} shift={async_shift}, flags={:#x}, swallowed={}",
+                        kb.flags,
+                        win && shift
+                    ));
+                }
+                if down && win && shift {
                     SWALLOW_S_UP.store(true, Ordering::SeqCst);
                     WIN_S_PENDING.store(true, Ordering::SeqCst);
                     return 1;
@@ -651,6 +718,9 @@ mod imp {
     }
     pub fn cursor_monitor() -> Option<((i32, i32), ScreenRect)> {
         None
+    }
+    pub fn take_start_lock() -> bool {
+        true
     }
     pub fn recycle(path: &std::path::Path) -> bool {
         std::fs::remove_file(path).is_ok()
@@ -739,6 +809,11 @@ pub fn share_file(owner: isize, path: &std::path::Path, title: &str) -> Result<(
 /// Moves a file to the Recycle Bin (undoable from there). True when it went.
 pub fn recycle(path: &std::path::Path) -> bool {
     imp::recycle(path)
+}
+
+/// True for the first Rimelight Media process of this user (the one that becomes the running copy).
+pub fn take_start_lock() -> bool {
+    imp::take_start_lock()
 }
 
 /// Keeps one of our windows (the recording bar) out of screenshots and recordings.

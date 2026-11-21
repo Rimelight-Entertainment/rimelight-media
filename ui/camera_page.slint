@@ -1,11 +1,13 @@
-// The camera, in place of Windows' Camera app: a big live preview with a grid, photo or video, a timer, a mirror, the
-// device list, a round shutter on the right and the last capture's thumbnail in the corner.
+// The camera, in place of Windows' Camera app: the options in the top bar (device, Photo or Video, timer, mirror, grid),
+// the live preview in the middle with the shutter and the last capture's thumbnail on the right, and the resolution and
+// save folder in the status bar. With no camera, the preview shows "No camera found" and a Check again button.
 import { ComboBox } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
+import { Button, ButtonKind, IconButton, ToolBar, StatusBar, ToolDivider } from "widgets.slint";
 import { Camera } from "state.slint";
 
-// A small toggle chip under the preview.
+// A small toggle chip in the top bar.
 component Chip inherits Rectangle {
     in property <string> text;
     in property <bool> active;
@@ -39,33 +41,47 @@ component Chip inherits Rectangle {
 }
 
 export component CameraPage inherits Rectangle {
-    background: Tokens.stage;
+    background: Tokens.surface-base;
 
     property <[string]> timers: ["Off", "3 s", "5 s", "10 s"];
+    // The shutter is 80 px; the thumbnail is 60% of it, so both sit on one centred column.
+    property <length> shutter-size: 80px;
+    property <length> thumb-size: 48px;
 
-    HorizontalLayout {
-        padding: Tokens.space-4;
-        spacing: Tokens.space-4;
-
-        VerticalLayout {
-            horizontal-stretch: 1;
-            spacing: Tokens.space-3;
-
-            // Device list (top left) and the stage with the preview.
-            HorizontalLayout {
-                spacing: Tokens.space-3;
-                alignment: start;
-                ComboBox {
-                    model: Camera.devices;
-                    current-index: Camera.device-index;
-                    width: 280px;
-                    enabled: Camera.devices.length > 0 && !Camera.recording;
-                    selected(value) => { Camera.set-device(self.current-index); }
-                }
+    VerticalLayout {
+        // Options: the device, the mode, the timer, the mirror and the grid.
+        ToolBar {
+            IconButton { icon: Icons.camera; label: "Camera"; clicked => { } }
+            ComboBox {
+                model: Camera.devices;
+                current-index: Camera.device-index;
+                width: 240px;
+                enabled: Camera.devices.length > 0 && !Camera.recording;
+                selected(value) => { Camera.set-device(self.current-index); }
             }
+            ToolDivider { }
+            Chip { text: "Photo"; active: !Camera.video-mode; enabled: !Camera.recording; clicked => { Camera.set-video(false); } }
+            Chip { text: "Video"; active: Camera.video-mode; enabled: !Camera.recording; clicked => { Camera.set-video(true); } }
+            ToolDivider { }
+            for label[i] in timers: Chip {
+                text: label;
+                active: Camera.timer-index == i;
+                enabled: !Camera.video-mode && Camera.countdown == 0;
+                clicked => { Camera.set-timer(i); }
+            }
+            ToolDivider { }
+            Chip { text: "Mirror"; active: Camera.mirror; clicked => { Camera.set-mirror(!Camera.mirror); } }
+            Chip { text: "Grid"; active: Camera.grid; clicked => { Camera.set-grid(!Camera.grid); } }
+        }
+
+        // The preview, and the shutter with the thumbnail on the right.
+        HorizontalLayout {
+            vertical-stretch: 1;
+            padding: Tokens.space-4;
+            spacing: Tokens.space-4;
 
             Rectangle {
-                vertical-stretch: 1;
+                horizontal-stretch: 1;
                 background: #000000;
                 border-radius: Tokens.radius-r8;
                 clip: true;
@@ -86,7 +102,27 @@ export component CameraPage inherits Rectangle {
                     Rectangle { y: parent.height * 2 / 3; height: 1px; width: parent.width; background: #FFFFFF73; }
                 }
 
-                if !Camera.has-frame: Text {
+                // No camera: a centred message with Check again.
+                if Camera.devices.length == 0: VerticalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    alignment: center;
+                    spacing: Tokens.space-3;
+                    Text {
+                        text: "No camera found";
+                        color: Tokens.text-on-stage;
+                        font-size: Type.heading;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        Button { text: "Check again"; kind: ButtonKind.secondary; clicked => { Camera.check-again(); } }
+                    }
+                }
+
+                // A camera that is not showing a picture yet: its status, or the hint to pick one.
+                if Camera.devices.length > 0 && !Camera.has-frame: Text {
                     text: Camera.status != "" ? Camera.status : (Camera.running ? "Starting the camera..." : "Choose a camera");
                     color: Tokens.text-on-stage;
                     font-size: Type.heading;
@@ -132,88 +168,89 @@ export component CameraPage inherits Rectangle {
                 }
             }
 
-            // Mode, timer, mirror and grid.
-            HorizontalLayout {
-                spacing: Tokens.space-2;
+            // One column: the shutter, then the thumbnail, both centred on the same vertical axis.
+            VerticalLayout {
+                width: 120px;
+                spacing: Tokens.space-5;
                 alignment: center;
-                Chip { text: "Photo"; active: !Camera.video-mode; enabled: !Camera.recording; clicked => { Camera.set-video(false); } }
-                Chip { text: "Video"; active: Camera.video-mode; enabled: !Camera.recording; clicked => { Camera.set-video(true); } }
-                Rectangle { width: Tokens.space-3; }
-                for label[i] in timers: Chip {
-                    text: label;
-                    active: Camera.timer-index == i;
-                    enabled: !Camera.video-mode && Camera.countdown == 0;
-                    clicked => { Camera.set-timer(i); }
+
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: root.shutter-size;
+                        height: root.shutter-size;
+                        border-radius: root.shutter-size / 2;
+                        border-width: 4px;
+                        border-color: #FFFFFF;
+                        background: shutter-ta.has-hover ? #FFFFFF26 : transparent;
+                        Rectangle {
+                            width: parent.width - 16px;
+                            height: parent.height - 16px;
+                            x: 8px;
+                            y: 8px;
+                            border-radius: self.width / 2;
+                            background: Camera.video-mode ? Tokens.record-red : #FFFFFF;
+                            Image {
+                                visible: Camera.recording;
+                                source: Icons.stop;
+                                width: 30px;
+                                height: 30px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                colorize: #FFFFFF;
+                            }
+                        }
+                        shutter-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { Camera.shutter(); }
+                        }
+                    }
                 }
-                Rectangle { width: Tokens.space-3; }
-                Chip { text: "Mirror"; active: Camera.mirror; clicked => { Camera.set-mirror(!Camera.mirror); } }
-                Chip { text: "Grid"; active: Camera.grid; clicked => { Camera.set-grid(!Camera.grid); } }
+
+                // The last capture: a click opens it.
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: root.thumb-size;
+                        height: root.thumb-size;
+                        border-radius: Tokens.radius-control;
+                        clip: true;
+                        background: Tokens.surface-sunken;
+                        border-width: 1px;
+                        border-color: Tokens.border-subtle;
+                        if Camera.has-thumb: Image {
+                            width: 100%;
+                            height: 100%;
+                            source: Camera.thumb;
+                            image-fit: cover;
+                        }
+                        if !Camera.has-thumb: Image {
+                            width: Tokens.icon-medium;
+                            height: Tokens.icon-medium;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            source: Icons.image;
+                            colorize: Tokens.text-muted;
+                        }
+                        thumb-ta := TouchArea {
+                            enabled: Camera.has-thumb;
+                            mouse-cursor: pointer;
+                            clicked => { Camera.open-last(); }
+                        }
+                    }
+                }
             }
         }
 
-        // The shutter and the thumbnail.
-        VerticalLayout {
-            width: 120px;
-            spacing: Tokens.space-4;
-            alignment: center;
-
-            Rectangle {
-                height: 96px;
-                width: 96px;
-                border-radius: 48px;
-                border-width: 4px;
-                border-color: #FFFFFF;
-                background: shutter-ta.has-hover ? #FFFFFF26 : transparent;
-                Rectangle {
-                    width: 76px;
-                    height: 76px;
-                    border-radius: 38px;
-                    background: Camera.video-mode ? Tokens.record-red : #FFFFFF;
-                    Image {
-                        visible: Camera.recording;
-                        source: Icons.stop;
-                        width: 30px;
-                        height: 30px;
-                        colorize: #FFFFFF;
-                    }
-                }
-                shutter-ta := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { Camera.shutter(); }
-                }
-            }
-
-            Rectangle { vertical-stretch: 1; }
-
-            // The last capture: a click opens it.
-            HorizontalLayout {
-                alignment: center;
-                Rectangle {
-                height: 84px;
-                width: 84px;
-                border-radius: Tokens.radius-control;
-                clip: true;
-                background: Tokens.surface-sunken;
-                border-width: 1px;
-                border-color: #FFFFFF40;
-                if Camera.has-thumb: Image {
-                    width: 100%;
-                    height: 100%;
-                    source: Camera.thumb;
-                    image-fit: cover;
-                }
-                if !Camera.has-thumb: Image {
-                    width: Tokens.icon-medium;
-                    height: Tokens.icon-medium;
-                    source: Icons.image;
-                    colorize: Tokens.text-muted;
-                }
-                thumb-ta := TouchArea {
-                    enabled: Camera.has-thumb;
-                    mouse-cursor: pointer;
-                    clicked => { Camera.open-last(); }
-                }
-                }
+        // Left: the resolution and the save folder. Right: the recording time while recording.
+        StatusBar {
+            left-text: Camera.resolution != "" ? Camera.resolution + " | " + Camera.save-folder : Camera.save-folder;
+            if Camera.recording: Text {
+                text: "● " + Camera.time-text;
+                color: Tokens.record-red;
+                font-size: Type.caption;
+                font-weight: 600;
+                vertical-alignment: center;
             }
         }
     }

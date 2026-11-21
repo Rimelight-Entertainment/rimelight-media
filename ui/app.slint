@@ -2,19 +2,18 @@
 // capture.slint.
 import { Tokens, Type, ThemeChoice } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { IconButton, Button, ButtonKind, Choice, TipBounds, ConfirmDialog } from "widgets.slint";
-import { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, RecentItem, Mark, MdBlock, JsonRow, Cast } from "state.slint";
+import { IconButton, Button, ButtonKind, Choice, TipBounds, ConfirmDialog, ToolBar, ToolDivider, StatusBar, EmptyState } from "widgets.slint";
+import { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, RecentItem, Mark, MdBlock, MdCell, JsonRow, Cast } from "state.slint";
 import { CastPopup } from "cast_popup.slint";
 import { HomePage } from "home.slint";
 import { ImagePage } from "image_page.slint";
-import { NewCanvasDialog } from "canvas_dialog.slint";
 import { MediaPage } from "media_page.slint";
 import { VoicePage } from "voice_page.slint";
 import { CameraPage } from "camera_page.slint";
 import { SettingsPage } from "settings_page.slint";
 import { TextPage } from "text_page.slint";
 
-export { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, Tokens, ThemeChoice, RecentItem, Mark, MdBlock, JsonRow, Choice, Cast }
+export { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, Tokens, ThemeChoice, RecentItem, Mark, MdBlock, MdCell, JsonRow, Choice, Cast }
 export { SnipWindow, RecBar, Tray, WindowBox } from "capture.slint";
 export { SetupWindow } from "setup.slint";
 
@@ -50,29 +49,52 @@ component NavButton inherits Rectangle {
     }
 }
 
-// The Audio and Video tabs: the player when what's loaded is that kind, otherwise an empty page.
+// The Audio and Video tabs, the same shell as the others: a ToolBar, the player or the empty state, and a StatusBar.
+// The player shows when what's loaded is this tab's kind. Video's empty state offers a screen recording; Audio's
+// offers the voice recorder.
 component MediaSlot inherits Rectangle {
     in property <bool> want-video;
+    property <bool> loaded: Player.media-title != "" && Player.has-video == root.want-video;
     background: Tokens.stage;
-    if Player.media-title != "" && Player.has-video == root.want-video: MediaPage { }
-    if !(Player.media-title != "" && Player.has-video == root.want-video): VerticalLayout {
-        alignment: center;
-        spacing: Tokens.space-3;
-        Text {
-            text: root.want-video ? "No video open" : "No music open";
-            color: Tokens.text-on-stage;
-            font-size: Type.heading;
-            horizontal-alignment: center;
+
+    VerticalLayout {
+        if !Shell.full-screen: ToolBar {
+            IconButton {
+                icon: Icons.folder-open;
+                label: root.want-video ? "Open a video (Ctrl+O)" : "Open a song (Ctrl+O)";
+                clicked => { Shell.open-file(); }
+            }
+            ToolDivider { }
+            IconButton { icon: Icons.scissors; label: "Trim"; enabled: root.loaded; active: Player.trim-mode; clicked => { Player.trim-mode = !Player.trim-mode; } }
+            IconButton { icon: Icons.camera; label: "Save this frame as a picture"; enabled: root.loaded && Player.has-video; clicked => { Player.snapshot(); } }
+            Rectangle { horizontal-stretch: 1; }
         }
-        if Player.media-title != "": Text {
-            text: (Player.has-video ? "Playing a video: " : "Playing: ") + Player.media-title;
-            color: #9AA4B2;
-            font-size: Type.body;
-            horizontal-alignment: center;
+
+        Rectangle {
+            vertical-stretch: 1;
+            if root.loaded: MediaPage { }
+            if !root.loaded: EmptyState {
+                width: parent.width;
+                height: parent.height;
+                on-stage: true;
+                icon: root.want-video ? Icons.video : Icons.music;
+                icon-colour: root.want-video ? Tokens.file-video : Tokens.file-music;
+                title: root.want-video ? "Open a video" : "Open a song";
+                formats: root.want-video ? ".mp4, .mkv, .webm, .mov, .avi, .wmv, .m4v and more" : ".mp3, .flac, .wav, .ogg, .opus, .m4a, .aac, .wma and more";
+                open-text: "Open a file";
+                new-text: "New recording";
+                new-icon: root.want-video ? Icons.record : Icons.mic;
+                recents: root.want-video ? Shell.recents-video : Shell.recents-audio;
+                open => { Shell.open-file(); }
+                new-file => { if root.want-video { Shell.record-screen("region"); } else { Shell.go("voice"); } }
+                open-recent(i) => { Shell.open-recent(i); }
+                clear-recents => { Shell.clear-recents(root.want-video ? "video" : "audio"); }
+            }
         }
-        HorizontalLayout {
-            alignment: center;
-            Button { text: root.want-video ? "Open a video" : "Open music"; kind: ButtonKind.primary; has-icon: true; icon: Icons.folder-open; clicked => { Shell.open-file(); } }
+
+        // A loaded player brings its own StatusBar (media_page.slint), so this one shows only when nothing is loaded.
+        if !Shell.full-screen && !root.loaded: StatusBar {
+            left-text: "";
         }
     }
 }
@@ -159,7 +181,8 @@ export component AppWindow inherits Window {
                     }
                     IconButton { icon: Icons.mic; label: "Voice recorder"; active: Shell.page == "voice"; clicked => { Shell.go("voice"); } }
                     IconButton { icon: Icons.camera; label: "Camera"; active: Shell.page == "camera"; clicked => { Shell.go("camera"); } }
-                    IconButton { icon: Icons.brush; label: "Canvas (Ctrl+N): a new blank picture to draw on"; clicked => { Shell.canvas-popup-open = true; } }
+                    IconButton { icon: Icons.brush; label: "Canvas (Ctrl+N): a new 1920 x 1080 white picture to draw on"; clicked => { Shell.new-canvas(1, "", "", false); } }
+                    IconButton { icon: Icons.file-plus; label: "New text file"; clicked => { TextDoc.new-doc(); } }
                     cast-btn := IconButton { icon: Icons.cast; label: "Cast to a TV or speaker"; clicked => { Shell.cast(); cast-popup.show(); } }
                     IconButton { icon: Icons.folder-open; label: "Open (Ctrl+O)"; clicked => { Shell.open-file(); } }
                     IconButton { icon: Icons.settings; label: "Settings"; active: Shell.page == "settings"; clicked => { Shell.go("settings"); } }
@@ -193,28 +216,29 @@ export component AppWindow inherits Window {
                         enabled: Shell.title-name != "" && !root.renaming;
                         clicked => { root.renaming = true; }
                     }
-                    // Edits in place: the same bounds, font and alignment as the title, with a subtle box around it.
+                    // Edits in place: the title's font and colour, a 1px border with radius 4, padding 2px 6px, as wide as
+                    // the text (at least 120 px) and centred on the title. No selection: the caret goes to the end.
                     if root.renaming: Rectangle {
-                        x: 0px;
-                        y: 0px;
-                        width: parent.width;
-                        height: parent.height;
-                        border-radius: Tokens.radius-control;
+                        width: max(120px, min(rename-input.preferred-width + 14px, parent.room));
+                        height: 22px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
                         background: Tokens.surface-sunken;
                         border-width: 1px;
                         border-color: Tokens.border-subtle;
                         rename-input := TextInput {
-                            x: 0px;
-                            y: 0px;
-                            width: parent.width;
-                            height: parent.height;
+                            x: 6px;
+                            y: 2px;
+                            width: parent.width - 12px;
+                            height: parent.height - 4px;
                             text: Shell.title-name;
-                            color: Tokens.text-primary;
+                            color: Tokens.text-muted;
                             font-size: Type.caption;
-                            horizontal-alignment: center;
+                            horizontal-alignment: left;
                             vertical-alignment: center;
                             single-line: true;
-                            init => { self.focus(); self.select-all(); }
+                            init => { self.focus(); self.set-selection-offsets(self.text.character-count, self.text.character-count); }
                             accepted => {
                                 root.renaming = false;
                                 Shell.rename(self.text);
@@ -263,13 +287,6 @@ export component AppWindow inherits Window {
         }
 
         // The unsaved-changes question (over everything, including the top bar).
-        // The "New canvas" size question (Ctrl+N or the Canvas button).
-        if Shell.canvas-popup-open: NewCanvasDialog {
-            x: 0px;
-            y: 0px;
-            width: parent.width;
-            height: parent.height;
-        }
 
         if Shell.confirm-open: ConfirmDialog {
             x: 0px;

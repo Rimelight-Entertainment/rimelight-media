@@ -86,6 +86,16 @@ pub fn wire(app: &Rc<App>) {
     voice.set_formats(ModelRc::new(VecModel::from(VOICE_FORMATS.iter().map(|f| SharedString::from(*f)).collect::<Vec<_>>())));
     voice.set_format_index(0);
     voice.set_mic_index(0);
+    let gain = app.prefs.borrow().voice_gain_db;
+    crate::capture::audio_in::set_mic_gain_db(gain);
+    voice.set_gain_db(gain);
+    voice.on_set_gain(|db| with_app(move |a| set_gain(a, db, false)));
+    voice.on_save_gain(|| {
+        with_app(|a| {
+            let db = a.ui.global::<ui::Voice>().get_gain_db();
+            set_gain(a, db, true);
+        })
+    });
     app.slow_tick.start(slint::TimerMode::Repeated, Duration::from_millis(100), || with_app(slow_tick));
 }
 
@@ -156,6 +166,7 @@ fn begin(app: &Rc<App>, mode: &str, purpose: Purpose) {
 
 fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<TopWindow>, mode: &str, purpose: Purpose, main_was_visible: bool) {
     let Some(w) = SPARE_OVERLAY.with(|s| s.borrow_mut().take()).or_else(|| ui::SnipWindow::new().ok()) else { return };
+    w.invoke_reset();
     w.set_shot(picture::to_slint(&shot));
     w.set_shot_w(shot.w as i32);
     w.set_shot_h(shot.h as i32);
@@ -523,6 +534,17 @@ fn pick_mic(app: &Rc<App>, index: i32) {
     app.ui.global::<ui::Voice>().set_mic_index(index as i32);
 }
 
+/// The microphone gain in dB (-12 to +24). It applies at once (the slider moves); `save` stores it in the settings.
+fn set_gain(app: &Rc<App>, db: f32, save: bool) {
+    let db = db.clamp(-12.0, 24.0);
+    crate::capture::audio_in::set_mic_gain_db(db);
+    app.prefs.borrow_mut().voice_gain_db = db;
+    if save {
+        app.prefs.borrow().save();
+    }
+    app.ui.global::<ui::Voice>().set_gain_db(db);
+}
+
 fn pick_format(app: &Rc<App>, index: i32) {
     let index = (index.max(0) as usize).min(VOICE_FORMATS.len() - 1);
     app.cap.borrow_mut().voice_format = index;
@@ -603,10 +625,12 @@ fn takes(app: &Rc<App>) -> Vec<PathBuf> {
 pub fn refresh_takes(app: &Rc<App>) {
     let items: Vec<ui::RecentItem> = takes(app)
         .iter()
-        .map(|p| ui::RecentItem {
+        .enumerate()
+        .map(|(i, p)| ui::RecentItem {
             name: files::file_name(p).into(),
             detail: std::fs::metadata(p).map(|m| files::human_size(m.len())).unwrap_or_default().into(),
             kind: "audio".into(),
+            index: i as i32,
         })
         .collect();
     let v = app.ui.global::<ui::Voice>();
@@ -698,6 +722,7 @@ fn free_end(app: &Rc<App>) {
     }
     let Some(s) = app.cap.borrow_mut().snip.take() else { return };
     let _ = s.window.hide();
+    keep_overlay(&s.window);
     let (sw, sh) = (s.shot.w as f32, s.shot.h as f32);
     let px: Vec<(f32, f32)> = points.iter().map(|(x, y)| (x * sw, y * sh)).collect();
     let x0 = px.iter().map(|p| p.0).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
@@ -755,6 +780,7 @@ fn color_at(app: &Rc<App>, x: f32, y: f32) -> SharedString {
 fn color_picked(app: &Rc<App>, x: f32, y: f32) {
     let Some(s) = app.cap.borrow_mut().snip.take() else { return };
     let _ = s.window.hide();
+    keep_overlay(&s.window);
     let [r, g, b] = pixel_at(&s, x, y);
     let hex = format!("#{r:02X}{g:02X}{b:02X}");
     let copied = arboard::Clipboard::new().and_then(|mut cb| cb.set_text(hex.clone())).is_ok();
@@ -803,4 +829,10 @@ pub fn prewarm_overlay() {
     platform::no_transitions(hwnd_of(w.window()));
     let _ = w.hide();
     SPARE_OVERLAY.with(|s| *s.borrow_mut() = Some(w));
+}
+
+/// A screen or voice recording is running (the process must not hand over to another copy now).
+pub fn busy(app: &Rc<App>) -> bool {
+    let c = app.cap.borrow();
+    c.screen.is_some() || c.voice.is_some()
 }

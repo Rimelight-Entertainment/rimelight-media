@@ -386,35 +386,63 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// Draws the marks into the picture, in order: vector marks through SVG, picture marks composited in place.
-pub fn burn_marks(pic: &Picture, marks: &[Mark]) -> Result<Picture, String> {
+/// Draws the marks into the picture, in order. Vector marks are drawn through SVG onto a marks layer; a picture mark is
+/// composited in place. An eraser stroke takes markup off the layer only, so a photo keeps its pixels (the eraser clears
+/// the layer). On a canvas (`on_canvas`) the layer starts as the picture and the eraser paints its background colour.
+pub fn burn_marks(pic: &Picture, marks: &[Mark], on_canvas: bool) -> Result<Picture, String> {
     if marks.is_empty() {
         return Ok(pic.clone());
     }
     let mut out = pic.clone();
+    let mut layer = marks_layer(&out, on_canvas)?;
     let mut run: Vec<&Mark> = Vec::new();
     for m in marks {
-        if m.kind == 5 {
-            out = burn_run(&out, &run)?;
-            run.clear();
-            composite(&mut out, m);
-        } else {
-            run.push(m);
+        match m.kind {
+            5 => {
+                draw_run(&mut layer, &run)?;
+                run.clear();
+                out = settle(&out, &layer, on_canvas);
+                composite(&mut out, m);
+                layer = marks_layer(&out, on_canvas)?;
+            }
+            8 => {
+                draw_run(&mut layer, &run)?;
+                run.clear();
+                erase(&mut layer, m, on_canvas);
+            }
+            _ => run.push(m),
         }
     }
-    burn_run(&out, &run)
+    draw_run(&mut layer, &run)?;
+    Ok(settle(&out, &layer, on_canvas))
 }
 
-/// The vector marks (no picture marks) drawn into the picture.
-fn burn_run(pic: &Picture, marks: &[&Mark]) -> Result<Picture, String> {
-    if marks.is_empty() {
-        return Ok(pic.clone());
+/// The layer the marks are drawn on: the picture itself on a canvas, a clear layer on a photo.
+fn marks_layer(pic: &Picture, on_canvas: bool) -> Result<tiny_skia::Pixmap, String> {
+    if on_canvas {
+        to_pixmap(pic).ok_or_else(|| "the picture is empty".to_string())
+    } else {
+        tiny_skia::Pixmap::new(pic.w, pic.h).ok_or_else(|| "the drawing is too large".to_string())
     }
-    let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">",
-        w = pic.w,
-        h = pic.h
-    );
+}
+
+/// The picture with the layer on it (a canvas is the layer; a photo gets the layer's marks laid over it).
+fn settle(out: &Picture, layer: &tiny_skia::Pixmap, on_canvas: bool) -> Picture {
+    if on_canvas {
+        return from_pixmap(layer);
+    }
+    let Some(mut base) = to_pixmap(out) else { return out.clone() };
+    base.draw_pixmap(0, 0, layer.as_ref(), &tiny_skia::PixmapPaint::default(), tiny_skia::Transform::identity(), None);
+    from_pixmap(&base)
+}
+
+/// The vector marks (no picture or eraser marks) drawn onto the layer.
+fn draw_run(layer: &mut tiny_skia::Pixmap, marks: &[&Mark]) -> Result<(), String> {
+    if marks.is_empty() {
+        return Ok(());
+    }
+    let (w, h) = (layer.width(), layer.height());
+    let mut svg = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">");
     for m in marks {
         let [r, g, b, a] = m.rgba;
         let opacity = f32::from(a) / 255.0;
@@ -437,9 +465,45 @@ fn burn_run(pic: &Picture, marks: &[&Mark]) -> Result<Picture, String> {
     }
     svg.push_str("</svg>");
     let tree = usvg::Tree::from_str(&svg, &svg_options()).map_err(|e| e.to_string())?;
-    let mut pixmap = to_pixmap(pic).ok_or("the picture is empty")?;
-    resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
-    Ok(from_pixmap(&pixmap))
+    resvg::render(&tree, tiny_skia::Transform::identity(), &mut layer.as_mut());
+    Ok(())
+}
+
+/// A pixel eraser stroke on the layer: a photo's layer clears (Clear), a canvas paints its background (Source).
+fn erase(layer: &mut tiny_skia::Pixmap, m: &Mark, on_canvas: bool) {
+    let Some(&(x0, y0)) = m.points.first() else { return };
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(x0, y0);
+    if m.points.len() == 1 {
+        pb.line_to(x0 + 0.1, y0);
+    }
+    for &(x, y) in m.points.iter().skip(1) {
+        pb.line_to(x, y);
+    }
+    let Some(path) = pb.finish() else { return };
+    let mut paint = tiny_skia::Paint::default();
+    paint.anti_alias = true;
+    let [r, g, b, a] = m.rgba;
+    paint.set_color_rgba8(r, g, b, a);
+    paint.blend_mode = if on_canvas { tiny_skia::BlendMode::Source } else { tiny_skia::BlendMode::Clear };
+    let mut stroke = tiny_skia::Stroke::default();
+    stroke.width = m.width.max(1.0);
+    stroke.line_cap = tiny_skia::LineCap::Round;
+    stroke.line_join = tiny_skia::LineJoin::Round;
+    layer.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+}
+
+/// A canvas resized to w x h: the pixels stay at the top-left (the picture is cropped or the new area is left), and the
+/// new area is `bg`.
+pub fn canvas_fit(pic: &Picture, w: u32, h: u32, bg: [u8; 4]) -> Picture {
+    let mut rgba = bg.repeat(w as usize * h as usize);
+    let (cw, ch) = (pic.w.min(w) as usize, pic.h.min(h) as usize);
+    for y in 0..ch {
+        let src = y * pic.w as usize * 4;
+        let dst = y * w as usize * 4;
+        rgba[dst..dst + cw * 4].copy_from_slice(&pic.rgba[src..src + cw * 4]);
+    }
+    Picture { w, h, rgba }
 }
 
 /// Puts a picture mark's pixels over the picture, scaled to its rectangle (alpha blended, straight alpha).
@@ -640,7 +704,7 @@ mod tests {
     fn marks_burn_in() {
         let p = Picture { w: 40, h: 40, rgba: vec![255; 40 * 40 * 4] };
         let m = Mark { kind: 3, rgba: [255, 0, 0, 255], width: 4.0, points: vec![(5.0, 5.0), (35.0, 35.0)], text: String::new(), filled: false, image: None };
-        let out = burn_marks(&p, &[m]).unwrap();
+        let out = burn_marks(&p, &[m], false).unwrap();
         let px = &out.rgba[((5 * 40 + 20) * 4) as usize..][..4];
         assert!(px[0] > 200 && px[1] < 80, "the box edge is red: {px:?}");
     }

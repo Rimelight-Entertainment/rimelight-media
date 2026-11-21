@@ -65,6 +65,7 @@ pub fn wire(app: &Rc<App>) {
         })
     });
     cam.on_open_last(|| with_app(open_last));
+    cam.on_check_again(|| with_app(enter));
 }
 
 /// Called when the camera page opens: lists the cameras, opens the chosen one and starts the preview.
@@ -73,6 +74,7 @@ pub fn enter(app: &Rc<App>) {
     let cam = app.ui.global::<ui::Camera>();
     let items: Vec<SharedString> = names.iter().map(|n| SharedString::from(n.as_str())).collect();
     cam.set_devices(ModelRc::new(VecModel::from(items)));
+    cam.set_save_folder(camera_roll().display().to_string().into());
     let has_open = app.camera.borrow().cam.is_some();
     if !has_open {
         if names.is_empty() {
@@ -267,6 +269,7 @@ fn start(app: &Rc<App>, index: usize) {
     let cam = app.ui.global::<ui::Camera>();
     match camera::open(index) {
         Ok(opened) => {
+            cam.set_resolution(format!("{} x {}", opened.w, opened.h).into());
             {
                 let mut c = app.camera.borrow_mut();
                 c.device = index;
@@ -278,6 +281,7 @@ fn start(app: &Rc<App>, index: usize) {
             cam.set_has_frame(false);
         }
         Err(e) => {
+            cam.set_resolution("".into());
             cam.set_status("The camera could not be opened".into());
             toast(app, format!("Could not open the camera: {e}"));
         }
@@ -360,8 +364,12 @@ fn rgb_bytes(frame: &camera::Frame, mirror: bool) -> Vec<u8> {
 
 /// A new file in the Camera Roll (Pictures\Camera Roll), named like Windows' Camera app: IMG_YYYYMMDD_HHMMSS.
 fn stamped(prefix: &str, ext: &str) -> PathBuf {
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    let dir = home.join("Pictures").join("Camera Roll");
     let [y, mo, d, h, mi, s] = crate::platform::local_time();
-    files::free_path(&dir, &format!("{prefix}_{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}"), ext)
+    files::free_path(&camera_roll(), &format!("{prefix}_{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}"), ext)
+}
+
+/// The folder photos and videos are saved to (Pictures\Camera Roll).
+fn camera_roll() -> PathBuf {
+    let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    home.join("Pictures").join("Camera Roll")
 }

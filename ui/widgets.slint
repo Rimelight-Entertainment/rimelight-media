@@ -1,5 +1,7 @@
 // Small controls drawn from Tokens (the rimelight-space rule: no std-widget colours, no literal colours).
+import { ScrollView } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
+import { Icons } from "icons.slint";
 
 export struct Choice {
     label: string,
@@ -7,7 +9,16 @@ export struct Choice {
     selected: bool,
 }
 
-// An icon button. `on-stage` uses the light-on-dark look of the media stage.
+// One file in a Recent list. kind: "image", "video", "audio" or "text". index: its position in Shell.recents (what
+// Shell.open-recent takes), so every filtered list opens the right file.
+export struct RecentItem {
+    name: string,
+    detail: string,
+    kind: string,
+    index: int,
+}
+
+// An icon button: a fixed square (`size`), the icon centred in it. `enabled: false` dims it and blocks clicks.
 export component IconButton inherits Rectangle {
     in property <image> icon;
     in property <string> label;
@@ -16,6 +27,8 @@ export component IconButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <length> size: Tokens.control-height;
     in property <length> icon-size: Tokens.icon-medium;
+    // The tooltip opens above the button (for a row with a row of controls right below it, so it is not covered).
+    in property <bool> tip-above: false;
     in property <color> tint: on-stage ? Tokens.text-on-stage : Tokens.text-primary;
     callback clicked();
 
@@ -34,6 +47,8 @@ export component IconButton inherits Rectangle {
         source: root.icon;
         width: root.icon-size;
         height: root.icon-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
         colorize: root.enabled ? (root.active && !root.on-stage ? Tokens.accent-text : root.tint) : Tokens.text-faint;
     }
 
@@ -47,7 +62,7 @@ export component IconButton inherits Rectangle {
     // the button when there is no room below it.
     if ta.has-hover && root.label != "": Rectangle {
         property <length> w: tip-text.preferred-width + 16px;
-        property <bool> above: root.absolute-position.y + root.height + 30px > TipBounds.window-height;
+        property <bool> above: root.tip-above || root.absolute-position.y + root.height + 30px > TipBounds.window-height;
         property <length> left: max(4px, min(root.absolute-position.x + (root.width - self.w) / 2, TipBounds.window-width - self.w - 4px));
         y: self.above ? -30px : root.height + 6px;
         x: self.left - root.absolute-position.x;
@@ -386,6 +401,255 @@ export component ConfirmDialog inherits Rectangle {
                 Button { text: "Save"; kind: ButtonKind.primary; clicked => { root.answer(0); } }
                 Button { text: "Don't save"; kind: ButtonKind.secondary; clicked => { root.answer(1); } }
                 Button { text: "Cancel"; kind: ButtonKind.ghost; clicked => { root.answer(2); } }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The shared shell pieces. Every tab uses these, so the bars and empty states look the same everywhere.
+// Heights come from one token each: Tokens.bar-height (ToolBar), Tokens.action-height (ActionRow), Tokens.status-height
+// (StatusBar). Bars pad their rows so a control-height item sits centred in the bar.
+// ---------------------------------------------------------------------------------------------------------------------
+
+// The top bar of a tab: icon buttons and text, centred vertically. Children go in order, left to right. Use a
+// `Rectangle { horizontal-stretch: 1; }` spacer to push later items to the right. Separate groups with ToolDivider.
+export component ToolBar inherits Rectangle {
+    height: Tokens.bar-height;
+    background: Tokens.surface-raised;
+
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        padding-top: (Tokens.bar-height - Tokens.control-height) / 2;
+        padding-bottom: (Tokens.bar-height - Tokens.control-height) / 2;
+        spacing: Tokens.space-1;
+        alignment: stretch;
+        @children
+    }
+    Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.border-subtle; }
+}
+
+// The edit row under the toolbar (crop, resize, trim, find and replace, markup options). The same height everywhere.
+// The @children area on the left stretches. When show-confirm is set, the cancel and confirm buttons sit at the far
+// right, always flush right. cancel() and confirm() are the buttons' callbacks.
+export component ActionRow inherits Rectangle {
+    in property <bool> show-confirm: false;
+    in property <string> confirm-text: "Apply";
+    in property <string> cancel-text: "Cancel";
+    in property <bool> confirm-enabled: true;
+    callback cancel();
+    callback confirm();
+
+    height: Tokens.action-height;
+    background: Tokens.surface-base;
+
+    HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        padding-top: (Tokens.action-height - Tokens.control-height) / 2;
+        padding-bottom: (Tokens.action-height - Tokens.control-height) / 2;
+        spacing: Tokens.space-2;
+        alignment: stretch;
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: Tokens.space-2;
+            alignment: start;
+            @children
+        }
+        if root.show-confirm: HorizontalLayout {
+            spacing: Tokens.space-2;
+            Button { text: root.cancel-text; kind: ButtonKind.secondary; clicked => { root.cancel(); } }
+            Button { text: root.confirm-text; kind: ButtonKind.primary; enabled: root.confirm-enabled; clicked => { root.confirm(); } }
+        }
+    }
+    Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.border-subtle; }
+}
+
+// The bottom bar of a tab: the same height on every tab, always shown (empty left text when nothing is open).
+// Left: left-text (metadata joined with " | "), elided. Middle: center-text, when set. Right: @children (icon buttons
+// and short controls, vertically centred).
+export component StatusBar inherits Rectangle {
+    in property <string> left-text;
+    in property <string> center-text;
+
+    height: Tokens.status-height;
+    background: Tokens.surface-raised;
+
+    HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-2;
+        padding-top: (Tokens.status-height - 28px) / 2;
+        padding-bottom: (Tokens.status-height - 28px) / 2;
+        spacing: Tokens.space-2;
+        alignment: stretch;
+        // With no left-text, the page lays out the whole bar itself in @children (e.g. buttons on the left too).
+        if root.left-text != "": Text {
+            text: root.left-text;
+            color: Tokens.text-muted;
+            font-size: Type.caption;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.center-text != "": Text {
+            text: root.center-text;
+            color: Tokens.text-muted;
+            font-size: Type.caption;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            min-width: 48px;
+        }
+        HorizontalLayout {
+            spacing: Tokens.space-1;
+            alignment: root.left-text != "" ? LayoutAlignment.end : LayoutAlignment.stretch;
+            horizontal-stretch: root.left-text != "" ? 0 : 1;
+            @children
+        }
+    }
+    Rectangle { y: 0px; height: 1px; background: Tokens.border-subtle; }
+}
+
+// A vertical 1px divider between groups in a ToolBar or ActionRow. Never at the end of a row.
+export component ToolDivider inherits Rectangle {
+    width: 9px;
+    height: Tokens.control-height;
+    Rectangle {
+        x: 4px;
+        width: 1px;
+        height: 20px;
+        y: (parent.height - self.height) / 2;
+        background: Tokens.border-subtle;
+    }
+}
+
+// One row of a Recent list: the file-type icon, the name and the folder.
+export component RecentRow inherits Rectangle {
+    in property <RecentItem> item;
+    callback clicked();
+    height: 48px;
+    border-radius: Tokens.radius-control;
+    background: ta.has-hover ? Tokens.surface-hover : transparent;
+    HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        spacing: Tokens.space-3;
+        alignment: center;
+        Rectangle {
+            width: Tokens.icon-medium;
+            Image {
+                source: root.item.kind == "image" ? Icons.image : root.item.kind == "video" ? Icons.video : root.item.kind == "text" ? Icons.text : Icons.music;
+                width: Tokens.icon-medium;
+                height: Tokens.icon-medium;
+                y: (parent.height - self.height) / 2;
+                colorize: root.item.kind == "image" ? Tokens.file-picture : root.item.kind == "video" ? Tokens.file-video : root.item.kind == "text" ? Tokens.file-text : Tokens.file-music;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Text { text: root.item.name; color: Tokens.text-primary; font-size: Type.body; overflow: elide; }
+            Text { text: root.item.detail; color: Tokens.text-muted; font-size: Type.caption; overflow: elide; }
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The empty state of a tab: a centred column (max 560 px wide) with the big icon in the file-type colour, the title,
+// the supported file types, the Open button and, when new-text is set, the New button beside it. The tab's Recent list
+// (already filtered to its kind by the host) sits under the buttons, with a Clear button that clears that kind.
+// on-stage: the light-on-dark look for the picture and video stage. The host supplies the background.
+export component EmptyState inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-colour: Tokens.text-muted;
+    in property <string> title;
+    // The types the open button takes, e.g. ".png, .jpg and more". The words "Supported file types: " go in front.
+    in property <string> formats;
+    in property <string> open-text: "Open a file";
+    // Empty: no new-file button (audio, for example).
+    in property <string> new-text: "";
+    in property <image> new-icon;
+    in property <[RecentItem]> recents;
+    in property <bool> on-stage: false;
+    callback open();
+    callback new-file();
+    callback open-recent(int);
+    callback clear-recents();
+
+    property <color> ink: root.on-stage ? Tokens.text-on-stage : Tokens.text-primary;
+    property <color> muted: root.on-stage ? #9AA4B2 : Tokens.text-muted;
+
+    ScrollView {
+        VerticalLayout {
+            padding-top: Tokens.space-10;
+            padding-bottom: Tokens.space-6;
+            padding-left: Tokens.space-6;
+            padding-right: Tokens.space-6;
+            spacing: Tokens.space-4;
+            alignment: start;
+            HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    width: min(560px, root.width - 2 * Tokens.space-6);
+                    spacing: Tokens.space-3;
+                    alignment: start;
+                    HorizontalLayout {
+                        alignment: center;
+                        Image { source: root.icon; width: 56px; height: 56px; colorize: root.icon-colour; }
+                    }
+                    Text {
+                        text: root.title;
+                        color: root.ink;
+                        font-size: Type.title;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "Supported file types: " + root.formats;
+                        color: root.muted;
+                        font-size: Type.body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Tokens.space-2;
+                        Button {
+                            text: root.open-text;
+                            kind: ButtonKind.primary;
+                            has-icon: true;
+                            icon: Icons.folder-open;
+                            clicked => { root.open(); }
+                        }
+                        if root.new-text != "": Button {
+                            text: root.new-text;
+                            kind: ButtonKind.secondary;
+                            has-icon: true;
+                            icon: root.new-icon;
+                            clicked => { root.new-file(); }
+                        }
+                    }
+                    if root.recents.length > 0: VerticalLayout {
+                        spacing: Tokens.space-2;
+                        padding-top: Tokens.space-5;
+                        HorizontalLayout {
+                            Text { text: "Recent"; color: root.ink; font-size: Type.subheading; font-weight: 600; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Button { text: "Clear"; kind: ButtonKind.ghost; clicked => { root.clear-recents(); } }
+                        }
+                        Card {
+                            VerticalLayout {
+                                padding: Tokens.space-1;
+                                for r[i] in root.recents: RecentRow {
+                                    item: r;
+                                    clicked => { root.open-recent(r.index); }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

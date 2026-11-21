@@ -1,11 +1,6 @@
 // The state Rust drives, as globals so every page reads it without passing properties down.
-import { Choice } from "widgets.slint";
-
-export struct RecentItem {
-    name: string,
-    detail: string,
-    kind: string, // "image", "video", "audio"
-}
+import { Choice, RecentItem } from "widgets.slint";
+export { RecentItem }
 
 // One markup mark, in picture pixels. kind: 0 pen, 1 highlighter, 2 arrow, 3 box, 4 text, 5 picture, 6 ellipse, 7 line.
 // x, y, w, h: the box round it (its top-left corner and size).
@@ -39,7 +34,13 @@ export global Shell {
     in property <string> update-ready;
     in property <string> toast;
     in property <bool> full-screen;
+    // Recent files: all of them (Home), and each tab's kind only (the tab's empty state). Each item's index is its
+    // place in `recents`, which open-recent takes.
     in property <[RecentItem]> recents;
+    in property <[RecentItem]> recents-image;
+    in property <[RecentItem]> recents-audio;
+    in property <[RecentItem]> recents-video;
+    in property <[RecentItem]> recents-text;
     in property <bool> recording;
     in property <string> recording-time;
     in property <bool> drop-hover;
@@ -49,7 +50,8 @@ export global Shell {
     callback rename(string);
     callback open-file();
     callback open-recent(int);
-    callback clear-recents();
+    // Clears the recent files of one kind ("image", "audio", "video", "text"); "" clears them all.
+    callback clear-recents(string);
     callback go(string);
     callback snip(string); // "region", "window", "screen"
     callback record-screen(string); // "region", "window", "screen"
@@ -65,9 +67,8 @@ export global Shell {
     // Opens the cast popup (and searches for devices).
     callback cast();
     callback key(string, bool, bool, bool) -> bool; // text, ctrl, shift, alt
-    // Canvas: the "New canvas" question (Ctrl+N or the top bar) and its answer. preset: 0 window size, 1 1920 x 1080,
-    // 2 A4 at 150 dpi, 3 custom (width and height as typed).
-    in-out property <bool> canvas-popup-open;
+    // Canvas: a new blank picture at once (Ctrl+N or the top bar). preset: 0 window size, 1 1920 x 1080,
+    // 2 A4 at 150 dpi; the width and height strings are used only for preset 3 (custom).
     callback new-canvas(int, string, string, bool);
 }
 
@@ -126,8 +127,14 @@ export global Viewer {
     in-out property <bool> fill-shape;
     // Up to six recent colours, newest first.
     in property <[color]> recent-colours;
-    // A canvas (a new document with no file yet).
+    // A canvas (a new document with no file yet), and whether its background is transparent.
     in property <bool> canvas;
+    in-out property <bool> canvas-transparent;
+    // The canvas size flyout: resize to w x h (strings typed) with the background; a preset: 0 window, 1 1080p, 2 A4.
+    callback canvas-resize(string, string, bool);
+    callback canvas-preset(int);
+    // The eraser: false removes whole marks (object eraser), true paints out markup ink only (pixel eraser).
+    in-out property <bool> pixel-eraser: false;
     // The rectangle selection (picture pixels), and the mark picked for moving or resizing.
     in property <bool> has-sel;
     in property <float> sel-x;
@@ -228,6 +235,13 @@ export global Viewer {
     callback picker-sync();
     callback picker-changed();
     callback picker-use();
+    // The colour picker's model (0 RGB, 1 HSL, 2 OKLCH) and its three fields as text; picker-field(index, text) is
+    // a field typed in.
+    in-out property <int> picker-model: 0;
+    in-out property <string> picker-a;
+    in-out property <string> picker-b;
+    in-out property <string> picker-c;
+    callback picker-field(int, string);
 }
 
 export global Player {
@@ -262,8 +276,8 @@ export global Player {
     in property <float> speed-value: 1;
     // Status bar: codec, bitrate, sample rate, channels, resolution and fps, duration, size.
     in property <string> meta-text;
-    // Waveform of the sound track: an SVG path in a 1 x 2 box (y 0 to 2, centred on 1), and whether it is ready.
-    in property <string> wave-commands;
+    // Waveform of the sound track: about 300 bar heights (0..1), and whether it is ready.
+    in property <[float]> wave-bars;
     in property <bool> has-wave;
     // Show the waveform as the seek bar too (the trim range always shows it).
     in-out property <bool> wave-seek: false;
@@ -292,7 +306,7 @@ export global Player {
     callback trim-save();
     callback pick-speed(int);
     callback speed-step(int);
-    callback set-speed(float); // 0.25 to 3
+    callback set-speed(float); // 0.25 to 3 (Rust rounds to steps of 0.05)
     callback trim-drag(bool, float); // true: start; the fraction of the timeline
     callback sub-delay(int); // change in ms; 0 resets
     callback sub-size(int); // -1 smaller, +1 larger, 0 resets
@@ -312,6 +326,9 @@ export global Camera {
     in property <image> thumb;
     in property <bool> has-thumb;
     in property <string> status;
+    // The open camera's frame size ("1280 x 720") and the folder photos and videos are saved to.
+    in property <string> resolution;
+    in property <string> save-folder;
     in property <[string]> devices;
     in-out property <int> device-index: 0;
     // True in video mode, false in photo mode.
@@ -327,6 +344,7 @@ export global Camera {
     callback set-grid(bool);
     callback set-mirror(bool);
     callback open-last();
+    callback check-again();
 }
 
 export global Voice {
@@ -346,6 +364,10 @@ export global Voice {
     // The take picked in the list (-1 for none), and the new name typed for it.
     in-out property <int> selected: -1;
     in-out property <string> rename-text;
+    // The microphone gain in dB (-12 to +24). set-gain applies it while the slider moves; save-gain stores it.
+    in-out property <float> gain-db: 0;
+    callback set-gain(float);
+    callback save-gain();
     callback toggle();
     callback pause-toggle();
     callback add-marker();
@@ -358,14 +380,27 @@ export global Voice {
     callback open-folder();
 }
 
+// One cell of a Markdown table: its row and column (0 based), whether it is in the header, and its styled text.
+export struct MdCell {
+    row: int,
+    col: int,
+    header: bool,
+    styled: styled-text,
+}
+
 // One Markdown block for the preview. kind: 0 heading (level 1-6), 1 paragraph, 2 list item (indent, check: -1 none,
-// 0 open task, 1 done task), 3 code line, 4 quote, 5 table row (level 1 for the header), 6 rule.
+// 0 open task, 1 done task, marker: the bullet or number), 3 code block (all its lines in `text`), 4 quote (one block
+// for the whole quote), 5 unused, 6 rule, 7 table (level: columns, indent: rows, cells). `styled` is the inline-styled
+// text (bold, italic, code, strike, links) for the text kinds; `text` is plain text for code.
 export struct MdBlock {
     kind: int,
     level: int,
     indent: int,
     check: int,
     text: string,
+    marker: string,
+    styled: styled-text,
+    cells: [MdCell],
 }
 
 // One row of the JSON tree: depth, key, value summary; containers fold (open) when clicked.
@@ -416,8 +451,11 @@ export global TextDoc {
     callback sort-json();
     callback toggle-node(string);
     callback find-next(string);
+    callback find-prev(string);
     callback replace-one(string, string);
     callback replace-all(string, string);
+    // A link clicked in the Markdown preview: opened with the system.
+    callback open-link(string);
 }
 
 export global Settings {

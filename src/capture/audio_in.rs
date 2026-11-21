@@ -13,6 +13,19 @@ pub const RATE: u32 = 48_000;
 /// Most sound kept waiting per source (seconds) before the oldest is dropped.
 const MAX_BACKLOG_SECS: usize = 1;
 
+/// The microphone gain as a linear factor (f32 bits); 0x3F80_0000 is 1.0, that is 0 dB. Set by the voice page's Gain
+/// slider and applied to the microphone's samples only, before the level meter and the encoder.
+static MIC_GAIN: AtomicU32 = AtomicU32::new(0x3F80_0000);
+
+/// Sets the microphone gain in dB (-12 to +24), applied as 10^(dB/20).
+pub fn set_mic_gain_db(db: f32) {
+    MIC_GAIN.store(10f32.powf(db.clamp(-12.0, 24.0) / 20.0).to_bits(), Relaxed);
+}
+
+fn mic_gain() -> f32 {
+    f32::from_bits(MIC_GAIN.load(Relaxed))
+}
+
 struct SourceBuf {
     raw: Mutex<VecDeque<f32>>,
     rate: u32,
@@ -36,6 +49,8 @@ struct Source {
     ready: VecDeque<(f32, f32)>,
     frac: f64,
     prev: (f32, f32),
+    /// True for a microphone (the gain applies to it), false for the computer's own sound.
+    mic: bool,
 }
 
 impl Source {
@@ -125,7 +140,7 @@ impl Capture {
             Some(d) => match start_source(&d, loopback) {
                 Ok((s, buf)) => {
                     streams.push(s);
-                    sources.push(Source { buf, ready: VecDeque::new(), frac: 0.0, prev: (0.0, 0.0) });
+                    sources.push(Source { buf, ready: VecDeque::new(), frac: 0.0, prev: (0.0, 0.0), mic: !loopback });
                 }
                 Err(e) => notes.push(format!("{name}: {e}")),
             },
@@ -150,12 +165,14 @@ impl Capture {
         let mut r = vec![0.0f32; n];
         for s in &mut self.sources {
             s.convert();
+            let gain = if s.mic { mic_gain() } else { 1.0 };
             for i in 0..n {
                 let Some((a, b)) = s.ready.pop_front() else { break };
-                l[i] += a;
-                r[i] += b;
+                l[i] += a * gain;
+                r[i] += b * gain;
             }
         }
+        // Clamped after the gain, so the level meter shows what is recorded.
         let mut peak = 0.0f32;
         for v in l.iter_mut().chain(r.iter_mut()) {
             *v = v.clamp(-1.0, 1.0);

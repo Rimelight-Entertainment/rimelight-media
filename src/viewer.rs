@@ -139,7 +139,8 @@ pub fn wire(app: &Rc<App>) {
         with_app(|a| {
             let marks = std::mem::take(&mut a.view.borrow_mut().marks);
             if !marks.is_empty() {
-                edit(a, move |p| picture::burn_marks(p, &marks).unwrap_or_else(|_| p.clone()));
+                let on_canvas = a.view.borrow().canvas;
+                edit(a, move |p| picture::burn_marks(p, &marks, on_canvas).unwrap_or_else(|_| p.clone()));
             }
             set_mode(a, "");
         })
@@ -150,6 +151,11 @@ pub fn wire(app: &Rc<App>) {
     v.on_picker_sync(|| with_app(|a| picker_sync(a)));
     v.on_picker_changed(|| with_app(|a| picker_show(a)));
     v.on_picker_use(|| with_app(|a| picker_use(a)));
+    v.on_picker_field(|i, t: SharedString| with_app(move |a| picker_field(a, i.max(0) as usize, &t)));
+    v.on_canvas_resize(|w: SharedString, h: SharedString, transparent: bool| {
+        with_app(move |a| canvas_resize_typed(a, &w, &h, transparent));
+    });
+    v.on_canvas_preset(|p| with_app(move |a| canvas_preset(a, p)));
     v.on_crop_selection(|| with_app(crop_selection));
     v.on_cut_selection(|| with_app(|a| remove_selection(a, true)));
     v.on_delete_selection(|| with_app(|a| remove_selection(a, false)));
@@ -576,14 +582,176 @@ fn picker_sync(app: &Rc<App>) {
     picker_show(app);
 }
 
-/// Shows the picker's preview, hue bar and hex box for its current hue, saturation and value.
+/// Shows the picker's preview, hue bar, hex box and the fields of its colour model.
 fn picker_show(app: &Rc<App>) {
+    picker_show_skip(app, None);
+}
+
+/// As picker_show, but the field `skip` (the one being typed in) keeps its text.
+fn picker_show_skip(app: &Rc<App>, skip: Option<usize>) {
     let v = viewer(app);
-    let [r, g, b] = hsv_to_rgb(v.get_picker_h(), v.get_picker_s(), v.get_picker_v());
+    let rgb = hsv_to_rgb(v.get_picker_h(), v.get_picker_s(), v.get_picker_v());
+    let [r, g, b] = rgb;
     let [hr, hg, hb] = hsv_to_rgb(v.get_picker_h(), 1.0, 1.0);
     v.set_picker_rgb(slint::Color::from_argb_u8(255, r, g, b));
     v.set_picker_hue(slint::Color::from_argb_u8(255, hr, hg, hb));
     v.set_picker_hex(format!("#{r:02X}{g:02X}{b:02X}").into());
+    let model = v.get_picker_model();
+    let fields = model_fields(model, rgb);
+    for (i, f) in fields.into_iter().enumerate() {
+        if skip == Some(i) {
+            continue;
+        }
+        let text: SharedString = format_field(model, i, f).into();
+        match i {
+            0 => v.set_picker_a(text),
+            1 => v.set_picker_b(text),
+            _ => v.set_picker_c(text),
+        }
+    }
+}
+
+/// A typed value in one of the picker's fields (0, 1 or 2 of the colour model): the colour and the square follow.
+fn picker_field(app: &Rc<App>, idx: usize, text: &str) {
+    if idx > 2 {
+        return;
+    }
+    let Ok(x) = text.trim().replace(',', ".").parse::<f32>() else { return };
+    let v = viewer(app);
+    let model = v.get_picker_model();
+    let rgb = hsv_to_rgb(v.get_picker_h(), v.get_picker_s(), v.get_picker_v());
+    let mut fields = model_fields(model, rgb);
+    fields[idx] = x;
+    let [r, g, b] = fields_rgb(model, fields);
+    let (h, s, val) = rgb_to_hsv([r, g, b]);
+    v.set_picker_h(h);
+    v.set_picker_s(s);
+    v.set_picker_v(val);
+    picker_show_skip(app, Some(idx));
+}
+
+/// The three fields of a colour model: RGB (0 to 255), HSL (H degrees, S and L 0 to 100), OKLCH (L 0 to 1, C 0 to
+/// 0.4, H degrees).
+fn model_fields(model: i32, rgb: [u8; 3]) -> [f32; 3] {
+    match model {
+        1 => {
+            let (h, s, l) = rgb_to_hsl(rgb);
+            [h, s * 100.0, l * 100.0]
+        }
+        2 => rgb_to_oklch(rgb),
+        _ => rgb.map(f32::from),
+    }
+}
+
+fn fields_rgb(model: i32, f: [f32; 3]) -> [u8; 3] {
+    match model {
+        1 => hsl_to_rgb(f[0], (f[1] / 100.0).clamp(0.0, 1.0), (f[2] / 100.0).clamp(0.0, 1.0)),
+        2 => oklch_to_rgb(f[0].clamp(0.0, 1.0), f[1].clamp(0.0, 0.4), f[2]),
+        _ => f.map(|c| c.round().clamp(0.0, 255.0) as u8),
+    }
+}
+
+fn format_field(model: i32, i: usize, v: f32) -> String {
+    match (model, i) {
+        (2, 0) | (2, 1) => format!("{v:.3}"),
+        _ => format!("{v:.0}"),
+    }
+}
+
+fn to_u8(f: f32) -> u8 {
+    (f * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// RGB to HSL: hue in degrees, saturation and lightness from 0 to 1.
+fn rgb_to_hsl(rgb: [u8; 3]) -> (f32, f32, f32) {
+    let (h, _, _) = rgb_to_hsv(rgb);
+    let [r, g, b] = rgb.map(|c| f32::from(c) / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    let s = if d == 0.0 { 0.0 } else { d / (1.0 - (2.0 * l - 1.0).abs()) };
+    (h, s, l)
+}
+
+/// HSL to RGB: hue in degrees, saturation and lightness from 0 to 1.
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    [to_u8(r + m), to_u8(g + m), to_u8(b + m)]
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.003_130_8 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// RGB to OKLCH (Ottosson's OKLab): L from 0 to 1, chroma about 0 to 0.4, hue in degrees.
+fn rgb_to_oklch(rgb: [u8; 3]) -> [f32; 3] {
+    let [r, g, b] = rgb.map(|c| srgb_to_linear(f32::from(c) / 255.0));
+    let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
+    let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
+    let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
+    let lightness = 0.210_454_255_3 * l + 0.793_617_785_0 * m - 0.004_072_046_8 * s;
+    let a = 1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s;
+    let bb = 0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s;
+    let chroma = (a * a + bb * bb).sqrt();
+    let hue = if chroma < 1e-4 { 0.0 } else { bb.atan2(a).to_degrees().rem_euclid(360.0) };
+    [lightness, chroma, hue]
+}
+
+/// OKLCH to RGB (out-of-gamut colours are clipped).
+fn oklch_to_rgb(lightness: f32, chroma: f32, hue: f32) -> [u8; 3] {
+    let (sin, cos) = hue.to_radians().sin_cos();
+    let (a, b) = (chroma * cos, chroma * sin);
+    let l = lightness + 0.396_337_777_4 * a + 0.215_803_757_3 * b;
+    let m = lightness - 0.105_561_345_8 * a - 0.063_854_172_8 * b;
+    let s = lightness - 0.089_484_177_5 * a - 1.291_485_548_0 * b;
+    let (l, m, s) = (l * l * l, m * m * m, s * s * s);
+    let r = 4.076_741_662_1 * l - 3.307_711_591_3 * m + 0.230_969_929_2 * s;
+    let g = -1.268_438_004_6 * l + 2.609_757_401_1 * m - 0.341_319_396_5 * s;
+    let bl = -0.004_196_086_3 * l - 0.703_418_614_7 * m + 1.707_614_701_0 * s;
+    [r, g, bl].map(|v| to_u8(linear_to_srgb(v.clamp(0.0, 1.0))))
+}
+
+/// The canvas resized to w x h, with the background for the new area (the top bar's size controls).
+fn canvas_resize(app: &Rc<App>, w: u32, h: u32, bg: [u8; 4]) {
+    if !app.view.borrow().canvas {
+        return;
+    }
+    app.view.borrow_mut().canvas_bg = bg;
+    viewer(app).set_canvas_transparent(bg[3] == 0);
+    edit(app, move |p| picture::canvas_fit(p, w, h, bg));
+}
+
+/// The size fields (typed) and the background of the canvas size flyout.
+fn canvas_resize_typed(app: &Rc<App>, w: &str, h: &str, transparent: bool) {
+    let parsed = w.trim().parse::<u32>().ok().zip(h.trim().parse::<u32>().ok());
+    let Some((w, h)) = parsed.filter(|(w, h)| (1..=10_000).contains(w) && (1..=10_000).contains(h)) else {
+        toast(app, "Type a width and a height from 1 to 10000 pixels.");
+        return;
+    };
+    canvas_resize(app, w, h, if transparent { [0, 0, 0, 0] } else { [255, 255, 255, 255] });
+}
+
+/// A size preset of the canvas flyout (0 window, 1 1920 x 1080, 2 A4), keeping the background.
+fn canvas_preset(app: &Rc<App>, preset: i32) {
+    let Some((w, h)) = canvas_size(app, preset, "", "") else { return };
+    let bg = app.view.borrow().canvas_bg;
+    canvas_resize(app, w, h, bg);
 }
 
 /// The picker's Use button: its colour becomes the ink and joins the recent colours.
@@ -677,7 +845,7 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
         }
         8 => eyedrop(app, x, y),
         9 => bucket(app, x, y),
-        5 => {
+        5 if !v.get_pixel_eraser() => {
             let mut s = app.view.borrow_mut();
             if let Some((i, _)) = s
                 .marks
@@ -702,13 +870,14 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
             v.set_text_y(y);
         }
         _ => {
-            let mut rgba = ink(app);
+            // The pixel eraser (kind 8) takes the canvas background (transparent on a photo: it is unused there).
+            let mut rgba = if tool == 5 { app.view.borrow().canvas_bg } else { ink(app) };
             if tool == 1 {
                 rgba[3] = 110;
             }
             let filled = (tool == 3 || tool == 6) && v.get_fill_shape();
             app.view.borrow_mut().drawing = Some(Mark {
-                kind: tool,
+                kind: if tool == 5 { 8 } else { tool },
                 rgba,
                 width: width * scale,
                 points: vec![(x, y), (x, y)],
@@ -745,7 +914,7 @@ fn mark_move(app: &Rc<App>, x: f32, y: f32) {
         return;
     }
     let Some(m) = s.drawing.as_mut() else { return };
-    if m.kind == 0 || m.kind == 1 {
+    if matches!(m.kind, 0 | 1 | 8) {
         let last = *m.points.last().unwrap_or(&(x, y));
         if (last.0 - x).hypot(last.1 - y) < 1.5 {
             return;
@@ -912,7 +1081,8 @@ fn to_ui(m: &Mark, images: &[(Arc<Picture>, slint::Image)]) -> ui::Mark {
         .unwrap_or_default();
     ui::Mark {
         kind: m.kind,
-        colour: slint::Color::from_argb_u8(a, r, g, b),
+        // A pixel eraser stroke shows as a grey band (it is not ink).
+        colour: if m.kind == 8 { slint::Color::from_argb_u8(150, 0x8A, 0x8A, 0x93) } else { slint::Color::from_argb_u8(a, r, g, b) },
         width: if m.kind == 4 { m.font_size() } else { m.stroke_width() },
         commands: m.commands().into(),
         x,
@@ -979,7 +1149,7 @@ fn current(app: &Rc<App>) -> Option<Picture> {
     let pic = s.pic.clone()?;
     // Unapplied marks are part of what the person sees: include them.
     if !s.marks.is_empty() {
-        return picture::burn_marks(&pic, &s.marks).ok();
+        return picture::burn_marks(&pic, &s.marks, s.canvas).ok();
     }
     Some(pic)
 }
@@ -1660,7 +1830,6 @@ fn new_canvas(app: &Rc<App>, preset: i32, w: &str, h: &str, transparent: bool) {
         toast(app, "Type a width and a height from 1 to 10000 pixels.");
         return;
     };
-    app.ui.global::<ui::Shell>().set_canvas_popup_open(false);
     let bg = if transparent { [0, 0, 0, 0] } else { [255, 255, 255, 255] };
     let pic = Picture { w, h, rgba: bg.repeat(w as usize * h as usize) };
     settle_canvas(app, move |a| install_canvas(a, pic, bg));
@@ -1707,6 +1876,7 @@ fn install_canvas(app: &Rc<App>, pic: Picture, bg: [u8; 4]) {
     v.set_pan_x(0.0);
     v.set_pan_y(0.0);
     v.set_canvas(true);
+    v.set_canvas_transparent(bg[3] == 0);
     v.set_info_name("Untitled canvas".into());
     v.set_mode(SharedString::new());
     update_position(app);

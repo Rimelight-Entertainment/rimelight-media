@@ -48,15 +48,21 @@ struct Args {
     background: bool,
     snip: Option<String>,
     write_icon: Option<PathBuf>,
+    /// Started by another copy that is handing over (tray <-> window, see app::handoff): wait for it to exit.
+    takeover: bool,
+    /// The tab to open on (with --takeover).
+    page: Option<String>,
 }
 
 fn parse() -> Result<Args, String> {
-    let mut args = Args { file: None, screenshot: None, background: false, snip: None, write_icon: None };
+    let mut args = Args { file: None, screenshot: None, background: false, snip: None, write_icon: None, takeover: false, page: None };
     let mut it = std::env::args_os().skip(1);
     while let Some(a) = it.next() {
         match a.to_str() {
             Some("--screenshot") => args.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
             Some("--background") => args.background = true,
+            Some("--takeover") => args.takeover = true,
+            Some("--page") => args.page = it.next().and_then(|s| s.into_string().ok()),
             Some("--write-icon") => args.write_icon = Some(it.next().ok_or("--write-icon needs a file")?.into()),
             Some("--snip") => args.snip = Some(it.next().and_then(|s| s.into_string().ok()).ok_or("--snip needs region, window or screen")?),
             // Win+Shift+S (and Print Screen without the Snipping Tool) start the ms-screenclip: link.
@@ -140,7 +146,7 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         filled: false,
         image: None,
     };
-    match picture::burn_marks(&blank, &[mark]).and_then(|p| platform::recognise_text(&p.rgba, p.w, p.h)) {
+    match picture::burn_marks(&blank, &[mark], false).and_then(|p| platform::recognise_text(&p.rgba, p.w, p.h)) {
         Ok(text) if text.contains("Rimelight") => println!("text extractor: ok, read {text:?}"),
         Ok(text) => {
             ok = false;
@@ -244,11 +250,29 @@ fn main() -> ExitCode {
         } else {
             instance::Request::Show
         };
-        if instance::forward(&request) {
-            return ExitCode::SUCCESS;
+        // Explorer starts one copy per file when several are opened together, all at once. Only the copy holding the
+        // start lock goes on; the others wait (up to 10 s) for it to start listening and hand it their file.
+        let mut waited = 0;
+        loop {
+            if !args.takeover && instance::forward(&request) {
+                return ExitCode::SUCCESS;
+            }
+            if platform::take_start_lock() {
+                break;
+            }
+            if waited >= 100 {
+                return ExitCode::FAILURE;
+            }
+            waited += 1;
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
     let mut selector = slint::BackendSelector::new().backend_name("winit".into());
+    // In the tray (no window) the software renderer: about 40 MB less than the GPU one, which Windows sets up even for a
+    // window that is never shown. Snips draw fine with it. Showing the window hands over to a fresh GPU copy (app::handoff).
+    if args.background && !checking {
+        selector = selector.renderer_name("software".into());
+    }
     if checking {
         // A check never takes focus and stays behind the person's windows (a covered window still draws on Windows).
         selector = selector.with_winit_window_attributes_hook(|attrs| {
@@ -279,6 +303,9 @@ fn main() -> ExitCode {
         capturectl::ensure_tray(&app, keep);
     }
 
+    if let Some(page) = &args.page {
+        app::go(&app, page);
+    }
     if let Some(file) = &args.file {
         app::queue_open(&app, file.clone());
     }

@@ -98,6 +98,10 @@ pub fn wire(app: &Rc<App>) {
     d.on_sort_json(|| with_app(sort_json));
     d.on_toggle_node(|p: SharedString| with_app(|a| toggle_node(a, &p)));
     d.on_find_next(|needle: SharedString| with_app(|a| find_next(a, &needle)));
+    d.on_find_prev(|needle: SharedString| with_app(|a| find_prev(a, &needle)));
+    d.on_open_link(|url: SharedString| {
+        crate::platform::open_uri(&url);
+    });
     d.on_replace_one(|needle: SharedString, repl: SharedString| with_app(|a| replace_one(a, &needle, &repl)));
     d.on_replace_all(|needle: SharedString, repl: SharedString| with_app(|a| replace_all(a, &needle, &repl)));
     d.on_revert(|| with_app(revert));
@@ -418,29 +422,70 @@ fn find_bytes(hay: &str, needle: &str, from: usize) -> Option<usize> {
     (from..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
 }
 
-fn count_matches(hay: &str, needle: &str) -> usize {
-    let mut count = 0;
+/// Every match of `needle`, as byte offsets in order.
+fn matches_of(hay: &str, needle: &str) -> Vec<usize> {
+    let mut out = Vec::new();
     let mut pos = 0;
     while let Some(i) = find_bytes(hay, needle, pos) {
-        count += 1;
+        out.push(i);
         pos = i + needle.len();
     }
-    count
+    out
 }
 
+/// The find bar's count: "3 of 12" when the selection is one of the matches, else "12 matches".
+fn show_matches(app: &Rc<App>, text: &str, needle: &str) {
+    let hits = matches_of(text, needle);
+    let sel = app.text.borrow().selection;
+    let status = if hits.is_empty() {
+        "No matches".to_string()
+    } else {
+        match sel.and_then(|(s, _)| hits.iter().position(|&h| h == s)) {
+            Some(i) => format!("{} of {}", i + 1, hits.len()),
+            None => format!("{} matches", hits.len()),
+        }
+    };
+    doc(app).set_find_status(status.into());
+}
+
+/// Selects the next match after the selected one (or after the caret), wrapping to the first.
 fn find_next(app: &Rc<App>, needle: &str) {
-    let d = doc(app);
     if needle.is_empty() {
-        d.set_find_status("".into());
+        doc(app).set_find_status("".into());
         return;
     }
     let text = text_of(app);
-    let count = count_matches(&text, needle);
-    d.set_find_status(if count == 0 { "No matches".to_string() } else { format!("{count} matches") }.into());
-    let from = app.text.borrow().caret.min(text.len());
+    let (sel, caret) = {
+        let st = app.text.borrow();
+        (st.selection, st.caret)
+    };
+    let from = match sel {
+        Some((s, e)) if s < e && text.get(s..e).is_some_and(|t| t.eq_ignore_ascii_case(needle)) => e,
+        _ => caret.min(text.len()),
+    };
     if let Some(i) = find_bytes(&text, needle, from).or_else(|| find_bytes(&text, needle, 0)) {
         select(app, i, i + needle.len());
     }
+    show_matches(app, &text, needle);
+}
+
+/// Selects the match before the selected one (or before the caret), wrapping to the last.
+fn find_prev(app: &Rc<App>, needle: &str) {
+    if needle.is_empty() {
+        doc(app).set_find_status("".into());
+        return;
+    }
+    let text = text_of(app);
+    let (sel, caret) = {
+        let st = app.text.borrow();
+        (st.selection, st.caret)
+    };
+    let before = sel.map(|(s, _)| s).unwrap_or(caret.min(text.len()));
+    let hits = matches_of(&text, needle);
+    if let Some(i) = hits.iter().rev().find(|&&h| h < before).or(hits.last()).copied() {
+        select(app, i, i + needle.len());
+    }
+    show_matches(app, &text, needle);
 }
 
 fn replace_one(app: &Rc<App>, needle: &str, repl: &str) {
@@ -491,43 +536,107 @@ fn replace_all(app: &Rc<App>, needle: &str, repl: &str) {
 
 // --- Markdown ---------------------------------------------------------------------------------------------------------
 
-/// Collects the Markdown into flat blocks: kind 0 heading (level), 1 paragraph, 2 list item (indent, check: -1 none,
-/// 0 open task, 1 done task), 3 code line, 4 quote, 5 table row (level 1 for the header), 6 rule.
+/// The StyledText of a Markdown string (plain text when it does not parse).
+fn styled(md: &str) -> slint::StyledText {
+    slint::StyledText::from_markdown(md).unwrap_or_else(|_| slint::StyledText::from_plain_text(md))
+}
+
+/// Markdown for plain text: the characters that would start a style are escaped.
+fn escape_md(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '~') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Markdown for a code span.
+fn code_md(text: &str) -> String {
+    if text.contains('`') { format!("`` {text} ``") } else { format!("`{text}`") }
+}
+
+/// The bullet of a list item at a nesting depth: a dot, a hollow dot, then a small square.
+fn bullet(depth: i32) -> &'static str {
+    match depth {
+        0 => "•",
+        1 => "◦",
+        _ => "▪",
+    }
+}
+
+/// A block of the given kind with its inline Markdown (`md`) and plain text (`text`, for code).
+fn block(kind: i32, level: i32, indent: i32, check: i32, marker: &str, text: &str, md: &str) -> ui::MdBlock {
+    ui::MdBlock {
+        kind,
+        level,
+        indent,
+        check,
+        text: text.into(),
+        marker: marker.into(),
+        styled: styled(md),
+        cells: ModelRc::new(VecModel::default()),
+    }
+}
+
+/// A numbered or bulleted list being read: whether it is numbered, and the number of its next item.
+struct ListLevel {
+    ordered: bool,
+    next: u64,
+}
+
+/// An open list item: its nesting depth, its task state (-1 none, 0 open, 1 done) and its marker.
+struct ItemInfo {
+    indent: i32,
+    check: i32,
+    marker: String,
+}
+
+/// Collects the Markdown into flat blocks (see ui::MdBlock). The inline text is kept as Markdown, which StyledText draws
+/// with its bold, italic, code, strikethrough and links.
 #[derive(Default)]
 struct Blocks {
     out: Vec<ui::MdBlock>,
-    buf: String,
-    /// Inside a list item: its indent and task state.
-    item: Option<(i32, i32)>,
-    lists: i32,
+    /// The inline Markdown of the block being read.
+    md: String,
+    /// The text of the code block being read.
+    code: String,
+    in_code: bool,
+    /// The destinations of the links being read (written when the link ends).
+    links: Vec<String>,
+    lists: Vec<ListLevel>,
+    items: Vec<ItemInfo>,
     quote: i32,
-    cells: Vec<String>,
+    /// The table being read: its cells, the current row and column, the columns, and whether the header is read.
+    cells: Vec<ui::MdCell>,
+    row: i32,
+    col: i32,
+    cols: i32,
+    head: bool,
 }
 
 impl Blocks {
-    fn emit(&mut self, kind: i32, level: i32, indent: i32, check: i32, text: String) {
-        if text.is_empty() && kind != 6 {
+    /// The inline Markdown read so far, trimmed (and empties the buffer).
+    fn take_md(&mut self) -> String {
+        std::mem::take(&mut self.md).trim().to_string()
+    }
+
+    /// Ends the text collected so far as a paragraph, list item or quote. Nothing is written for empty text.
+    fn flush(&mut self) {
+        let md = self.take_md();
+        if md.is_empty() {
             return;
         }
-        self.out.push(ui::MdBlock { kind, level, indent, check, text: text.into() });
-    }
-
-    /// Ends the text collected so far as a paragraph, list item or quote line.
-    fn flush(&mut self) {
-        let text = std::mem::take(&mut self.buf).trim().to_string();
-        if let Some((indent, check)) = self.item {
-            self.emit(2, 0, indent, check, text);
+        if let Some(item) = self.items.last() {
+            let b = block(2, 0, item.indent, item.check, &item.marker, "", &md);
+            self.out.push(b);
         } else if self.quote > 0 {
-            self.emit(4, 0, 0, -1, text);
+            self.out.push(block(4, 0, 0, -1, "", "", &md));
         } else {
-            self.emit(1, 0, 0, -1, text);
+            self.out.push(block(1, 0, 0, -1, "", "", &md));
         }
-    }
-
-    fn row(&mut self, level: i32) {
-        let text = self.cells.join("   |   ");
-        self.cells.clear();
-        self.emit(5, level, 0, -1, text);
     }
 }
 
@@ -535,7 +644,6 @@ pub fn markdown_blocks(src: &str) -> Vec<ui::MdBlock> {
     let opts = Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
     let mut b = Blocks::default();
     let mut heading = 0;
-    let mut head = false;
     for ev in Parser::new_ext(src, opts) {
         match ev {
             Event::Start(Tag::Heading { level, .. }) => {
@@ -543,29 +651,52 @@ pub fn markdown_blocks(src: &str) -> Vec<ui::MdBlock> {
                 heading = level as i32;
             }
             Event::End(TagEnd::Heading(_)) => {
-                let text = std::mem::take(&mut b.buf).trim().to_string();
-                b.emit(0, heading, 0, -1, text);
+                let md = b.take_md();
+                if !md.is_empty() {
+                    b.out.push(block(0, heading, 0, -1, "", "", &md));
+                }
             }
-            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => b.flush(),
-            Event::Start(Tag::List(_)) => {
+            Event::Start(Tag::Paragraph) => {
+                if b.quote == 0 {
+                    b.flush();
+                }
+            }
+            // The paragraphs of a quote stay one block: they are separated by a blank line inside it.
+            Event::End(TagEnd::Paragraph) => {
+                if b.quote > 0 && b.items.is_empty() {
+                    b.md.push_str("\n\n");
+                } else {
+                    b.flush();
+                }
+            }
+            Event::Start(Tag::List(start)) => {
                 b.flush();
-                b.lists += 1;
+                b.lists.push(ListLevel { ordered: start.is_some(), next: start.unwrap_or(1) });
             }
             Event::End(TagEnd::List(_)) => {
                 b.flush();
-                b.lists -= 1;
+                b.lists.pop();
             }
             Event::Start(Tag::Item) => {
                 b.flush();
-                b.item = Some(((b.lists - 1).max(0), -1));
+                let depth = (b.lists.len() as i32 - 1).max(0);
+                let marker = match b.lists.last_mut() {
+                    Some(l) if l.ordered => {
+                        let m = format!("{}.", l.next);
+                        l.next += 1;
+                        m
+                    }
+                    _ => bullet(depth).to_string(),
+                };
+                b.items.push(ItemInfo { indent: depth, check: -1, marker });
             }
             Event::End(TagEnd::Item) => {
                 b.flush();
-                b.item = None;
+                b.items.pop();
             }
             Event::TaskListMarker(done) => {
-                if let Some(item) = b.item.as_mut() {
-                    item.1 = i32::from(done);
+                if let Some(item) = b.items.last_mut() {
+                    item.check = i32::from(done);
                 }
             }
             Event::Start(Tag::BlockQuote(_)) => {
@@ -576,36 +707,74 @@ pub fn markdown_blocks(src: &str) -> Vec<ui::MdBlock> {
                 b.flush();
                 b.quote -= 1;
             }
-            Event::Start(Tag::CodeBlock(_)) => b.flush(),
+            Event::Start(Tag::CodeBlock(_)) => {
+                b.flush();
+                b.in_code = true;
+                b.code.clear();
+            }
             Event::End(TagEnd::CodeBlock) => {
-                let text = std::mem::take(&mut b.buf);
-                for line in text.trim_end_matches('\n').split('\n') {
-                    b.out.push(ui::MdBlock { kind: 3, level: 0, indent: 0, check: -1, text: line.into() });
+                b.in_code = false;
+                let code = std::mem::take(&mut b.code);
+                let code = code.trim_end_matches('\n');
+                if !code.is_empty() {
+                    b.out.push(block(3, 0, 0, -1, "", code, ""));
                 }
             }
-            Event::Start(Tag::Table(_)) => b.flush(),
-            Event::Start(Tag::TableHead) => {
+            Event::Start(Tag::Table(_)) => {
                 b.flush();
-                head = true;
+                b.cells.clear();
+                b.row = 0;
+                b.col = 0;
+                b.cols = 0;
+            }
+            Event::Start(Tag::TableHead) => {
+                b.head = true;
+                b.col = 0;
             }
             Event::End(TagEnd::TableHead) => {
-                b.row(1);
-                head = false;
+                b.head = false;
+                b.row = 1;
+                b.col = 0;
             }
-            Event::Start(Tag::TableRow) => b.flush(),
-            Event::End(TagEnd::TableRow) => b.row(i32::from(head)),
-            Event::Start(Tag::TableCell) => b.buf.clear(),
+            Event::Start(Tag::TableRow) => b.col = 0,
+            Event::End(TagEnd::TableRow) => b.row += 1,
+            Event::Start(Tag::TableCell) => b.md.clear(),
             Event::End(TagEnd::TableCell) => {
-                let cell = std::mem::take(&mut b.buf).trim().to_string();
+                let md = b.take_md();
+                // The header cells are bold.
+                let md = if b.head && !md.is_empty() { format!("**{md}**") } else { md };
+                let cell = ui::MdCell { row: b.row, col: b.col, header: b.head, styled: styled(&md) };
                 b.cells.push(cell);
+                b.col += 1;
+                b.cols = b.cols.max(b.col);
+            }
+            Event::End(TagEnd::Table) => {
+                let mut table = block(7, b.cols, b.row, -1, "", "", "");
+                table.cells = ModelRc::new(VecModel::from(std::mem::take(&mut b.cells)));
+                b.out.push(table);
             }
             Event::Rule => {
                 b.flush();
-                b.emit(6, 0, 0, -1, String::new());
+                b.out.push(block(6, 0, 0, -1, "", "", ""));
             }
-            Event::Text(t) | Event::Code(t) => b.buf.push_str(&t),
-            Event::SoftBreak | Event::HardBreak => b.buf.push(' '),
-            // Emphasis, links and other inline tags show their text only (the blocks are styled per block).
+            Event::Text(t) if b.in_code => b.code.push_str(&t),
+            Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => b.md.push_str(&escape_md(&t)),
+            Event::Code(t) => b.md.push_str(&code_md(&t)),
+            Event::Start(Tag::Emphasis) | Event::End(TagEnd::Emphasis) => b.md.push('*'),
+            Event::Start(Tag::Strong) | Event::End(TagEnd::Strong) => b.md.push_str("**"),
+            Event::Start(Tag::Strikethrough) | Event::End(TagEnd::Strikethrough) => b.md.push_str("~~"),
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                b.md.push('[');
+                b.links.push(dest_url.to_string());
+            }
+            Event::End(TagEnd::Link) => {
+                let dest = b.links.pop().unwrap_or_default();
+                let dest = dest.replace(' ', "%20").replace('(', "%28").replace(')', "%29");
+                b.md.push_str(&format!("]({dest})"));
+            }
+            Event::SoftBreak => b.md.push(' '),
+            Event::HardBreak => b.md.push('\n'),
+            // Images show their alt text (the text events); other tags add nothing.
             _ => {}
         }
     }
@@ -763,7 +932,7 @@ mod tests {
     #[test]
     fn finds_ignoring_ascii_case() {
         assert_eq!(find_bytes("Hello hello", "HELLO", 1), Some(6));
-        assert_eq!(count_matches("aXa xa", "A"), 3);
+        assert_eq!(matches_of("aXa xa", "A").len(), 3);
         assert_eq!(offset_of("ab\ncd", 2, 2), 4);
     }
 
@@ -772,7 +941,7 @@ mod tests {
         let md = "# Title\n\nSome *text*.\n\n- [x] done\n- open\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```\n\n> quote\n\n---\n";
         let blocks = markdown_blocks(md);
         let kinds: Vec<i32> = blocks.iter().map(|b| b.kind).collect();
-        assert_eq!(kinds, vec![0, 1, 2, 2, 5, 5, 3, 4, 6]);
+        assert_eq!(kinds, vec![0, 1, 2, 2, 7, 3, 4, 6]);
         assert_eq!(blocks[2].check, 1);
         assert_eq!(blocks[3].check, -1);
     }

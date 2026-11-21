@@ -113,10 +113,15 @@ fn wire_shell(app: &Rc<App>) {
             }
         })
     });
-    shell.on_clear_recents(|| {
-        with_app(|a| {
-            a.recents.borrow_mut().clear();
-            prefs::save_recents(&[]);
+    // "" clears every kind; otherwise only the files of that kind ("image", "audio", "video", "text").
+    shell.on_clear_recents(|kind: SharedString| {
+        with_app(move |a| {
+            let kind = kind.as_str();
+            {
+                let mut list = a.recents.borrow_mut();
+                list.retain(|p| !kind.is_empty() && files::kind_of(p).map(files::kind_name) != Some(kind));
+                prefs::save_recents(&list);
+            }
             refresh_recents(a);
         })
     });
@@ -317,6 +322,11 @@ pub fn toast(app: &Rc<App>, text: impl Into<SharedString>) {
 
 /// Shows and raises the main window.
 pub fn show_main(app: &Rc<App>) {
+    // The tray copy runs on the software renderer: let the caller finish (open the snip, pick the tab), then hand over.
+    if app.background_start.get() {
+        schedule_handoff(app);
+        return;
+    }
     let _ = app.ui.show();
     use slint::winit_030::WinitWindowAccessor as _;
     app.ui.window().with_winit_window(|w| {
@@ -389,19 +399,32 @@ pub fn remember(app: &Rc<App>, path: &Path) {
     refresh_recents(app);
 }
 
+/// Fills the recent lists: all of them (Home), and one per kind for each tab's empty state. Each item's `index` is its
+/// place in the full list, which `Shell.open-recent` takes.
 pub fn refresh_recents(app: &Rc<App>) {
-    let items: Vec<ui::RecentItem> = app
+    let all: Vec<ui::RecentItem> = app
         .recents
         .borrow()
         .iter()
         .filter(|p| p.exists())
-        .map(|p| ui::RecentItem {
+        .enumerate()
+        .map(|(i, p)| ui::RecentItem {
             name: files::file_name(p).into(),
             detail: files::folder_name(p).into(),
             kind: files::kind_of(p).map(files::kind_name).unwrap_or("video").into(),
+            index: i as i32,
         })
         .collect();
-    app.ui.global::<ui::Shell>().set_recents(ModelRc::new(VecModel::from(items)));
+    let of_kind = |kind: &str| -> ModelRc<ui::RecentItem> {
+        let items: Vec<ui::RecentItem> = all.iter().filter(|r| r.kind.as_str() == kind).cloned().collect();
+        ModelRc::new(VecModel::from(items))
+    };
+    let shell = app.ui.global::<ui::Shell>();
+    shell.set_recents_image(of_kind("image"));
+    shell.set_recents_audio(of_kind("audio"));
+    shell.set_recents_video(of_kind("video"));
+    shell.set_recents_text(of_kind("text"));
+    shell.set_recents(ModelRc::new(VecModel::from(all)));
 }
 
 /// Recent items shown are the existing ones; map a shown index back to the stored list.
@@ -417,10 +440,10 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
         open_dialog(app);
         return true;
     }
-    // Ctrl+N: the "New canvas" question. Ctrl+V on the home page: the clipboard picture opens as a canvas (the other
-    // pages keep their own paste, in the text editor and the picture page).
+    // Ctrl+N: a new 1920 x 1080 white canvas at once. Ctrl+V on the home page: the clipboard picture opens as a canvas
+    // (the other pages keep their own paste, in the text editor and the picture page).
     if ctrl && (text == "n" || text == "N") {
-        app.ui.global::<ui::Shell>().set_canvas_popup_open(true);
+        app.ui.global::<ui::Shell>().invoke_new_canvas(1, "".into(), "".into(), false);
         return true;
     }
     if ctrl && (text == "v" || text == "V") && page == "home" {
@@ -532,6 +555,11 @@ pub fn finish_close(app: &Rc<App>) {
         capturectl::stop_all_now(app);
         let _ = slint::quit_event_loop();
     }
+    // Going to the tray: a fresh copy on the software renderer takes over, unless something still runs here.
+    if !app.background_start.get() && !capturectl::busy(app) && spawn_self(&["--background", "--takeover"]) {
+        crate::instance::release();
+        std::process::exit(0);
+    }
     let _ = app.ui.window().hide();
 }
 
@@ -561,22 +589,70 @@ pub fn handle_request(request: crate::instance::Request) {
 }
 thread_local! {
     static PENDING_OPENS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    static OPEN_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Explorer starts the app once per file when several are opened together; the starts arrive here a few ms apart. They
 /// are gathered for a moment and opened as one set, so the filmstrip shows just those files.
 pub fn queue_open(app: &Rc<App>, path: PathBuf) {
-    let first = PENDING_OPENS.with(|p| {
-        let mut p = p.borrow_mut();
-        p.push(path);
-        p.len() == 1
+    // Waits until no file has arrived for 400 ms (the copies Explorer starts hand theirs over one by one).
+    PENDING_OPENS.with(|p| p.borrow_mut().push(path));
+    let ticket = OPEN_GEN.with(|g| {
+        g.set(g.get() + 1);
+        g.get()
     });
-    if first {
+    {
         let app = app.clone();
-        slint::Timer::single_shot(std::time::Duration::from_millis(350), move || {
+        slint::Timer::single_shot(std::time::Duration::from_millis(400), move || {
+            if OPEN_GEN.with(|g| g.get()) != ticket {
+                return;
+            }
             let mut paths = PENDING_OPENS.with(|p| std::mem::take(&mut *p.borrow_mut()));
             paths.dedup();
             open_many(&app, &paths);
         });
     }
+}
+
+thread_local! {
+    static HANDOFF_PENDING: Cell<bool> = const { Cell::new(false) };
+}
+
+fn schedule_handoff(app: &Rc<App>) {
+    if HANDOFF_PENDING.with(|h| h.replace(true)) {
+        return;
+    }
+    let app = app.clone();
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || handoff(&app));
+}
+
+/// The tray copy (software renderer, about 22 MB) is asked for its window: a fresh copy on the GPU renderer starts on the
+/// same tab and file, and this one exits. Work that can't move (a recording, unsaved text or canvas) keeps this copy and
+/// shows its window on the software renderer instead.
+fn handoff(app: &Rc<App>) {
+    HANDOFF_PENDING.with(|h| h.set(false));
+    let stay = capturectl::busy(app) || textctl::is_dirty(app) || app.view.borrow().canvas;
+    let page = app.ui.global::<ui::Shell>().get_page().to_string();
+    let file = match page.as_str() {
+        "image" => app.view.borrow().path.clone(),
+        "audio" | "video" => app.media.borrow().path.clone(),
+        "text" => app.text.borrow().path.clone(),
+        _ => None,
+    };
+    let mut args = vec!["--takeover".to_string(), "--page".to_string(), page];
+    if let Some(f) = file {
+        args.push(f.display().to_string());
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    if !stay && spawn_self(&refs) {
+        crate::instance::release();
+        std::process::exit(0);
+    }
+    app.background_start.set(false);
+    show_main(app);
+}
+
+/// Starts this exe again with `args`. True when it started.
+fn spawn_self(args: &[&str]) -> bool {
+    std::env::current_exe().is_ok_and(|exe| std::process::Command::new(exe).args(args).spawn().is_ok())
 }
