@@ -63,7 +63,7 @@ installer, about 11 minutes).
 - File types: one ProgID per extension (install.rs); old per-category ProgIDs are kept because existing defaults point at
   them; scripts (bat/ps1/sh) are Open-with only. Category .ico files are rendered with the in-app glyphs.
 - samples/: one file per supported type (text by hand, media from make-samples.ps1). samples/raw/ (camera RAW, HEIC,
-  233 MB, from get-raw-samples.ps1) is gitignored; the owner may want it in git via LFS (undecided).
+  233 MB, from get-raw-samples.ps1) is stored with Git LFS.
 - Our FFmpeg build: tools/ffmpeg/options.txt and build.sh (a separate release asset, pinned in tools/get-ffmpeg.ps1).
 
 ## Open or unverified (as of v0.1.8)
