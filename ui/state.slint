@@ -63,6 +63,11 @@ export global Shell {
     // The in-app "Save changes to ...?" question (Text tab). confirm-answer: 0 Save, 1 Don't save, 2 Cancel.
     in property <bool> confirm-open;
     in property <string> confirm-name;
+    // The question's wording (app::ask sets them; the defaults are the "Save changes?" question).
+    in property <string> confirm-title: "Save changes?";
+    in property <string> confirm-detail: "Your changes will be lost if you don't save them.";
+    in property <string> confirm-primary: "Save";
+    in property <string> confirm-secondary: "Don't save";
     callback confirm-answer(int);
     // Opens the cast popup (and searches for devices).
     callback cast();
@@ -267,6 +272,10 @@ export global Player {
     in property <float> trim-end: 1;
     in property <string> trim-text;
     in property <bool> exporting;
+    // Trim edits: undo and redo are possible, and the range differs from the whole file (Discard).
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    in property <bool> trim-dirty;
 
     in property <int> video-w: 16;
     in property <int> video-h: 9;
@@ -304,6 +313,11 @@ export global Player {
     callback snapshot();
     callback trim-set(bool); // true: start
     callback trim-save();
+    callback save-in-place();
+    callback trim-undo();
+    callback trim-redo();
+    callback trim-discard();
+    callback share();
     callback pick-speed(int);
     callback speed-step(int);
     callback set-speed(float); // 0.25 to 3 (Rust rounds to steps of 0.05)
@@ -359,7 +373,7 @@ export global Voice {
     in-out property <int> mic-index: 0;
     in property <[string]> formats;
     in-out property <int> format-index: 0;
-    // Markers added during the recording, as "1   0:12".
+    // Markers added during the recording, as "Marker 1 · 0:12".
     in property <[string]> markers;
     // The take picked in the list (-1 for none), and the new name typed for it.
     in-out property <int> selected: -1;
@@ -423,6 +437,11 @@ export global TextDoc {
     in property <bool> dirty;
     in property <bool> markdown;
     in property <bool> json;
+    // The file type (the toolbar's combo): 0 plain, 1 Markdown, 2 JSON, 3 TOML, 4 YAML, 5 XML, 6 CSV, 7 INI, 8 Log.
+    in-out property <int> kind: 0;
+    // Bumped by Rust when a new document is made: the editor takes the focus.
+    in property <int> focus-serial: 0;
+    callback set-kind(int);
     in property <string> status;
     // The line under the tools: a JSON error, a result, or nothing.
     in property <string> message;

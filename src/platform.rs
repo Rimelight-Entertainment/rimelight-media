@@ -279,6 +279,44 @@ mod imp {
         }
     }
 
+    /// Closes Windows' own snipping overlay (ScreenClippingHost.exe) if it is running. True when one was closed. The
+    /// backstop for a Win+Shift+S the keyboard hook never saw (another program's hook took it first): Rimelight Media
+    /// then shows its own snip instead.
+    pub fn close_windows_snip() -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+        };
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+        let mut closed = false;
+        // SAFETY: a process snapshot walked with a correctly sized PROCESSENTRY32W; every handle opened is closed.
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            let mut e: PROCESSENTRY32W = std::mem::zeroed();
+            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut ok = Process32FirstW(snap, &mut e) != 0;
+            while ok {
+                let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case("ScreenClippingHost.exe") {
+                    let h = OpenProcess(PROCESS_TERMINATE, 0, e.th32ProcessID);
+                    if !h.is_null() {
+                        closed |= TerminateProcess(h, 0) != 0;
+                        CloseHandle(h);
+                    }
+                }
+                ok = Process32NextW(snap, &mut e) != 0;
+            }
+            CloseHandle(snap);
+        }
+        if closed {
+            hook_log("Windows' snipping overlay started anyway: closed it and snipped here".into());
+        }
+        closed
+    }
+
     /// Takes the "starting or running" lock for this user. True for the one process that holds it; Windows frees it when
     /// that process ends. The handle is kept for the life of the process.
     pub fn take_start_lock() -> bool {
@@ -722,6 +760,9 @@ mod imp {
     pub fn take_start_lock() -> bool {
         true
     }
+    pub fn close_windows_snip() -> bool {
+        false
+    }
     pub fn recycle(path: &std::path::Path) -> bool {
         std::fs::remove_file(path).is_ok()
     }
@@ -814,6 +855,11 @@ pub fn recycle(path: &std::path::Path) -> bool {
 /// True for the first Rimelight Media process of this user (the one that becomes the running copy).
 pub fn take_start_lock() -> bool {
     imp::take_start_lock()
+}
+
+/// Closes Windows' own snipping overlay if it started (see the Windows implementation). True when one was closed.
+pub fn close_windows_snip() -> bool {
+    imp::close_windows_snip()
 }
 
 /// Keeps one of our windows (the recording bar) out of screenshots and recordings.

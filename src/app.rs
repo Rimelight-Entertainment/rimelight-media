@@ -157,29 +157,14 @@ fn wire_shell(app: &Rc<App>) {
     // Closing the window clears every tab (after asking about unsaved changes): it means "I'm done"; minimise keeps
     // things open. Then stay in the tray when "keep running" is on, otherwise quit.
     app.ui.window().on_close_requested(|| {
-        let mut response = slint::CloseRequestResponse::KeepWindowShown;
-        with_app(|a| {
-            if !viewer::confirm_discard(a) {
-                return;
+        // Each unsaved thing asks in the window (picture, canvas, text) and the close goes on from its answer;
+        // finish_close hides the window or quits.
+        with_app(|a| viewer::settle_picture(a, |a| viewer::settle_canvas(a, |a| {
+            if textctl::settle(a, textctl::Pending::Quit) {
+                finish_close(a);
             }
-            // An unsaved canvas asks in the window first; the close then goes on from the answer.
-            if viewer::canvas_unsaved(a) {
-                viewer::settle_canvas(a, |a| {
-                    // Unsaved text asks in the window; the close then goes on from the answer (finish_close).
-                    if textctl::settle(a, textctl::Pending::Quit) {
-                        finish_close(a);
-                    }
-                });
-                return;
-            }
-            // Unsaved text asks in the window; the close then goes on from the answer (finish_close).
-            if !textctl::settle(a, textctl::Pending::Quit) {
-                return;
-            }
-            finish_close(a);
-            response = slint::CloseRequestResponse::HideWindow;
-        });
-        response
+        })));
+        slint::CloseRequestResponse::KeepWindowShown
     });
 
     // Files dropped on the window open; hovering highlights the home page drop zone.
@@ -231,8 +216,10 @@ pub fn go(app: &Rc<App>, page: &str) {
 
 pub fn update_title(app: &Rc<App>) {
     let shell = app.ui.global::<ui::Shell>();
-    // The file's name alone (what the title shows and the rename box edits), then the title with the app name.
-    let (title, name) = match shell.get_page().as_str() {
+    // The file's name alone (what the title shows and the rename box edits), or the tab's name when there is no file.
+    // The window title (taskbar) adds the app name in Slint.
+    let page = shell.get_page();
+    let (title, name) = match page.as_str() {
         "image" if app.view.borrow().canvas => ("Canvas".to_string(), String::new()),
         "image" => {
             let name = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_default();
@@ -240,16 +227,20 @@ pub fn update_title(app: &Rc<App>) {
         }
         "audio" | "video" => {
             let name = app.media.borrow().path.as_deref().map(files::file_name).unwrap_or_default();
-            (name.clone(), name)
+            let tab = if page.as_str() == "video" { "Video" } else { "Audio" };
+            (if name.is_empty() { tab.to_string() } else { name.clone() }, name)
         }
-        "text" => (textctl::title(app), String::new()),
+        "text" => {
+            let t = textctl::title(app);
+            (if t.is_empty() { "Text".to_string() } else { t }, String::new())
+        }
         "voice" => ("Voice recorder".to_string(), String::new()),
         "camera" => ("Camera".to_string(), String::new()),
         "settings" => ("Settings".to_string(), String::new()),
-        _ => (String::new(), String::new()),
+        _ => ("Home".to_string(), String::new()),
     };
     shell.set_title_name(name.into());
-    shell.set_title(if title.is_empty() { "Rimelight Media".into() } else { format!("Rimelight Media - {title}").into() });
+    shell.set_title(title.into());
 }
 
 /// Renames the file in the Image or Audio/Video tab (Enter in the title). The extension is kept when the name has none.
@@ -442,6 +433,11 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
     }
     // Ctrl+N: a new 1920 x 1080 white canvas at once. Ctrl+V on the home page: the clipboard picture opens as a canvas
     // (the other pages keep their own paste, in the text editor and the picture page).
+    // On the Text tab Ctrl+N is a new text file instead.
+    if ctrl && (text == "n" || text == "N") && page == "text" {
+        textctl::new_doc(app);
+        return true;
+    }
     if ctrl && (text == "n" || text == "N") {
         app.ui.global::<ui::Shell>().invoke_new_canvas(1, "".into(), "".into(), false);
         return true;
@@ -655,4 +651,37 @@ fn handoff(app: &Rc<App>) {
 /// Starts this exe again with `args`. True when it started.
 fn spawn_self(args: &[&str]) -> bool {
     std::env::current_exe().is_ok_and(|exe| std::process::Command::new(exe).args(args).spawn().is_ok())
+}
+
+type AskThen = Box<dyn FnOnce(&Rc<App>, i32)>;
+
+thread_local! {
+    static ASK: RefCell<Option<AskThen>> = const { RefCell::new(None) };
+}
+
+/// Asks a question in the window's own dialog (never a native message box). `then` gets 0 (primary), 1 (secondary) or 2
+/// (Cancel). An empty `secondary` shows only the primary button and Cancel.
+pub fn ask(app: &Rc<App>, title: &str, name: &str, detail: &str, primary: &str, secondary: &str, then: impl FnOnce(&Rc<App>, i32) + 'static) {
+    ASK.with(|a| *a.borrow_mut() = Some(Box::new(then)));
+    let shell = app.ui.global::<ui::Shell>();
+    shell.set_confirm_title(title.into());
+    shell.set_confirm_name(name.into());
+    shell.set_confirm_detail(detail.into());
+    shell.set_confirm_primary(primary.into());
+    shell.set_confirm_secondary(secondary.into());
+    shell.set_confirm_open(true);
+}
+
+/// The answer to an `ask` question, if one is waiting. True when it was handled. The dialog goes back to the default
+/// "Save changes?" wording for the next question.
+pub fn take_ask_answer(app: &Rc<App>, choice: i32) -> bool {
+    let Some(then) = ASK.with(|a| a.borrow_mut().take()) else { return false };
+    let shell = app.ui.global::<ui::Shell>();
+    shell.set_confirm_open(false);
+    shell.set_confirm_title("Save changes?".into());
+    shell.set_confirm_detail("Your changes will be lost if you don't save them.".into());
+    shell.set_confirm_primary("Save".into());
+    shell.set_confirm_secondary("Don't save".into());
+    then(app, choice);
+    true
 }

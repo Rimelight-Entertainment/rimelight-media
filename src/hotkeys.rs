@@ -53,9 +53,15 @@ pub fn start(on_action: impl Fn(Action) + 'static) -> Option<Hotkeys> {
     };
     // Win+Shift+S: the low-level hook swallows it and asks for an area snip here.
     crate::platform::start_win_shift_s_hook();
+    let ticks = std::cell::Cell::new(0u32);
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), move || {
         if crate::platform::take_win_shift_s() {
+            on_action(Action::SnipRegion);
+        }
+        // Every 250 ms: if Windows' own snipping started anyway (a Win+Shift+S the hook never saw), close it and snip here.
+        ticks.set(ticks.get().wrapping_add(1));
+        if ticks.get() % 5 == 0 && crate::platform::close_windows_snip() {
             on_action(Action::SnipRegion);
         }
         while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {

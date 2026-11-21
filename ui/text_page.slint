@@ -1,39 +1,22 @@
 // Text tab: an editor for plain text (Notepad's job), the Markdown preview beside it or alone, and the JSON tools with a
 // collapsible tree. Rust (src/textctl.rs) fills the status line, the preview blocks and the tree.
-import { ScrollView, LineEdit } from "std-widgets.slint";
+import { ScrollView, LineEdit, ComboBox } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
 import { Button, ButtonKind, IconButton, ToolBar, ActionRow, StatusBar, ToolDivider, EmptyState } from "widgets.slint";
 import { Shell, TextDoc, MdBlock, MdCell, JsonRow } from "state.slint";
 
-// A mode chip in the toolbar (Editor / Tree for JSON): styled like the picture page's mode chips, the active one in the
-// pressed surface with the accent text.
-component Seg inherits Rectangle {
-    in property <string> label;
-    in property <bool> active;
-    callback clicked();
-    height: Tokens.control-height;
-    width: row.preferred-width + Tokens.space-4;
-    border-radius: Tokens.radius-control;
-    background: root.active ? Tokens.surface-pressed : ta.has-hover ? Tokens.surface-hover : transparent;
-    row := HorizontalLayout {
-        alignment: center;
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-2;
-        Text { text: root.label; color: root.active ? Tokens.accent-text : Tokens.text-muted; font-size: Type.body; font-weight: root.active ? 600 : 400; vertical-alignment: center; }
-    }
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-}
-
-// The editor: a TextInput in a scroll view (wrapping, or scrolling sideways when wrap is off).
+// The editor: a TextInput in a scroll view (wrapping, or scrolling sideways when wrap is off). It takes the focus when a
+// new document is made (focus-serial changes) and when it is created.
 component Editor inherits ScrollView {
+    in property <int> focus-serial;
     horizontal-stretch: 1;
     vertical-stretch: 1;
     content-width: TextDoc.word-wrap ? self.visible-width : max(self.visible-width, input.preferred-width + 2 * Tokens.space-3);
     content-height: max(self.visible-height, input.preferred-height + 2 * Tokens.space-3);
+
+    changed focus-serial => { input.focus(); }
+    init => { input.focus(); }
 
     input := TextInput {
         x: Tokens.space-3;
@@ -56,6 +39,10 @@ component Editor inherits ScrollView {
                 if e.modifiers.shift { TextDoc.save-as(); } else { TextDoc.save(); }
                 return accept;
             }
+            if e.modifiers.control && e.text == "n" {
+                TextDoc.new-doc();
+                return accept;
+            }
             if e.modifiers.control && e.text == "f" {
                 TextDoc.find-open = !TextDoc.find-open;
                 return accept;
@@ -66,7 +53,8 @@ component Editor inherits ScrollView {
 }
 
 // The Markdown preview: one block per paragraph, list item, quote, code block, table or rule. Inline styles (bold,
-// italic, code, strikethrough, links) come in `styled` and are drawn by StyledText, which wraps them.
+// italic, code, strikethrough, links) come in `styled` and are drawn by StyledText, which wraps them. The preview font is
+// Segoe UI, which has the italic face (the variable Segoe UI the app uses for the rest has none, so *italic* showed upright).
 component MdLine inherits VerticalLayout {
     in property <MdBlock> block;
     spacing: Tokens.space-2;
@@ -75,6 +63,7 @@ component MdLine inherits VerticalLayout {
     if root.block.kind == 0: StyledText {
         text: root.block.styled;
         default-color: Tokens.text-primary;
+        default-font-family: "Segoe UI";
         default-font-size: root.block.level <= 2 ? Type.heading : Type.subheading;
         link-color: Tokens.accent-text;
         horizontal-stretch: 1;
@@ -83,6 +72,7 @@ component MdLine inherits VerticalLayout {
     if root.block.kind == 1: StyledText {
         text: root.block.styled;
         default-color: Tokens.text-primary;
+        default-font-family: "Segoe UI";
         default-font-size: Type.body;
         link-color: Tokens.accent-text;
         horizontal-stretch: 1;
@@ -113,6 +103,7 @@ component MdLine inherits VerticalLayout {
         StyledText {
             text: root.block.styled;
             default-color: root.block.check == 1 ? Tokens.text-muted : Tokens.text-primary;
+            default-font-family: "Segoe UI";
             default-font-size: Type.body;
             link-color: Tokens.accent-text;
             horizontal-stretch: 1;
@@ -142,6 +133,7 @@ component MdLine inherits VerticalLayout {
         StyledText {
             text: root.block.styled;
             default-color: Tokens.text-muted;
+            default-font-family: "Segoe UI";
             default-font-size: Type.body;
             link-color: Tokens.accent-text;
             horizontal-stretch: 1;
@@ -162,6 +154,7 @@ component MdLine inherits VerticalLayout {
                 StyledText {
                     text: c.styled;
                     default-color: Tokens.text-primary;
+                    default-font-family: "Segoe UI";
                     default-font-size: Type.body;
                     link-color: Tokens.accent-text;
                     horizontal-stretch: 1;
@@ -238,9 +231,11 @@ export component TextPage inherits Rectangle {
 
     VerticalLayout {
         // Main toolbar, as the picture page's: file actions on the left (icons with tooltips), the views and the
-        // find and wrap switches on the right.
+        // find and wrap switches on the right, and the file type last.
         // Always shown, as on every tab: with no document the file buttons are disabled.
         ToolBar {
+            IconButton { icon: Icons.folder-open; label: "Open a file"; clicked => { Shell.open-file(); } }
+            ToolDivider { }
             IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: TextDoc.has-doc && (TextDoc.dirty || TextDoc.file-name == ""); clicked => { TextDoc.save(); } }
             IconButton { icon: Icons.save-as; label: "Save as (Ctrl+Shift+S)"; enabled: TextDoc.has-doc; clicked => { TextDoc.save-as(); } }
             IconButton { icon: Icons.x; label: "Discard changes"; enabled: TextDoc.has-doc && TextDoc.dirty; clicked => { TextDoc.revert(); } }
@@ -260,20 +255,32 @@ export component TextPage inherits Rectangle {
             if TextDoc.markdown: IconButton { icon: Icons.md-editor; label: "Editor only"; active: TextDoc.view == 0; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 0; } }
             if TextDoc.markdown: IconButton { icon: Icons.columns; label: "Split: editor and preview"; active: TextDoc.view == 1; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 1; } }
             if TextDoc.markdown: IconButton { icon: Icons.eye; label: "Preview only"; active: TextDoc.view == 2; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 2; } }
-            if TextDoc.json: Seg { label: "Editor"; active: TextDoc.view == 0; clicked => { TextDoc.view = 0; } }
-            if TextDoc.json: Seg { label: "Tree"; active: TextDoc.view == 1; clicked => { TextDoc.view = 1; } }
+            // JSON views, as the Markdown ones: the text editor, or the collapsible tree.
+            if TextDoc.json: IconButton { icon: Icons.file-code; label: "Editor: edit the JSON text"; active: TextDoc.view == 0; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 0; } }
+            if TextDoc.json: IconButton { icon: Icons.list-tree; label: "Tree: browse the JSON, folding its objects and arrays"; active: TextDoc.view == 1; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 1; } }
             if TextDoc.markdown || TextDoc.json: ToolDivider { }
             IconButton { icon: Icons.text-wrap; label: "Word wrap"; active: TextDoc.word-wrap; enabled: TextDoc.has-doc; clicked => { TextDoc.word-wrap = !TextDoc.word-wrap; } }
             IconButton { icon: Icons.search; label: "Find (Ctrl+F)"; active: TextDoc.find-open; enabled: TextDoc.has-doc; clicked => { TextDoc.find-open = !TextDoc.find-open; } }
+            ToolDivider { }
+            // The file type: sets the mode now; Save as uses its extension by default. Changing it never renames a file.
+            ComboBox {
+                model: ["Plain text", "Markdown", "JSON", "TOML", "YAML", "XML", "CSV", "INI", "Log"];
+                current-index <=> TextDoc.kind;
+                enabled: TextDoc.has-doc;
+                width: 128px;
+                height: Tokens.control-height;
+                changed current-index => { TextDoc.set-kind(self.current-index); }
+            }
         }
 
-        // JSON tools, as an edit row under the toolbar: icons with tooltips and the tool's message.
+        // JSON tools, as an edit row under the toolbar: icons only, each with a tooltip that says what it does, and the
+        // tool's message.
         if TextDoc.has-doc && TextDoc.json: ActionRow {
-            Button { text: "Format · 2 spaces"; kind: ButtonKind.ghost; clicked => { TextDoc.format-json(2); } }
-            Button { text: "Format · 4 spaces"; kind: ButtonKind.ghost; clicked => { TextDoc.format-json(4); } }
-            IconButton { icon: Icons.minimize; label: "Minify"; clicked => { TextDoc.minify-json(); } }
-            IconButton { icon: Icons.check; label: "Validate"; clicked => { TextDoc.validate-json(); } }
-            IconButton { icon: Icons.sort-az; label: "Sort keys"; clicked => { TextDoc.sort-json(); } }
+            IconButton { icon: Icons.indent-increase; label: "Format with 2-space indent"; clicked => { TextDoc.format-json(2); } }
+            IconButton { icon: Icons.list-indent; label: "Format with 4-space indent"; clicked => { TextDoc.format-json(4); } }
+            IconButton { icon: Icons.minimize; label: "Minify: remove all spaces and line breaks"; clicked => { TextDoc.minify-json(); } }
+            IconButton { icon: Icons.check; label: "Validate: check the JSON and show where it fails"; clicked => { TextDoc.validate-json(); } }
+            IconButton { icon: Icons.sort-az; label: "Sort keys A to Z at every level"; clicked => { TextDoc.sort-json(); } }
             if TextDoc.message != "": ToolDivider { }
             Text {
                 text: TextDoc.message;
@@ -338,7 +345,7 @@ export component TextPage inherits Rectangle {
                 clear-recents => { Shell.clear-recents("text"); }
             }
             if TextDoc.has-doc: HorizontalLayout {
-                if !(TextDoc.markdown && TextDoc.view == 2): Editor { }
+                if !(TextDoc.markdown && TextDoc.view == 2): Editor { focus-serial: TextDoc.focus-serial; }
                 if (TextDoc.markdown && TextDoc.view >= 1) || (TextDoc.json && TextDoc.view == 1): Rectangle {
                     width: 1px;
                     background: Tokens.border-subtle;

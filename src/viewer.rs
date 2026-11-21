@@ -164,6 +164,11 @@ pub fn wire(app: &Rc<App>) {
     v.on_copy(|| with_app(copy));
     v.on_revert(|| {
         with_app(|a| {
+            // The X on a canvas closes it (after the in-app question when it has changes); a picture reverts its edits.
+            if a.view.borrow().canvas {
+                settle_canvas(a, close);
+                return;
+            }
             let orig = a.view.borrow().original.clone();
             if let Some(p) = orig {
                 {
@@ -240,7 +245,8 @@ fn clear_markup(s: &mut ViewState) {
 
 /// A canvas with changes not saved yet.
 pub fn canvas_unsaved(app: &Rc<App>) -> bool {
-    app.view.borrow().canvas && viewer(app).get_dirty()
+    let s = app.view.borrow();
+    s.canvas && (viewer(app).get_dirty() || !s.marks.is_empty() || s.drawing.is_some())
 }
 
 fn open_with(app: &Rc<App>, path: &Path, set: Option<Vec<PathBuf>>) {
@@ -372,7 +378,7 @@ fn show_picture(app: &Rc<App>, fresh: bool) {
     let dims = format!("{} x {}", pic.w, pic.h);
     let size = if s.path.is_some() && s.file_size > 0 { files::human_size(s.file_size) } else { String::new() };
     let facts: Vec<String> = [file_type.clone(), dims.clone(), size.clone()].into_iter().filter(|f| !f.is_empty()).collect();
-    v.set_facts_text(facts.join(" | ").into());
+    v.set_facts_text(facts.join("  |  ").into());
     v.set_dims_text(dims.into());
     v.set_file_type(file_type.into());
     v.set_size_text(size.into());
@@ -915,6 +921,7 @@ fn mark_move(app: &Rc<App>, x: f32, y: f32) {
     }
     let Some(m) = s.drawing.as_mut() else { return };
     if matches!(m.kind, 0 | 1 | 8) {
+        // A pixel eraser stroke is shown as it is drawn (refresh_marks renders it, throttled).
         let last = *m.points.last().unwrap_or(&(x, y));
         if (last.0 - x).hypot(last.1 - y) < 1.5 {
             return;
@@ -928,6 +935,8 @@ fn mark_move(app: &Rc<App>, x: f32, y: f32) {
 }
 
 fn mark_end(app: &Rc<App>) {
+    // The stroke's end always renders the final eraser preview (no throttle).
+    ERASE_PREVIEW.with(|c| c.set((None, c.get().1)));
     let mut s = app.view.borrow_mut();
     if let Some(g) = s.grab.take() {
         // A move or resize that changed the mark is one Undo step: the marks as they were before the drag.
@@ -1081,8 +1090,7 @@ fn to_ui(m: &Mark, images: &[(Arc<Picture>, slint::Image)]) -> ui::Mark {
         .unwrap_or_default();
     ui::Mark {
         kind: m.kind,
-        // A pixel eraser stroke shows as a grey band (it is not ink).
-        colour: if m.kind == 8 { slint::Color::from_argb_u8(150, 0x8A, 0x8A, 0x93) } else { slint::Color::from_argb_u8(a, r, g, b) },
+        colour: slint::Color::from_argb_u8(a, r, g, b),
         width: if m.kind == 4 { m.font_size() } else { m.stroke_width() },
         commands: m.commands().into(),
         x,
@@ -1093,6 +1101,37 @@ fn to_ui(m: &Mark, images: &[(Arc<Picture>, slint::Image)]) -> ui::Mark {
         picture,
         filled: m.filled,
     }
+}
+
+thread_local! {
+    /// When the live eraser preview was last rendered, and whether the picture currently shows that preview.
+    static ERASE_PREVIEW: std::cell::Cell<(Option<std::time::Instant>, bool)> = const { std::cell::Cell::new((None, false)) };
+}
+
+/// Pixel eraser strokes are not ink, so while any is in progress (or waiting for Done) the picture shows the live
+/// composite: the marks burned in with the eraser applied. Rendered at most every 60 ms; the stroke's end forces one.
+fn erase_preview(app: &Rc<App>, s: &ViewState) -> bool {
+    let erasing = s.marks.iter().chain(s.drawing.iter()).any(|m| m.kind == 8);
+    let (last, showing) = ERASE_PREVIEW.with(|c| c.get());
+    if erasing {
+        let now = std::time::Instant::now();
+        let due = last.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_millis(60));
+        if due {
+            if let Some(pic) = s.pic.as_ref() {
+                let all: Vec<Mark> = s.marks.iter().chain(s.drawing.iter()).cloned().collect();
+                if let Ok(out) = picture::burn_marks(pic, &all, s.canvas) {
+                    viewer(app).set_picture(picture::to_slint(&out));
+                }
+            }
+            ERASE_PREVIEW.with(|c| c.set((Some(now), true)));
+        }
+    } else if showing {
+        if let Some(pic) = s.pic.as_ref() {
+            viewer(app).set_picture(picture::to_slint(pic));
+        }
+        ERASE_PREVIEW.with(|c| c.set((None, false)));
+    }
+    erasing
 }
 
 fn refresh_marks(app: &Rc<App>) {
@@ -1109,7 +1148,13 @@ fn refresh_marks(app: &Rc<App>) {
         s.mark_images.retain(|(p, _)| live.iter().any(|q| Arc::ptr_eq(p, q)));
     }
     let s = app.view.borrow();
-    let items: Vec<ui::Mark> = s.marks.iter().chain(s.drawing.iter()).map(|m| to_ui(m, &s.mark_images)).collect();
+    // While erasing, the composite on the picture holds every mark, so the vector overlay is left out.
+    let erasing = erase_preview(app, &s);
+    let items: Vec<ui::Mark> = if erasing {
+        Vec::new()
+    } else {
+        s.marks.iter().chain(s.drawing.iter()).map(|m| to_ui(m, &s.mark_images)).collect()
+    };
     viewer(app).set_marks(ModelRc::new(VecModel::from(items)));
     drop(s);
     refresh_selection(app);
@@ -1751,37 +1796,28 @@ pub fn close_tab(app: &Rc<App>) {
         settle_canvas(app, close);
         return;
     }
-    if confirm_discard(app) {
-        close(app);
-    }
+    settle_picture(app, close);
 }
 
 /// Before the picture goes away: true when there's nothing unsaved, or the person saved it or chose to discard it.
 /// (A canvas is asked about in the app instead: see settle_canvas.)
-pub fn confirm_discard(app: &Rc<App>) -> bool {
+pub fn settle_picture(app: &Rc<App>, then: impl FnOnce(&Rc<App>) + 'static) {
     if !viewer(app).get_dirty() || app.view.borrow().canvas {
-        return true;
+        then(app);
+        return;
     }
     let name = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "this snip".into());
-    let answer = rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Warning)
-        .set_title("Rimelight Media")
-        .set_description(format!("Save the changes to {name}?"))
-        .set_buttons(rfd::MessageButtons::YesNoCancelCustom("Save".into(), "Don't save".into(), "Cancel".into()))
-        .show();
-    match answer {
-        rfd::MessageDialogResult::Custom(c) if c == "Save" => {
-            save(app);
-            !viewer(app).get_dirty()
+    let detail = "Your changes will be lost if you don't save them.";
+    crate::app::ask(app, "Save changes?", &name, detail, "Save", "Don't save", move |a, choice| match choice {
+        0 => {
+            save(a);
+            if !viewer(a).get_dirty() {
+                then(a);
+            }
         }
-        rfd::MessageDialogResult::Custom(c) if c == "Don't save" => true,
-        rfd::MessageDialogResult::Yes => {
-            save(app);
-            !viewer(app).get_dirty()
-        }
-        rfd::MessageDialogResult::No => true,
-        _ => false,
-    }
+        1 => then(a),
+        _ => {}
+    });
 }
 
 /// Runs `then` now when the canvas has nothing unsaved; otherwise shows the in-app "Save changes?" question and runs it

@@ -11,39 +11,56 @@ export component VoicePage inherits Rectangle {
 
     VerticalLayout {
         // Options: the microphone, the format and the input gain (-12 dB to +24 dB, shown as a 0..1 slider).
+        // A compact left-aligned group: each label sits next to its control, and the spacer takes the rest.
         ToolBar {
             IconButton { icon: Icons.mic; label: "Microphone"; clicked => { } }
-            ComboBox {
-                model: Voice.mics;
-                current-index: Voice.mic-index;
-                width: 240px;
-                selected(value) => { Voice.pick-mic(self.current-index); }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                alignment: start;
+                horizontal-stretch: 0;
+                ComboBox {
+                    model: Voice.mics;
+                    current-index: Voice.mic-index;
+                    width: 220px;
+                    selected(value) => { Voice.pick-mic(self.current-index); }
+                }
             }
             ToolDivider { }
-            Text { text: "Format"; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
-            ComboBox {
-                model: Voice.formats;
-                current-index: Voice.format-index;
-                width: 120px;
-                enabled: !Voice.recording;
-                selected(value) => { Voice.pick-format(self.current-index); }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                alignment: start;
+                horizontal-stretch: 0;
+                Text { text: "Format"; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
+                ComboBox {
+                    model: Voice.formats;
+                    current-index: Voice.format-index;
+                    width: 90px;
+                    enabled: !Voice.recording;
+                    selected(value) => { Voice.pick-format(self.current-index); }
+                }
             }
             ToolDivider { }
-            Text { text: "Gain"; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
-            Slider {
-                width: 160px;
-                on-stage: false;
-                value: (Voice.gain-db + 12) / 36;
-                changed(v) => { Voice.set-gain(v * 36 - 12); }
-                released(v) => { Voice.save-gain(); }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                alignment: start;
+                horizontal-stretch: 0;
+                Text { text: "Gain"; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
+                Slider {
+                    width: 140px;
+                    on-stage: false;
+                    value: (Voice.gain-db + 12) / 36;
+                    changed(v) => { Voice.set-gain(v * 36 - 12); }
+                    released(v) => { Voice.save-gain(); }
+                }
+                Text {
+                    text: (Voice.gain-db > 0 ? "+" : "") + round(Voice.gain-db) + " dB";
+                    color: Tokens.text-primary;
+                    font-size: Type.caption;
+                    vertical-alignment: center;
+                    width: 48px;
+                }
             }
-            Text {
-                text: (Voice.gain-db > 0 ? "+" : "") + round(Voice.gain-db) + " dB";
-                color: Tokens.text-primary;
-                font-size: Type.caption;
-                vertical-alignment: center;
-                min-width: 52px;
-            }
+            Rectangle { horizontal-stretch: 1; }
         }
 
         // The recorder and the takes, centred in the middle.
@@ -99,11 +116,17 @@ export component VoicePage inherits Rectangle {
                                         clicked => { Voice.pause-toggle(); }
                                     }
                                     Button {
-                                        text: "Marker";
+                                        text: "Add marker";
                                         kind: ButtonKind.ghost;
                                         enabled: !Voice.paused;
                                         clicked => { Voice.add-marker(); }
                                     }
+                                }
+                                if Voice.recording: Text {
+                                    text: "Mark this moment (saved with the recording, shown in the list)";
+                                    color: Tokens.text-muted;
+                                    font-size: Type.caption;
+                                    horizontal-alignment: center;
                                 }
                                 Text {
                                     text: Voice.time-text;
@@ -136,7 +159,7 @@ export component VoicePage inherits Rectangle {
                             }
                         }
 
-                        if Voice.recording || Voice.markers.length > 0: Text { text: "Markers"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
+                        if Voice.markers.length > 0: Text { text: "Markers"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
                         if Voice.markers.length > 0: Card {
                             height: 96px;
                             ScrollView {

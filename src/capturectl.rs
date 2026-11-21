@@ -513,7 +513,7 @@ fn add_marker(app: &Rc<App>) {
 }
 
 fn set_marker_list(app: &Rc<App>) {
-    let items: Vec<SharedString> = app.cap.borrow().voice_marks.iter().enumerate().map(|(i, ms)| format!("{}   {}", i + 1, files::clock(*ms)).into()).collect();
+    let items: Vec<SharedString> = app.cap.borrow().voice_marks.iter().enumerate().map(|(i, ms)| format!("Marker {} · {}", i + 1, files::clock(*ms)).into()).collect();
     app.ui.global::<ui::Voice>().set_markers(ModelRc::new(VecModel::from(items)));
 }
 

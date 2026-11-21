@@ -29,7 +29,8 @@ component Chip inherits Rectangle {
         text: root.text;
         color: !root.enabled ? Tokens.text-faint : root.active ? Tokens.text-on-accent : Tokens.text-primary;
         font-size: Type.body;
-        font-weight: root.active ? 600 : 400;
+        // The weight stays the same in both states, so the chip never changes width; only the colour changes.
+        font-weight: 400;
         horizontal-alignment: center;
         vertical-alignment: center;
     }

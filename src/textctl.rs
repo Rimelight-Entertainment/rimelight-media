@@ -92,6 +92,7 @@ pub fn wire(app: &Rc<App>) {
         })
     });
     d.on_new_doc(|| with_app(new_doc));
+    d.on_set_kind(|k| with_app(|a| apply_kind(a, k)));
     d.on_format_json(|n| with_app(|a| format_json(a, n)));
     d.on_minify_json(|| with_app(minify_json));
     d.on_validate_json(|| with_app(validate_json));
@@ -152,16 +153,18 @@ fn load(app: &Rc<App>, path: &Path) {
 }
 
 /// An empty, untitled document (asks about unsaved changes first).
-fn new_doc(app: &Rc<App>) {
+pub fn new_doc(app: &Rc<App>) {
     if settle(app, Pending::New) {
         fresh(app);
     }
 }
 
-/// Makes the tab an empty, untitled document (no question asked).
+/// Makes the tab an empty, untitled document (no question asked). The editor takes the focus (focus-serial).
 fn fresh(app: &Rc<App>) {
     clear(app);
-    doc(app).set_has_doc(true);
+    let d = doc(app);
+    d.set_has_doc(true);
+    d.set_focus_serial(d.get_focus_serial() + 1);
     app::go(app, "text");
     refresh(app);
     update_status(app);
@@ -178,6 +181,7 @@ pub fn clear(app: &Rc<App>) {
     d.set_file_name("".into());
     d.set_markdown(false);
     d.set_json(false);
+    d.set_kind(KIND_PLAIN);
     d.set_view(0);
     d.set_find_status("".into());
     d.set_message("".into());
@@ -212,6 +216,9 @@ pub fn settle(app: &Rc<App>, then: Pending) -> bool {
 /// The question's answer: 0 Save (then the action, if the save worked), 1 Don't save (the action, dropping the changes),
 /// 2 Cancel (nothing).
 fn answer(app: &Rc<App>, choice: i32) {
+    if crate::app::take_ask_answer(app, choice) {
+        return;
+    }
     // The same dialog asks about an unsaved canvas (the picture page) when one is waiting for the answer.
     if crate::viewer::has_pending(app) {
         crate::viewer::answer(app, choice);
@@ -267,7 +274,13 @@ pub fn save(app: &Rc<App>, as_new: bool) -> bool {
     let path = match current {
         Some(p) if !as_new => p,
         current => {
-            let name = current.as_deref().map(files::file_name).unwrap_or_else(|| "Untitled.txt".into());
+            // The name keeps the file's stem (or "Untitled") with the extension of the file type chosen in the toolbar.
+            let stem = current
+                .as_deref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Untitled".into());
+            let name = format!("{stem}.{}", KINDS[doc(app).get_kind().clamp(0, KINDS.len() as i32 - 1) as usize].1);
             let picked = rfd::FileDialog::new()
                 .set_title("Save as")
                 .set_file_name(name)
@@ -307,8 +320,62 @@ fn set_meta(app: &Rc<App>, path: &Path) {
     let d = doc(app);
     d.set_has_doc(true);
     d.set_file_name(files::file_name(path).into());
-    d.set_markdown(matches!(ext.as_str(), "md" | "markdown"));
-    d.set_json(ext == "json");
+    d.set_kind(kind_of_ext(&ext));
+    d.set_markdown(d.get_kind() == KIND_MD);
+    d.set_json(d.get_kind() == KIND_JSON);
+}
+
+// The file types of the toolbar's combo, in its order: the label and the extension Save as uses.
+const KIND_PLAIN: i32 = 0;
+const KIND_MD: i32 = 1;
+const KIND_JSON: i32 = 2;
+const KINDS: [(&str, &str); 9] = [
+    ("Plain text", "txt"),
+    ("Markdown", "md"),
+    ("JSON", "json"),
+    ("TOML", "toml"),
+    ("YAML", "yaml"),
+    ("XML", "xml"),
+    ("CSV", "csv"),
+    ("INI", "ini"),
+    ("Log", "log"),
+];
+
+/// The file type of an extension (plain text for the ones the list does not know).
+fn kind_of_ext(ext: &str) -> i32 {
+    match ext {
+        "md" | "markdown" => KIND_MD,
+        "json" => KIND_JSON,
+        "toml" => 3,
+        "yaml" | "yml" => 4,
+        "xml" => 5,
+        "csv" => 6,
+        "ini" | "cfg" | "conf" => 7,
+        "log" => 8,
+        _ => KIND_PLAIN,
+    }
+}
+
+/// The file type the toolbar's combo picked: sets the mode (the preview for Markdown, the tree tools for JSON) and keeps
+/// the file's name. Runs again when the combo is set from Rust too, so it changes only what differs.
+fn apply_kind(app: &Rc<App>, k: i32) {
+    let d = doc(app);
+    let k = k.clamp(0, KINDS.len() as i32 - 1);
+    let (was_md, was_json) = (d.get_markdown(), d.get_json());
+    let md = k == KIND_MD;
+    let json = k == KIND_JSON;
+    d.set_kind(k);
+    d.set_markdown(md);
+    d.set_json(json);
+    if md && !was_md {
+        d.set_view(1);
+    } else if json && !was_json {
+        d.set_view(0);
+    } else if !md && was_md {
+        d.set_view(0);
+    }
+    refresh(app);
+    update_status(app);
 }
 
 fn edited(app: &Rc<App>) {
@@ -319,7 +386,7 @@ fn edited(app: &Rc<App>) {
     app::update_title(app);
 }
 
-/// Ln, Col, characters, line ends and encoding, separated by " | ".
+/// Ln, Col, characters, line ends and encoding, separated by "  |  ".
 fn update_status(app: &Rc<App>) {
     let text = text_of(app);
     let status = {
@@ -332,7 +399,7 @@ fn update_status(app: &Rc<App>) {
         let line = before.matches('\n').count() + 1;
         let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
         let eol = if st.crlf { "CRLF" } else { "LF" };
-        format!("Ln {line}, Col {col} | {} characters | {eol} | {}", text.chars().count(), st.enc.label())
+        format!("Ln {line}, Col {col}  |  {} characters  |  {eol}  |  {}", text.chars().count(), st.enc.label())
     };
     doc(app).set_status(status.into());
 }
@@ -772,7 +839,8 @@ pub fn markdown_blocks(src: &str) -> Vec<ui::MdBlock> {
                 let dest = dest.replace(' ', "%20").replace('(', "%28").replace(')', "%29");
                 b.md.push_str(&format!("]({dest})"));
             }
-            Event::SoftBreak => b.md.push(' '),
+            // A soft break keeps its line (as GitHub and Obsidian show it), so a quote's two lines stay two lines.
+            Event::SoftBreak => b.md.push('\n'),
             Event::HardBreak => b.md.push('\n'),
             // Images show their alt text (the text events); other tags add nothing.
             _ => {}

@@ -30,6 +30,11 @@ pub struct MediaState {
     /// When the seek bar was last dragged. A drag that never got its release drops the preview after a while.
     preview_at: Option<Instant>,
     trim: (u64, u64),
+    /// Earlier trim ranges to return to (undo), and ranges undone (redo).
+    trim_undo: Vec<(u64, u64)>,
+    trim_redo: Vec<(u64, u64)>,
+    /// When the trim was last edited (edits close together are one undo step).
+    trim_edit_at: Option<Instant>,
     muted: bool,
     /// Repeat: 0 off, 1 once more, 2 forever.
     loop_mode: i32,
@@ -47,8 +52,11 @@ pub struct MediaState {
     sub_before_off: Option<SubChoice>,
 }
 
-/// Playback speeds offered by the step keys (VLC-like steps).
-const SPEEDS: [f32; 10] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+/// Playback speeds: the flyout's presets, also the steps of the step keys.
+const SPEEDS: [f32; 9] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
+
+/// Trim edits within this long of each other (a drag) count as one undo step.
+const TRIM_STEP_GAP: Duration = Duration::from_millis(500);
 
 /// How many bars the waveform track draws.
 const WAVE_BARS: usize = 300;
@@ -70,6 +78,9 @@ impl Default for MediaState {
             preview: None,
             preview_at: None,
             trim: (0, 0),
+            trim_undo: Vec::new(),
+            trim_redo: Vec::new(),
+            trim_edit_at: None,
             muted: false,
             loop_mode: 0,
             repeated: false,
@@ -135,6 +146,11 @@ pub fn wire(app: &Rc<App>) {
     p.on_snapshot(|| with_app(snapshot));
     p.on_trim_set(|start| with_app(move |a| trim_set(a, start)));
     p.on_trim_save(|| with_app(trim_save));
+    p.on_save_in_place(|| with_app(save_in_place));
+    p.on_trim_undo(|| with_app(|a| trim_step(a, true)));
+    p.on_trim_redo(|| with_app(|a| trim_step(a, false)));
+    p.on_trim_discard(|| with_app(trim_discard));
+    p.on_share(|| with_app(share));
     p.on_pick_speed(|i| with_app(move |a| set_speed(a, SPEEDS.get(i as usize).copied().unwrap_or(1.0))));
     p.on_speed_step(|d| with_app(move |a| speed_step(a, d)));
     // The speed flyout (slider and presets): a speed from 0.25x to 3x, rounded to steps of 0.05. No toast.
@@ -264,6 +280,9 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
             m.repeated = false;
             m.audio_track = info.audio.iter().find(|t| t.default).or(info.audio.first()).map(|t| t.index);
             m.trim = (0, info.duration_ms);
+            m.trim_undo.clear();
+            m.trim_redo.clear();
+            m.trim_edit_at = None;
             m.sub_files = sub_files;
             m.sub = SubChoice::Off;
             m.last_size = size;
@@ -543,6 +562,21 @@ fn update_trim_text(app: &Rc<App>) {
     p.set_trim_start((s as f64 / dur as f64) as f32);
     p.set_trim_end((e as f64 / dur as f64) as f32);
     p.set_trim_text(format!("Keep {} to {} ({})", files::clock(s), files::clock(e), files::clock(e.saturating_sub(s))).into());
+    p.set_can_undo(!m.trim_undo.is_empty());
+    p.set_can_redo(!m.trim_redo.is_empty());
+    p.set_trim_dirty(m.info.as_ref().is_some_and(|i| (s, e) != (0, i.duration_ms)));
+}
+
+/// Remembers the trim before an edit, so undo can return to it. Edits close together (a drag) are one step.
+/// `force` always records (for discard).
+fn record_trim(m: &mut MediaState, force: bool) {
+    let now = Instant::now();
+    let new_step = m.trim_edit_at.is_none_or(|t| now.duration_since(t) > TRIM_STEP_GAP);
+    if force || new_step {
+        m.trim_undo.push(m.trim);
+        m.trim_redo.clear();
+    }
+    m.trim_edit_at = Some(now);
 }
 
 fn trim_set(app: &Rc<App>, start: bool) {
@@ -550,13 +584,107 @@ fn trim_set(app: &Rc<App>, start: bool) {
         let mut m = app.media.borrow_mut();
         let Some(pos) = m.player.as_ref().map(Player::position_ms) else { return };
         let dur = m.info.as_ref().map_or(0, |i| i.duration_ms);
-        if start {
-            m.trim.0 = pos.min(m.trim.1.saturating_sub(100));
-        } else {
-            m.trim.1 = pos.max(m.trim.0 + 100).min(dur);
+        let (s, e) = m.trim;
+        let new = if start { (pos.min(e.saturating_sub(100)), e) } else { (s, pos.max(s + 100).min(dur)) };
+        if new != m.trim {
+            record_trim(&mut m, false);
+            m.trim = new;
         }
     }
     update_trim_text(app);
+}
+
+/// Undo (back) or redo (forward) of the trim range.
+fn trim_step(app: &Rc<App>, undo: bool) {
+    {
+        let mut m = app.media.borrow_mut();
+        let popped = if undo { m.trim_undo.pop() } else { m.trim_redo.pop() };
+        let Some(prev) = popped else { return };
+        let current = m.trim;
+        if undo {
+            m.trim_redo.push(current);
+        } else {
+            m.trim_undo.push(current);
+        }
+        m.trim = prev;
+        m.trim_edit_at = None;
+    }
+    update_trim_text(app);
+}
+
+/// Discard: the trim goes back to the whole file (undoable).
+fn trim_discard(app: &Rc<App>) {
+    {
+        let mut m = app.media.borrow_mut();
+        let dur = m.info.as_ref().map_or(0, |i| i.duration_ms);
+        if m.trim != (0, dur) {
+            record_trim(&mut m, true);
+            m.trim = (0, dur);
+        }
+    }
+    update_trim_text(app);
+}
+
+fn share(app: &Rc<App>) {
+    let Some(path) = app.media.borrow().path.clone() else { return };
+    if let Err(e) = crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path)) {
+        toast(app, format!("Could not share: {e}"));
+    }
+}
+
+/// Save: replaces the open file with the trimmed range, after a question (the same native dialog as the viewer's).
+fn save_in_place(app: &Rc<App>) {
+    let (path, (s, e)) = {
+        let m = app.media.borrow();
+        let Some(path) = m.path.clone() else { return };
+        (path, m.trim)
+    };
+    crate::app::ask(
+        app,
+        "Replace the original?",
+        &files::file_name(&path),
+        "The file is replaced by the trimmed version. The cut parts can't be brought back.",
+        "Replace",
+        "",
+        move |a, choice| {
+            if choice == 0 {
+                replace_with_trim(a, path, s, e);
+            }
+        },
+    );
+}
+
+fn replace_with_trim(app: &Rc<App>, path: PathBuf, s: u64, e: u64) {
+    let ext = files::ext_of(&path);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Clip").to_string();
+    let tmp = path.with_file_name(format!("{stem} (trimming).{ext}"));
+    // The file is let go first, so it can be replaced.
+    {
+        let mut m = app.media.borrow_mut();
+        m.player = None;
+        m.generation += 1;
+    }
+    player_ui(app).set_exporting(true);
+    std::thread::spawn(move || {
+        let result = export::trim(&path, &tmp, s, e).and_then(|()| std::fs::rename(&tmp, &path).map_err(|err| err.to_string()));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        post(move |a| {
+            player_ui(a).set_exporting(false);
+            match result {
+                Ok(()) => {
+                    toast(a, format!("Saved {}", files::file_name(&path)));
+                    open(a, &path);
+                }
+                Err(err) => {
+                    // Nothing was replaced: the player comes back on the same file.
+                    toast(a, format!("Could not save: {err}"));
+                    open(a, &path);
+                }
+            }
+        });
+    });
 }
 
 fn trim_save(app: &Rc<App>) {
@@ -681,10 +809,11 @@ fn trim_drag(app: &Rc<App>, start: bool, frac: f32) {
         let mut m = app.media.borrow_mut();
         let dur = m.info.as_ref().map_or(0, |i| i.duration_ms);
         let ms = (f64::from(frac.clamp(0.0, 1.0)) * dur as f64) as u64;
-        if start {
-            m.trim.0 = ms.min(m.trim.1.saturating_sub(100));
-        } else {
-            m.trim.1 = ms.max(m.trim.0 + 100).min(dur);
+        let (s, e) = m.trim;
+        let new = if start { (ms.min(e.saturating_sub(100)), e) } else { (s, ms.max(s + 100).min(dur)) };
+        if new != m.trim {
+            record_trim(&mut m, false);
+            m.trim = new;
         }
     }
     update_trim_text(app);
@@ -726,7 +855,7 @@ fn meta_text(path: &Path, info: &MediaInfo) -> String {
         parts.push(files::human_size(meta.len()));
     }
     parts.retain(|s| !s.is_empty());
-    parts.join(" | ")
+    parts.join("  |  ")
 }
 
 
@@ -838,6 +967,9 @@ pub fn close(app: &Rc<App>) {
         m.sub_files.clear();
         m.shown_sub_picture = 0;
         m.repeated = false;
+        m.trim_undo.clear();
+        m.trim_redo.clear();
+        m.trim_edit_at = None;
     }
     let p = player_ui(app);
     p.set_frame(slint::Image::default());
@@ -852,6 +984,9 @@ pub fn close(app: &Rc<App>) {
     p.set_error(SharedString::new());
     p.set_buffering(false);
     p.set_trim_mode(false);
+    p.set_can_undo(false);
+    p.set_can_redo(false);
+    p.set_trim_dirty(false);
     p.set_audio_tracks(ModelRc::default());
     p.set_subtitle_tracks(ModelRc::default());
     p.set_has_wave(false);

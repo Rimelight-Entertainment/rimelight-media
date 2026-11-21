@@ -72,6 +72,29 @@ component Chip inherits Rectangle {
     }
 }
 
+// One picker field: a label, then a box that fills the rest of its cell (the layout shares the width equally).
+component PickerField inherits Rectangle {
+    in-out property <string> value;
+    in property <string> label;
+    callback edited();
+    height: Tokens.control-height;
+    Text {
+        x: 0;
+        width: 14px;
+        height: parent.height;
+        text: root.label;
+        color: Tokens.text-muted;
+        font-size: Type.caption;
+        vertical-alignment: center;
+    }
+    LineEdit {
+        x: 18px;
+        width: parent.width - 18px;
+        text <=> root.value;
+        edited => { root.edited(); }
+    }
+}
+
 export component ImagePage inherits Rectangle {
     background: Tokens.stage;
     // The custom colour box's text.
@@ -100,16 +123,19 @@ export component ImagePage inherits Rectangle {
         // Main toolbar, the same on every tab: file actions on the left, edit tools on the right. Nothing is hidden
         // when no picture is open; the buttons that need one are disabled. Hidden in full screen.
         if !Shell.full-screen: ToolBar {
+            IconButton { icon: Icons.folder-open; label: "Open a file (Ctrl+O)"; clicked => { Shell.open-file(); } }
+            ToolDivider { }
             IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: root.has-pic && (Viewer.dirty || Viewer.canvas); clicked => { Viewer.save(); } }
             IconButton { icon: Icons.save-as; label: "Save as (Ctrl+Shift+S)"; enabled: root.has-pic; clicked => { Viewer.save-as(); } }
             IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; enabled: root.has-pic; clicked => { Viewer.copy(); } }
             IconButton { icon: Icons.printer; label: "Print (Ctrl+P)"; enabled: root.has-pic && !Viewer.canvas; clicked => { Viewer.print(); } }
             IconButton { icon: Icons.share; label: "Share"; enabled: Viewer.can-share; clicked => { Viewer.share(); } }
-            IconButton { icon: Icons.folder-open; label: "Show in folder"; enabled: Viewer.can-share; clicked => { Viewer.open-folder(); } }
+            IconButton { icon: Icons.folder-search; label: "Show in folder"; enabled: Viewer.can-share; clicked => { Viewer.open-folder(); } }
             ToolDivider { }
             IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: Viewer.can-undo; clicked => { Viewer.undo(); } }
             IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: Viewer.can-redo; clicked => { Viewer.redo(); } }
-            IconButton { icon: Icons.x; label: "Discard changes"; enabled: Viewer.dirty; clicked => { Viewer.revert(); } }
+            // On a canvas the X closes it back to the empty tab (after the in-app question when it has changes).
+            IconButton { icon: Icons.x; label: Viewer.canvas ? "Close canvas (discard)" : "Discard changes"; enabled: Viewer.dirty || Viewer.canvas; clicked => { Viewer.revert(); } }
             Rectangle { horizontal-stretch: 1; }
             // The canvas size: "1920 × 1080" opens the size flyout (below the bar).
             if Viewer.canvas: Rectangle {
@@ -259,10 +285,10 @@ export component ImagePage inherits Rectangle {
                 padding-top: (Tokens.action-height - Tokens.control-height) / 2;
                 padding-bottom: (Tokens.action-height - Tokens.control-height) / 2;
                 spacing: Tokens.space-1;
-                alignment: center;
-                // Twelve colours, the six most recent, and a hex box for any other.
+                alignment: start;
+                // Twelve colours, the recent ones, and a hex box for any other. One divider between the groups only.
                 for c in [#101014, #FFFFFF, #8A8A93, #E5484D, #F76B15, #FFC14D, #30A46C, #3FD6B8, #0D7FFF, #8E4EC6, #E93D82, #7C4A2D]: Swatch { colour: c; }
-                ToolDivider { }
+                if Viewer.recent-colours.length > 0: ToolDivider { }
                 for c in Viewer.recent-colours: Swatch { colour: c; }
                 ToolDivider { }
                 // The custom colour: opens the picker popup (below the bar).
@@ -794,11 +820,13 @@ export component ImagePage inherits Rectangle {
         // Status bar (the same on every tab): file facts on the left, the position in the middle, and the frame,
         // filmstrip, zoom and full-screen controls on the right. Hidden in full screen with the other bars.
         if !Shell.full-screen: StatusBar {
-            IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; enabled: !Viewer.canvas; clicked => { Viewer.toggle-info(); } }
-            IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.film; label: "Filmstrip"; active: Viewer.filmstrip; enabled: !Viewer.canvas; clicked => { Viewer.toggle-filmstrip(); } }
             // Details and filmstrip on the left, then the picture's facts; the frame controls and zoom on the right.
-            Text { text: Viewer.facts-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+            // Like the other tabs, the controls show only while a picture is open.
+            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; enabled: !Viewer.canvas; clicked => { Viewer.toggle-info(); } }
+            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.film; label: "Filmstrip"; active: Viewer.filmstrip; enabled: !Viewer.canvas; clicked => { Viewer.toggle-filmstrip(); } }
+            Text { text: root.has-pic ? Viewer.facts-text : ""; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
             if Viewer.position != "": Text { text: Viewer.position; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
+            if Viewer.position != "": Rectangle { width: Tokens.space-3; }
             if Viewer.animated: ToolDivider { }
             if Viewer.animated: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.chevron-left; label: "Previous frame (,)"; clicked => { Viewer.anim-step(-1); } }
             if Viewer.animated: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Viewer.anim-playing ? Icons.pause : Icons.play; label: Viewer.anim-playing ? "Pause (Space)" : "Play (Space)"; clicked => { Viewer.anim-toggle(); } }
@@ -806,9 +834,9 @@ export component ImagePage inherits Rectangle {
             if Viewer.animated: Text { text: Viewer.frame-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
             if Viewer.animated: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.camera; label: "Save this frame as PNG"; clicked => { Viewer.save-frame(); } }
             if Viewer.animated: ToolDivider { }
-            IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fit; label: "Fit to window (0)"; active: Viewer.fit; enabled: root.has-pic; clicked => { Viewer.fit = true; Viewer.pan-x = 0; Viewer.pan-y = 0; } }
-            IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-out; label: "Zoom out (-)"; enabled: root.has-pic; clicked => { root.zoom-to(root.cur-scale / 1.25); } }
-            Text {
+            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fit; label: "Fit to window (0)"; active: Viewer.fit; clicked => { Viewer.fit = true; Viewer.pan-x = 0; Viewer.pan-y = 0; } }
+            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-out; label: "Zoom out (-)"; clicked => { root.zoom-to(root.cur-scale / 1.25); } }
+            if root.has-pic: Text {
                 text: round(root.cur-scale * 100) + "%";
                 color: Tokens.text-muted;
                 font-size: Type.caption;
@@ -816,7 +844,7 @@ export component ImagePage inherits Rectangle {
                 horizontal-alignment: center;
                 min-width: 44px;
             }
-            Rectangle {
+            if root.has-pic: Rectangle {
                 width: 120px;
                 Slider {
                     width: parent.width;
@@ -826,8 +854,8 @@ export component ImagePage inherits Rectangle {
                     released(v) => { root.zoom-to(0.02 * pow(2000, v)); }
                 }
             }
-            IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-in; label: "Zoom in (+)"; enabled: root.has-pic; clicked => { root.zoom-to(root.cur-scale * 1.25); } }
-            IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fullscreen; label: "Full screen (F11)"; clicked => { Shell.toggle-full-screen(); } }
+            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-in; label: "Zoom in (+)"; clicked => { root.zoom-to(root.cur-scale * 1.25); } }
+            if root.has-pic: IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fullscreen; label: "Full screen (F11)"; clicked => { Shell.toggle-full-screen(); } }
         }
     }
 
@@ -841,10 +869,10 @@ export component ImagePage inherits Rectangle {
         clicked => { root.picker-open = false; }
     }
     if picker-open && Viewer.mode == "markup": Rectangle {
-        x: max(0px, root.width - 332px);
+        x: max(Tokens.space-3, root.width - 300px - Tokens.space-3);
         // Below the toolbar and the two markup rows.
         y: Tokens.bar-height * 3 + 6px;
-        width: 324px;
+        width: 300px;
         height: picker-layout.preferred-height;
         background: Tokens.surface-raised;
         border-width: 1px;
@@ -853,8 +881,9 @@ export component ImagePage inherits Rectangle {
         // Covers the panel so clicks on it don't close the picker.
         TouchArea { width: parent.width; height: parent.height; }
         picker-layout := VerticalLayout {
-            padding: Tokens.space-2;
-            spacing: Tokens.space-2;
+            padding: Tokens.space-3;
+            spacing: Tokens.space-3;
+            // Row 1: the saturation and value square (fills the width), and the hue bar on its right.
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 Rectangle {
@@ -930,69 +959,60 @@ export component ImagePage inherits Rectangle {
                     }
                 }
             }
-            // The model tabs.
+            // Row 2: the model, as a segmented control across the width.
             HorizontalLayout {
                 spacing: Tokens.space-1;
-                Button { text: "RGB"; kind: Viewer.picker-model == 0 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.picker-model = 0; Viewer.picker-changed(); } }
-                Button { text: "HSL"; kind: Viewer.picker-model == 1 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.picker-model = 1; Viewer.picker-changed(); } }
-                Button { text: "OKLCH"; kind: Viewer.picker-model == 2 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.picker-model = 2; Viewer.picker-changed(); } }
-                Rectangle { horizontal-stretch: 1; }
+                Button { horizontal-stretch: 1; text: "RGB"; kind: Viewer.picker-model == 0 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.picker-model = 0; Viewer.picker-changed(); } }
+                Button { horizontal-stretch: 1; text: "HSL"; kind: Viewer.picker-model == 1 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.picker-model = 1; Viewer.picker-changed(); } }
+                Button { horizontal-stretch: 1; text: "OKLCH"; kind: Viewer.picker-model == 2 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.picker-model = 2; Viewer.picker-changed(); } }
             }
-            // The fields of the model: R G B 0-255; H S L (degrees, percent); L C H (0-1, 0-0.4, degrees).
+            // Row 3: the three fields of the model, sharing the width equally. R G B 0-255; H S L (degrees, percent);
+            // L C H (0-1, 0-0.4, degrees).
             HorizontalLayout {
                 spacing: Tokens.space-2;
-                HorizontalLayout {
+                PickerField {
                     horizontal-stretch: 1;
-                    spacing: Tokens.space-1;
-                    Text { text: Viewer.picker-model == 0 ? "R" : (Viewer.picker-model == 1 ? "H" : "L"); color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
-                    LineEdit {
-                        horizontal-stretch: 1;
-                        text <=> Viewer.picker-a;
-                        edited => { Viewer.picker-field(0, Viewer.picker-a); }
-                    }
+                    label: Viewer.picker-model == 0 ? "R" : (Viewer.picker-model == 1 ? "H" : "L");
+                    value <=> Viewer.picker-a;
+                    edited => { Viewer.picker-field(0, Viewer.picker-a); }
                 }
-                HorizontalLayout {
+                PickerField {
                     horizontal-stretch: 1;
-                    spacing: Tokens.space-1;
-                    Text { text: Viewer.picker-model == 0 ? "G" : (Viewer.picker-model == 1 ? "S" : "C"); color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
-                    LineEdit {
-                        horizontal-stretch: 1;
-                        text <=> Viewer.picker-b;
-                        edited => { Viewer.picker-field(1, Viewer.picker-b); }
-                    }
+                    label: Viewer.picker-model == 0 ? "G" : (Viewer.picker-model == 1 ? "S" : "C");
+                    value <=> Viewer.picker-b;
+                    edited => { Viewer.picker-field(1, Viewer.picker-b); }
                 }
-                HorizontalLayout {
+                PickerField {
                     horizontal-stretch: 1;
-                    spacing: Tokens.space-1;
-                    Text { text: Viewer.picker-model == 0 ? "B" : (Viewer.picker-model == 1 ? "L" : "H"); color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
-                    LineEdit {
-                        horizontal-stretch: 1;
-                        text <=> Viewer.picker-c;
-                        edited => { Viewer.picker-field(2, Viewer.picker-c); }
-                    }
+                    label: Viewer.picker-model == 0 ? "B" : (Viewer.picker-model == 1 ? "L" : "H");
+                    value <=> Viewer.picker-c;
+                    edited => { Viewer.picker-field(2, Viewer.picker-c); }
                 }
             }
+            // Row 4: the preview swatch and the hex box.
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 Rectangle {
-                    width: 36px;
-                    height: 28px;
+                    width: 32px;
+                    height: Tokens.control-height;
                     border-radius: 4px;
                     border-width: 1px;
                     border-color: Tokens.border-subtle;
                     background: Viewer.picker-rgb;
                 }
                 LineEdit {
+                    horizontal-stretch: 1;
                     placeholder-text: "#RRGGBB";
                     text <=> Viewer.picker-hex;
                     accepted => { Viewer.pick-hex(Viewer.picker-hex); }
                 }
             }
+            // Row 5: Close and Use, flush right.
             HorizontalLayout {
-                spacing: Tokens.space-1;
+                spacing: Tokens.space-2;
                 Rectangle { horizontal-stretch: 1; }
-                Button { text: "Use"; kind: ButtonKind.primary; clicked => { Viewer.picker-use(); } }
                 Button { text: "Close"; clicked => { root.picker-open = false; } }
+                Button { text: "Use"; kind: ButtonKind.primary; clicked => { Viewer.picker-use(); } }
             }
         }
     }

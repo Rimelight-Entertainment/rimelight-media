@@ -58,16 +58,24 @@ component MediaSlot inherits Rectangle {
     background: Tokens.stage;
 
     VerticalLayout {
+        // Left: file actions (Open, Save, Save as, Share), then the trim edits (Undo, Redo, Discard). Right: Trim, and
+        // the frame snapshot on video only. Buttons that need a file are disabled when nothing is open.
         if !Shell.full-screen: ToolBar {
             IconButton {
                 icon: Icons.folder-open;
                 label: root.want-video ? "Open a video (Ctrl+O)" : "Open a song (Ctrl+O)";
                 clicked => { Shell.open-file(); }
             }
+            IconButton { icon: Icons.save; label: "Save (replaces the file with the trim)"; enabled: root.loaded && Player.trim-dirty && !Player.exporting; clicked => { Player.save-in-place(); } }
+            IconButton { icon: Icons.save-as; label: "Save as (trimmed copy)"; enabled: root.loaded && !Player.exporting; clicked => { Player.trim-save(); } }
+            IconButton { icon: Icons.share; label: "Share"; enabled: root.loaded; clicked => { Player.share(); } }
             ToolDivider { }
-            IconButton { icon: Icons.scissors; label: "Trim"; enabled: root.loaded; active: Player.trim-mode; clicked => { Player.trim-mode = !Player.trim-mode; } }
-            IconButton { icon: Icons.camera; label: "Save this frame as a picture"; enabled: root.loaded && Player.has-video; clicked => { Player.snapshot(); } }
+            IconButton { icon: Icons.undo; label: "Undo trim"; enabled: root.loaded && Player.can-undo; clicked => { Player.trim-undo(); } }
+            IconButton { icon: Icons.redo; label: "Redo trim"; enabled: root.loaded && Player.can-redo; clicked => { Player.trim-redo(); } }
+            IconButton { icon: Icons.x; label: "Discard trim (whole file)"; enabled: root.loaded && Player.trim-dirty; clicked => { Player.trim-discard(); } }
             Rectangle { horizontal-stretch: 1; }
+            IconButton { icon: Icons.scissors; label: "Trim"; enabled: root.loaded; active: Player.trim-mode; clicked => { Player.trim-mode = !Player.trim-mode; } }
+            if Player.has-video: IconButton { icon: Icons.camera; label: "Save this frame as a picture"; enabled: root.loaded; clicked => { Player.snapshot(); } }
         }
 
         Rectangle {
@@ -100,7 +108,7 @@ component MediaSlot inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: Shell.title;
+    title: Shell.title == "" ? "Rimelight Media" : Shell.title + " - Rimelight Media";
     icon: Icons.logo;
     preferred-width: 1200px;
     preferred-height: 780px;
@@ -294,6 +302,10 @@ export component AppWindow inherits Window {
             width: parent.width;
             height: parent.height;
             name: Shell.confirm-name;
+            title: Shell.confirm-title;
+            detail: Shell.confirm-detail;
+            primary-text: Shell.confirm-primary;
+            secondary-text: Shell.confirm-secondary;
             answer(choice) => { Shell.confirm-answer(choice); }
         }
     }

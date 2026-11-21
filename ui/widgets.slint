@@ -55,30 +55,53 @@ export component IconButton inherits Rectangle {
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => { tip.close(); tip-timer.running = false; root.clicked(); }
+        changed has-hover => {
+            if self.has-hover && root.enabled {
+                tip-timer.running = true;
+            } else {
+                tip-timer.running = false;
+                tip.close();
+            }
+        }
     }
 
-    // The tooltip is kept inside the window: centred under the button, pushed in from the edges, and flipped above
-    // the button when there is no room below it.
-    if ta.has-hover && root.label != "": Rectangle {
-        property <length> w: tip-text.preferred-width + 16px;
-        property <bool> above: root.tip-above || root.absolute-position.y + root.height + 30px > TipBounds.window-height;
-        property <length> left: max(4px, min(root.absolute-position.x + (root.width - self.w) / 2, TipBounds.window-width - self.w - 4px));
-        y: self.above ? -30px : root.height + 6px;
-        x: self.left - root.absolute-position.x;
-        width: self.w;
+    // The tooltip is a PopupWindow, so it draws above every sibling (the status bar and the rows below included). It
+    // opens after a short hover and closes on leave or click. It is kept inside the window: centred under the button,
+    // pushed in from the edges, and flipped above the button when there is no room below it.
+    property <length> tip-w: max(40px, root.label.character-count * 7px + 16px);
+    property <bool> tip-flip: root.tip-above || root.absolute-position.y + root.height + 30px > TipBounds.window-height;
+    property <length> tip-left: max(4px, min(root.absolute-position.x + (root.width - root.tip-w) / 2, TipBounds.window-width - root.tip-w - 4px));
+
+    tip := PopupWindow {
+        x: root.tip-left - root.absolute-position.x;
+        y: root.tip-flip ? -30px : root.height + 6px;
+        width: root.tip-w;
         height: 24px;
-        background: Tokens.surface-overlay;
-        border-radius: Tokens.radius-control;
-        border-width: 1px;
-        border-color: Tokens.border-subtle;
-        z: 100;
-        tip-text := Text {
-            x: 8px;
-            text: root.label;
-            color: Tokens.text-primary;
-            font-size: Type.caption;
-            vertical-alignment: center;
+        Rectangle {
+            background: Tokens.surface-overlay;
+            border-radius: Tokens.radius-control;
+            border-width: 1px;
+            border-color: Tokens.border-subtle;
+            Text {
+                x: 8px;
+                width: parent.width - 16px;
+                height: parent.height;
+                text: root.label;
+                color: Tokens.text-primary;
+                font-size: Type.caption;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    tip-timer := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.label != "" && root.enabled { tip.show(); }
         }
     }
 }
@@ -204,7 +227,9 @@ export component Slider inherits Rectangle {
     callback changed(float);
     callback released(float);
 
-    height: 20px;
+    // Fills the row's height (at least 20 px); the track and knob are drawn centred, so it lines up with icons and text.
+    min-height: 20px;
+    preferred-height: 20px;
     accessible-role: slider;
     accessible-value: round(value * 100) + "%";
 
@@ -369,6 +394,9 @@ export component ConfirmDialog inherits Rectangle {
     in property <string> title: "Save changes?";
     in property <string> name;
     in property <string> detail: "Your changes will be lost if you don't save them.";
+    // The first two buttons' labels (answer 0 and 1); an empty second label hides that button. Cancel is answer 2.
+    in property <string> primary-text: "Save";
+    in property <string> secondary-text: "Don't save";
     callback answer(int);
 
     background: Tokens.scrim;
@@ -398,8 +426,8 @@ export component ConfirmDialog inherits Rectangle {
             HorizontalLayout {
                 alignment: end;
                 spacing: Tokens.space-2;
-                Button { text: "Save"; kind: ButtonKind.primary; clicked => { root.answer(0); } }
-                Button { text: "Don't save"; kind: ButtonKind.secondary; clicked => { root.answer(1); } }
+                Button { text: root.primary-text; kind: ButtonKind.primary; clicked => { root.answer(0); } }
+                if root.secondary-text != "": Button { text: root.secondary-text; kind: ButtonKind.secondary; clicked => { root.answer(1); } }
                 Button { text: "Cancel"; kind: ButtonKind.ghost; clicked => { root.answer(2); } }
             }
         }
@@ -477,11 +505,11 @@ export component StatusBar inherits Rectangle {
     background: Tokens.surface-raised;
 
     HorizontalLayout {
-        padding-left: Tokens.space-3;
+        padding-left: Tokens.space-2;
         padding-right: Tokens.space-2;
         padding-top: (Tokens.status-height - 28px) / 2;
         padding-bottom: (Tokens.status-height - 28px) / 2;
-        spacing: Tokens.space-2;
+        spacing: Tokens.space-3;
         alignment: stretch;
         // With no left-text, the page lays out the whole bar itself in @children (e.g. buttons on the left too).
         if root.left-text != "": Text {
@@ -501,7 +529,7 @@ export component StatusBar inherits Rectangle {
             min-width: 48px;
         }
         HorizontalLayout {
-            spacing: Tokens.space-1;
+            spacing: Tokens.space-3;
             alignment: root.left-text != "" ? LayoutAlignment.end : LayoutAlignment.stretch;
             horizontal-stretch: root.left-text != "" ? 0 : 1;
             @children
@@ -534,7 +562,7 @@ export component RecentRow inherits Rectangle {
         padding-left: Tokens.space-3;
         padding-right: Tokens.space-3;
         spacing: Tokens.space-3;
-        alignment: center;
+        alignment: start;
         Rectangle {
             width: Tokens.icon-medium;
             Image {
@@ -547,8 +575,9 @@ export component RecentRow inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            Text { text: root.item.name; color: Tokens.text-primary; font-size: Type.body; overflow: elide; }
-            Text { text: root.item.detail; color: Tokens.text-muted; font-size: Type.caption; overflow: elide; }
+            horizontal-stretch: 1;
+            Text { text: root.item.name; color: Tokens.text-primary; font-size: Type.body; horizontal-alignment: left; overflow: elide; }
+            Text { text: root.item.detail; color: Tokens.text-muted; font-size: Type.caption; horizontal-alignment: left; overflow: elide; }
         }
     }
     ta := TouchArea {

@@ -64,6 +64,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_Security",
 ] }
 # Windows' Share panel and its built-in text recognition (WinRT). Already in the build through cpal; only these parts
