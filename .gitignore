@@ -10,5 +10,4 @@
 # Samples: one small file per supported type (samples/make-samples.ps1 makes the media). .env and .log are tracked here.
 !samples/
 !samples/**
-# Large camera files downloaded by samples/get-raw-samples.ps1
-samples/raw/
+# Large camera files (samples/get-raw-samples.ps1) are stored with Git LFS (.gitattributes).
