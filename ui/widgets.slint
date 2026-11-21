@@ -583,12 +583,14 @@ export component EmptyState inherits Rectangle {
 
     ScrollView {
         VerticalLayout {
-            padding-top: Tokens.space-10;
+            // At least the visible height, so the block sits in the middle (it scrolls when the recent list is long).
+            min-height: root.height;
+            padding-top: Tokens.space-6;
             padding-bottom: Tokens.space-6;
             padding-left: Tokens.space-6;
             padding-right: Tokens.space-6;
             spacing: Tokens.space-4;
-            alignment: start;
+            alignment: center;
             HorizontalLayout {
                 alignment: center;
                 VerticalLayout {
