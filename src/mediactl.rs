@@ -2,7 +2,8 @@
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::fmt::Write as _;
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
@@ -27,6 +28,8 @@ pub struct MediaState {
     sub: SubChoice,
     sub_files: Vec<PathBuf>,
     preview: Option<f32>,
+    /// When the seek bar was last dragged. A drag that never got its release drops the preview after a while.
+    preview_at: Option<Instant>,
     trim: (u64, u64),
     muted: bool,
     /// Repeat: 0 off, 1 once more, 2 forever.
@@ -63,6 +66,7 @@ impl Default for MediaState {
             sub: SubChoice::Off,
             sub_files: Vec::new(),
             preview: None,
+            preview_at: None,
             trim: (0, 0),
             muted: false,
             loop_mode: 0,
@@ -102,7 +106,11 @@ pub fn wire(app: &Rc<App>) {
     });
     p.on_seek_preview(|f| {
         with_app(move |a| {
-            a.media.borrow_mut().preview = Some(f);
+            {
+                let mut m = a.media.borrow_mut();
+                m.preview = Some(f);
+                m.preview_at = Some(Instant::now());
+            }
             let dur = a.media.borrow().info.as_ref().map_or(0, |i| i.duration_ms);
             player_ui(a).set_time_text(files::clock((f64::from(f) * dur as f64) as u64).into());
         })
@@ -127,6 +135,14 @@ pub fn wire(app: &Rc<App>) {
     p.on_trim_save(|| with_app(trim_save));
     p.on_pick_speed(|i| with_app(move |a| set_speed(a, SPEEDS.get(i as usize).copied().unwrap_or(1.0))));
     p.on_speed_step(|d| with_app(move |a| speed_step(a, d)));
+    // The slider: 0.25x to 3x in steps of 0.05; it updates the speed without a toast on every step.
+    p.on_set_speed(|v| {
+        with_app(move |a| {
+            let speed = ((0.25 + v.clamp(0.0, 1.0) * 2.75) / 0.05).round() * 0.05;
+            apply_speed(a, speed.clamp(0.25, 3.0));
+        })
+    });
+    p.on_trim_drag(|start, frac| with_app(move |a| trim_drag(a, start, frac)));
     p.on_sub_delay(|ms| with_app(move |a| sub_delay(a, i64::from(ms))));
     p.on_sub_size(|d| with_app(move |a| sub_size(a, d)));
     refresh_speeds(app);
@@ -148,6 +164,9 @@ pub fn open(app: &Rc<App>, path: &Path) {
     p.set_buffering(true);
     p.set_error(SharedString::new());
     p.set_subtitle(SharedString::new());
+    p.set_meta_text(SharedString::new());
+    p.set_has_wave(false);
+    p.set_wave_commands(SharedString::new());
     p.set_playing(false);
     p.set_position(0.0);
     p.set_trim_mode(false);
@@ -199,6 +218,23 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
     p.set_media_detail(detail.into());
     p.set_length_text(files::clock(info.duration_ms).into());
     p.set_time_text(files::clock(0).into());
+    p.set_meta_text(meta_text(path, &info).into());
+    // The waveform is decoded in the background, from the sound track that plays.
+    if let Some(idx) = info.audio.iter().find(|t| t.default).or(info.audio.first()).map(|t| t.index) {
+        let (wave_path, duration) = (path.to_path_buf(), info.duration_ms);
+        std::thread::spawn(move || {
+            if let Ok(peaks) = player::peaks(&wave_path, idx, duration, 1500) {
+                let commands = wave_commands(&peaks);
+                post(move |a| {
+                    if a.media.borrow().path.as_deref() == Some(wave_path.as_path()) {
+                        let p = player_ui(a);
+                        p.set_wave_commands(commands.into());
+                        p.set_has_wave(true);
+                    }
+                });
+            }
+        });
+    }
     let sub_files = subs::files_beside(path);
     // A default subtitle stream, or a file beside the video, is not turned on by itself (VLC-like: off unless marked
     // as forced/default). Default-marked text streams are turned on.
@@ -246,13 +282,17 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
 
 fn tick(app: &Rc<App>) {
     let mut m = app.media.borrow_mut();
+    if m.preview.is_some() && m.preview_at.is_some_and(|t| t.elapsed() > Duration::from_millis(400)) {
+        m.preview = None;
+        m.preview_at = None;
+    }
     let size = output_size(app);
     let Some(pl) = m.player.as_ref() else { return };
     if size != m.last_size {
         pl.set_output_size(size.0, size.1);
     }
     // Repeat once: play it one more time after it ends.
-    let replay = m.loop_mode == 1 && !m.repeated && pl.ended();
+    let replay =m.loop_mode == 1 && !m.repeated && pl.ended();
     if replay {
         pl.play();
     }
@@ -611,9 +651,11 @@ fn refresh_speeds(app: &Rc<App>) {
     let p = player_ui(app);
     p.set_speeds(ModelRc::new(VecModel::from(list)));
     p.set_speed_text(speed_label(current).into());
+    p.set_speed_value(current);
 }
 
-fn set_speed(app: &Rc<App>, speed: f32) {
+/// Sets the speed without a message (the slider calls this on every step).
+fn apply_speed(app: &Rc<App>, speed: f32) {
     {
         let mut m = app.media.borrow_mut();
         m.speed = speed;
@@ -622,7 +664,80 @@ fn set_speed(app: &Rc<App>, speed: f32) {
         }
     }
     refresh_speeds(app);
+}
+
+fn set_speed(app: &Rc<App>, speed: f32) {
+    apply_speed(app, speed);
     toast(app, format!("Speed {}", speed_label(speed)));
+}
+
+/// Moves the start or the end of the trim range to a fraction of the timeline (from a drag on a handle).
+fn trim_drag(app: &Rc<App>, start: bool, frac: f32) {
+    {
+        let mut m = app.media.borrow_mut();
+        let dur = m.info.as_ref().map_or(0, |i| i.duration_ms);
+        let ms = (f64::from(frac.clamp(0.0, 1.0)) * dur as f64) as u64;
+        if start {
+            m.trim.0 = ms.min(m.trim.1.saturating_sub(100));
+        } else {
+            m.trim.1 = ms.max(m.trim.0 + 100).min(dur);
+        }
+    }
+    update_trim_text(app);
+}
+
+/// The status bar text: codec, bitrate, sample rate and channels (or resolution and fps), duration and size.
+fn meta_text(path: &Path, info: &MediaInfo) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if info.video.is_some() {
+        parts.push(info.video_codec.clone());
+        parts.push(format!("{} × {}", info.width, info.height));
+        if info.fps > 0.0 {
+            parts.push(format!("{:.2} fps", info.fps));
+        }
+    }
+    if !info.audio_codec.is_empty() {
+        parts.push(info.audio_codec.clone());
+        if info.sample_rate > 0 {
+            parts.push(format!("{} kHz", f64::from(info.sample_rate) / 1000.0));
+        }
+        parts.push(
+            match info.channels {
+                0 => String::new(),
+                1 => "mono".to_string(),
+                2 => "stereo".to_string(),
+                6 => "5.1".to_string(),
+                8 => "7.1".to_string(),
+                n => format!("{n} ch"),
+            }
+            .trim()
+            .to_string(),
+        );
+    }
+    if info.bitrate > 0 {
+        parts.push(format!("{} kbps", info.bitrate / 1000));
+    }
+    parts.push(files::clock(info.duration_ms));
+    if let Ok(meta) = std::fs::metadata(path) {
+        parts.push(files::human_size(meta.len()));
+    }
+    parts.retain(|s| !s.is_empty());
+    parts.join(" | ")
+}
+
+/// An SVG-style path for the waveform: a mirrored bar per bucket, in a 1 x 2 box centred on y = 1.
+fn wave_commands(peaks: &[f32]) -> String {
+    let n = peaks.len().max(1);
+    let x = |i: usize| i as f32 / n as f32;
+    let mut s = String::with_capacity(n * 40);
+    for (i, p) in peaks.iter().enumerate() {
+        let _ = write!(s, "{} {:.4} {:.4} ", if i == 0 { "M" } else { "L" }, x(i), 1.0 - p * 0.95);
+    }
+    for (i, p) in peaks.iter().enumerate().rev() {
+        let _ = write!(s, "L {:.4} {:.4} ", x(i), 1.0 + p * 0.95);
+    }
+    s.push('Z');
+    s
 }
 
 fn speed_step(app: &Rc<App>, delta: i32) {
@@ -749,5 +864,8 @@ pub fn close(app: &Rc<App>) {
     p.set_trim_mode(false);
     p.set_audio_tracks(ModelRc::default());
     p.set_subtitle_tracks(ModelRc::default());
+    p.set_has_wave(false);
+    p.set_wave_commands(SharedString::new());
+    p.set_meta_text(SharedString::new());
     crate::app::update_title(app);
 }

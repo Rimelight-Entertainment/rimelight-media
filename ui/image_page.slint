@@ -80,7 +80,7 @@ export component ImagePage inherits Rectangle {
                 padding-bottom: 6px;
                 spacing: Tokens.space-1;
                 IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: Viewer.dirty; clicked => { Viewer.save(); } }
-                Button { text: "Save as"; kind: ButtonKind.ghost; clicked => { Viewer.save-as(); } }
+                IconButton { icon: Icons.save; label: "Save as (Ctrl+Shift+S)"; clicked => { Viewer.save-as(); } }
                 IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; clicked => { Viewer.copy(); } }
                 IconButton { icon: Icons.printer; label: "Print (Ctrl+P)"; clicked => { Viewer.print(); } }
                 IconButton { icon: Icons.share; label: "Share"; enabled: Viewer.can-share; clicked => { Viewer.share(); } }
@@ -88,6 +88,7 @@ export component ImagePage inherits Rectangle {
                 Divider { }
                 IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: Viewer.can-undo; clicked => { Viewer.undo(); } }
                 IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: Viewer.can-redo; clicked => { Viewer.redo(); } }
+                IconButton { icon: Icons.x; label: "Discard changes"; enabled: Viewer.dirty; clicked => { Viewer.revert(); } }
                 Rectangle { horizontal-stretch: 1; }
                 IconButton { icon: Icons.rotate; label: "Rotate (R)"; enabled: !Viewer.comparing; clicked => { Viewer.rotate(); } }
                 IconButton { icon: Icons.flip-h; label: "Flip left-right"; enabled: !Viewer.comparing; clicked => { Viewer.flip(true); } }
@@ -154,9 +155,15 @@ export component ImagePage inherits Rectangle {
                         Swatch { colour: #FFFFFF; }
                     }
                     Divider { }
-                    Button { text: "Thin"; kind: Viewer.ink-width == 3 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.ink-width = 3; } }
-                    Button { text: "Medium"; kind: Viewer.ink-width == 6 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.ink-width = 6; } }
-                    Button { text: "Thick"; kind: Viewer.ink-width == 12 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.ink-width = 12; } }
+                    // Thickness, 1 to 40 px.
+                    Slider {
+                        width: 120px;
+                        on-stage: false;
+                        value: (Viewer.ink-width - 1) / 39;
+                        changed(v) => { Viewer.ink-width = 1 + v * 39; }
+                        released(v) => { Viewer.ink-width = 1 + v * 39; }
+                    }
+                    Text { text: round(Viewer.ink-width) + " px"; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; width: 40px; }
                     Divider { }
                     IconButton { icon: Icons.trash; label: "Clear all marks"; enabled: Viewer.marks.length > 0; clicked => { Viewer.clear-marks(); } }
                     Rectangle { width: Tokens.space-2; }
@@ -191,6 +198,22 @@ export component ImagePage inherits Rectangle {
         }
 
         HorizontalLayout {
+            // Details: on the left of the picture.
+            if Viewer.show-info: Rectangle {
+                width: 280px;
+                background: Tokens.surface-raised;
+                border-width: 1px;
+                border-color: Tokens.border-subtle;
+                VerticalLayout {
+                    padding: Tokens.space-4;
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; }
+                    Text { text: Viewer.info-name; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
+                    Text { text: Viewer.info-detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                }
+            }
+
             stage := Rectangle {
                 background: Tokens.stage;
                 clip: true;
@@ -314,14 +337,27 @@ export component ImagePage inherits Rectangle {
                     background: #00000040;
                     border-width: 1px;
                     border-color: Tokens.accent-default;
+                    // Clicking elsewhere, Enter or Escape commits the text as a mark (Rust does it).
+                    changed x => { ti.focus(); }
                     ti := TextInput {
                         x: 4px;
                         color: Viewer.ink;
                         font-size: max(12px, Viewer.ink-width * 4 * stage.s * 1px);
                         font-weight: 600;
                         single-line: true;
+                        text <=> Viewer.pending-text;
                         init => { self.focus(); }
-                        accepted => { Viewer.mark-text(self.text); }
+                        accepted => { Viewer.commit-text(); }
+                        changed has-focus => {
+                            if !self.has-focus { Viewer.commit-text(); }
+                        }
+                        key-pressed(e) => {
+                            if e.text == "\u{1b}" {
+                                Viewer.commit-text();
+                                return accept;
+                            }
+                            reject
+                        }
                     }
                 }
 
@@ -428,6 +464,54 @@ export component ImagePage inherits Rectangle {
                     }
                 }
 
+                // Resize: a box at the new size over the picture. Its handles drag it, and the width and height fields follow.
+                if Viewer.mode == "resize": rz := Rectangle {
+                    x: stage.px;
+                    y: stage.py;
+                    width: stage.pw;
+                    height: stage.ph;
+                    property <float> sw;
+                    property <float> sh;
+                    property <float> bw: max(1, Viewer.resize-w.to-float());
+                    property <float> bh: max(1, Viewer.resize-h.to-float());
+                    // Sets the new size; with the proportions lock the other side follows (from the height when from-height).
+                    function set-size(w: float, h: float, from-height: bool) {
+                        let nw = Viewer.resize-keep && from-height ? h * Viewer.pic-w / Viewer.pic-h : w;
+                        let nh = Viewer.resize-keep && !from-height ? w * Viewer.pic-h / Viewer.pic-w : h;
+                        Viewer.resize-w = round(clamp(nw, 1, 30000)) + "";
+                        Viewer.resize-h = round(clamp(nh, 1, 30000)) + "";
+                    }
+                    box := Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: rz.bw * rz.width / Viewer.pic-w;
+                        height: rz.bh * rz.height / Viewer.pic-h;
+                        border-width: 2px;
+                        border-color: #FFFFFF;
+                        Handle {
+                            x: parent.width - 8px;
+                            y: parent.height - 8px;
+                            cursor: nwse-resize;
+                            start => { rz.sw = rz.bw; rz.sh = rz.bh; }
+                            drag(dx, dy) => { rz.set-size(rz.sw + dx / 1px / stage.s, rz.sh + dy / 1px / stage.s, false); }
+                        }
+                        Handle {
+                            x: parent.width - 8px;
+                            y: parent.height / 2 - 8px;
+                            cursor: ew-resize;
+                            start => { rz.sw = rz.bw; rz.sh = rz.bh; }
+                            drag(dx, dy) => { rz.set-size(rz.sw + dx / 1px / stage.s, rz.sh, false); }
+                        }
+                        Handle {
+                            x: parent.width / 2 - 8px;
+                            y: parent.height - 8px;
+                            cursor: ns-resize;
+                            start => { rz.sw = rz.bw; rz.sh = rz.bh; }
+                            drag(dx, dy) => { rz.set-size(rz.sw, rz.sh + dy / 1px / stage.s, true); }
+                        }
+                    }
+                }
+
                 // Previous and next in the folder.
                 if Viewer.mode == "" && Viewer.has-prev: IconButton {
                     x: Tokens.space-3;
@@ -452,15 +536,18 @@ export component ImagePage inherits Rectangle {
                     clicked => { Viewer.next(); }
                 }
                 // Side-by-side comparison of the pictures picked in the filmstrip.
-                if Viewer.comparing: Rectangle {
+                // The checked pictures in a grid, like Windows Photos.
+                if Viewer.comparing: grid := Rectangle {
                     background: Tokens.stage;
-                    HorizontalLayout {
-                        padding: Tokens.space-3;
-                        spacing: Tokens.space-3;
-                        for img in Viewer.compare-images: Image {
-                            source: img;
-                            image-fit: contain;
-                        }
+                    property <length> cw: (self.width - 2 * Tokens.space-3) / max(1, Viewer.compare-cols);
+                    property <length> ch: (self.height - 2 * Tokens.space-3) / max(1, Viewer.compare-rows);
+                    for img[i] in Viewer.compare-images: Image {
+                        x: Tokens.space-3 + mod(i, Viewer.compare-cols) * grid.cw;
+                        y: Tokens.space-3 + floor(i / Viewer.compare-cols) * grid.ch;
+                        width: grid.cw - Tokens.space-2;
+                        height: grid.ch - Tokens.space-2;
+                        source: img;
+                        image-fit: contain;
                     }
                     Button {
                         x: parent.width - self.width - Tokens.space-3;
@@ -493,20 +580,6 @@ export component ImagePage inherits Rectangle {
                 }
             }
 
-            if Viewer.show-info: Rectangle {
-                width: 280px;
-                background: Tokens.surface-raised;
-                border-width: 1px;
-                border-color: Tokens.border-subtle;
-                VerticalLayout {
-                    padding: Tokens.space-4;
-                    spacing: Tokens.space-2;
-                    alignment: start;
-                    Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; }
-                    Text { text: Viewer.info-name; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
-                    Text { text: Viewer.info-detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
-                }
-            }
         }
 
         // Filmstrip: the pictures in the folder. Click to open; Ctrl+click to pick several and compare them.
@@ -532,21 +605,28 @@ export component ImagePage inherits Rectangle {
                             height: parent.height - 6px;
                             image-fit: contain;
                         }
-                        if t.selected: Rectangle {
-                            x: 6px;
-                            y: 6px;
-                            width: 18px;
-                            height: 18px;
-                            border-radius: 9px;
-                            background: Tokens.accent-fill;
-                            Image { source: Icons.check; width: 12px; height: 12px; colorize: Tokens.text-on-accent; }
-                        }
                         thumb-ta := TouchArea {
                             mouse-cursor: pointer;
                             pointer-event(e) => {
                                 if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
                                     Viewer.thumb-clicked(i, e.modifiers.control || e.modifiers.shift);
                                 }
+                            }
+                        }
+                        // The check box: click it to pick or unpick this picture for the comparison grid.
+                        Rectangle {
+                            x: 6px;
+                            y: 6px;
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 9px;
+                            border-width: 1px;
+                            border-color: #FFFFFF;
+                            background: t.selected ? Tokens.accent-fill : (check-ta.has-hover ? #000000B0 : #00000080);
+                            if t.selected: Image { source: Icons.check; width: 12px; height: 12px; colorize: Tokens.text-on-accent; x: 3px; y: 3px; }
+                            check-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Viewer.thumb-clicked(i, true); }
                             }
                         }
                     }
@@ -567,17 +647,7 @@ export component ImagePage inherits Rectangle {
                 padding-bottom: 3px;
                 spacing: Tokens.space-2;
                 IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; clicked => { Viewer.toggle-info(); } }
-                if Viewer.file-type != "": Text { text: Viewer.file-type; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
-                if Viewer.dims-text != "": HorizontalLayout {
-                    spacing: Tokens.space-1;
-                    Rectangle { width: 14px; Image { source: Icons.dims; width: 14px; height: 14px; colorize: Tokens.text-muted; } }
-                    Text { text: Viewer.dims-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
-                }
-                if Viewer.size-text != "": HorizontalLayout {
-                    spacing: Tokens.space-1;
-                    Rectangle { width: 14px; Image { source: Icons.save; width: 14px; height: 14px; colorize: Tokens.text-muted; } }
-                    Text { text: Viewer.size-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
-                }
+                if Viewer.facts-text != "": Text { text: Viewer.facts-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
             }
 
             HorizontalLayout {

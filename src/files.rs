@@ -7,6 +7,7 @@ pub enum Kind {
     Image,
     Video,
     Audio,
+    Text,
 }
 
 pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "jfif", "webp", "svg", "gif", "bmp", "ico"];
@@ -15,6 +16,11 @@ pub const VIDEO_EXTS: &[&str] = &[
 ];
 pub const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "wma", "aiff", "aif", "mka"];
 pub const SUBTITLE_EXTS: &[&str] = &["srt", "vtt", "ass", "ssa"];
+/// Plain text the Text tab edits (Notepad's job): notes, Markdown, JSON and config or log files.
+pub const TEXT_EXTS: &[&str] = &[
+    "txt", "md", "markdown", "json", "toml", "yaml", "yml", "ini", "cfg", "conf", "log", "csv", "xml", "env", "text", "rs",
+    "js", "html", "css", "bat", "ps1", "sh",
+];
 
 pub fn ext_of(path: &Path) -> String {
     path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase()
@@ -29,6 +35,8 @@ pub fn kind_of(path: &Path) -> Option<Kind> {
         Some(Kind::Video)
     } else if AUDIO_EXTS.contains(&ext) {
         Some(Kind::Audio)
+    } else if TEXT_EXTS.contains(&ext) {
+        Some(Kind::Text)
     } else {
         None
     }
@@ -37,6 +45,7 @@ pub fn kind_of(path: &Path) -> Option<Kind> {
 pub fn kind_name(kind: Kind) -> &'static str {
     match kind {
         Kind::Image => "image",
+        Kind::Text => "text",
         Kind::Video => "video",
         Kind::Audio => "audio",
     }
@@ -147,7 +156,8 @@ mod tests {
         assert_eq!(kind_of(Path::new("a/B.JPG")), Some(Kind::Image));
         assert_eq!(kind_of(Path::new("x.mkv")), Some(Kind::Video));
         assert_eq!(kind_of(Path::new("x.flac")), Some(Kind::Audio));
-        assert_eq!(kind_of(Path::new("x.txt")), None);
+        assert_eq!(kind_of(Path::new("x.txt")), Some(Kind::Text));
+        assert_eq!(kind_of(Path::new("x.exe")), None);
         assert_eq!(clock(75_000), "1:15");
         assert_eq!(clock(3_723_000), "1:02:03");
     }

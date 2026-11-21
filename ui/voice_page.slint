@@ -1,5 +1,6 @@
-// Voice recorder: one big button, a level meter and the list of takes.
-import { ScrollView } from "std-widgets.slint";
+// Voice recorder, like Windows' Sound Recorder: a record button with pause, a level meter, a microphone and a format,
+// markers while recording, and the list of takes with play, rename, delete and show in folder.
+import { ScrollView, ComboBox, LineEdit } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
 import { Button, ButtonKind, Card } from "widgets.slint";
@@ -18,12 +19,13 @@ export component VoicePage inherits Rectangle {
 
             Text { text: "Voice recorder"; color: Tokens.text-primary; font-size: Type.title; font-weight: 600; }
             Card {
-                height: 260px;
                 VerticalLayout {
+                    padding: Tokens.space-4;
                     alignment: center;
                     spacing: Tokens.space-4;
                     HorizontalLayout {
                         alignment: center;
+                        spacing: Tokens.space-4;
                         Rectangle {
                             width: 96px;
                             height: 96px;
@@ -41,6 +43,17 @@ export component VoicePage inherits Rectangle {
                                 mouse-cursor: pointer;
                                 clicked => { Voice.toggle(); }
                             }
+                        }
+                        if Voice.recording: Button {
+                            text: Voice.paused ? "Resume" : "Pause";
+                            kind: ButtonKind.ghost;
+                            clicked => { Voice.pause-toggle(); }
+                        }
+                        if Voice.recording: Button {
+                            text: "Marker";
+                            kind: ButtonKind.ghost;
+                            enabled: !Voice.paused;
+                            clicked => { Voice.add-marker(); }
                         }
                     }
                     Text {
@@ -65,13 +78,45 @@ export component VoicePage inherits Rectangle {
                         }
                     }
                     Text {
-                        text: Voice.recording ? "Recording from the microphone. Press Stop when you're done." : "Press the button to start recording.";
+                        text: Voice.paused ? "Paused. Press Resume to go on." : (Voice.recording ? "Recording from the microphone. Press Stop when you're done." : "Press the button to start recording.");
                         color: Tokens.text-muted;
                         font-size: Type.caption;
                         horizontal-alignment: center;
                     }
                 }
             }
+
+            HorizontalLayout {
+                spacing: Tokens.space-3;
+                Text { text: "Microphone"; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
+                ComboBox {
+                    model: Voice.mics;
+                    current-index: Voice.mic-index;
+                    width: 240px;
+                    selected(value) => { Voice.pick-mic(self.current-index); }
+                }
+                Rectangle { }
+                Text { text: "Format"; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
+                ComboBox {
+                    model: Voice.formats;
+                    current-index: Voice.format-index;
+                    width: 120px;
+                    enabled: !Voice.recording;
+                    selected(value) => { Voice.pick-format(self.current-index); }
+                }
+            }
+
+            if Voice.recording || Voice.markers.length > 0: Text { text: "Markers"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
+            if Voice.markers.length > 0: Card {
+                height: 96px;
+                ScrollView {
+                    VerticalLayout {
+                        padding: Tokens.space-2;
+                        for m in Voice.markers: Text { text: m; color: Tokens.text-primary; font-size: Type.caption; }
+                    }
+                }
+            }
+
             HorizontalLayout {
                 Text { text: "Recordings"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; vertical-alignment: center; }
                 Rectangle { }
@@ -87,7 +132,7 @@ export component VoicePage inherits Rectangle {
                         for t[i] in Voice.takes: Rectangle {
                             height: 44px;
                             border-radius: Tokens.radius-control;
-                            background: take-ta.has-hover ? Tokens.surface-hover : transparent;
+                            background: Voice.selected == i ? Tokens.surface-pressed : (take-ta.has-hover ? Tokens.surface-hover : transparent);
                             HorizontalLayout {
                                 padding-left: Tokens.space-3;
                                 spacing: Tokens.space-3;
@@ -103,11 +148,25 @@ export component VoicePage inherits Rectangle {
                             }
                             take-ta := TouchArea {
                                 mouse-cursor: pointer;
-                                clicked => { Voice.open-take(i); }
+                                // Click picks the take; double-click plays it.
+                                clicked => { Voice.selected = i; Voice.rename-text = t.name; }
+                                double-clicked => { Voice.open-take(i); }
                             }
                         }
                     }
                 }
+            }
+            if Voice.selected >= 0 && Voice.selected < Voice.takes.length: HorizontalLayout {
+                spacing: Tokens.space-2;
+                LineEdit {
+                    text <=> Voice.rename-text;
+                    placeholder-text: "New name";
+                    min-width: 180px;
+                }
+                Button { text: "Rename"; kind: ButtonKind.ghost; clicked => { Voice.rename(Voice.selected, Voice.rename-text); } }
+                Button { text: "Play"; kind: ButtonKind.ghost; clicked => { Voice.open-take(Voice.selected); } }
+                Button { text: "Show in folder"; kind: ButtonKind.ghost; clicked => { Voice.reveal(Voice.selected); } }
+                Button { text: "Delete"; kind: ButtonKind.ghost; clicked => { Voice.delete(Voice.selected); } }
             }
         }
     }

@@ -27,7 +27,7 @@ export struct Thumb {
 }
 
 export global Shell {
-    // "home", "image", "audio", "video", "voice", "settings"
+    // "home", "image", "audio", "video", "voice", "camera", "settings"
     in-out property <string> page: "home";
     in property <string> title: "Rimelight Media";
     // A downloaded update waiting for a restart (its version), or empty.
@@ -38,7 +38,10 @@ export global Shell {
     in property <bool> recording;
     in property <string> recording-time;
     in property <bool> drop-hover;
+    // The file name in the title (empty when there is no file): click it to rename.
+    in property <string> title-name;
 
+    callback rename(string);
     callback open-file();
     callback open-recent(int);
     callback clear-recents();
@@ -50,9 +53,29 @@ export global Shell {
     callback apply-update();
     // Back to the empty version of the current tab.
     callback close-tab();
-    // Windows' Cast panel (show the screen on a TV or wireless display).
+    // The in-app "Save changes to ...?" question (Text tab). confirm-answer: 0 Save, 1 Don't save, 2 Cancel.
+    in property <bool> confirm-open;
+    in property <string> confirm-name;
+    callback confirm-answer(int);
+    // Opens the cast popup (and searches for devices).
     callback cast();
     callback key(string, bool, bool, bool) -> bool; // text, ctrl, shift, alt
+}
+
+// Casting to a TV or speaker (src/cast.rs): the devices found on the network and the cast in progress.
+export global Cast {
+    in property <[string]> devices;
+    in property <bool> searching;
+    // True once a search has ended, so "nothing found" can be told from "still searching".
+    in property <bool> searched;
+    // The device the file is cast to; empty when not casting.
+    in property <string> casting-to;
+    in property <bool> playing;
+    callback refresh();
+    callback pick(int);
+    callback pause();
+    callback stop();
+    callback system-cast();
 }
 
 export global Viewer {
@@ -93,6 +116,8 @@ export global Viewer {
     // Where the text tool is typing (picture pixels); -1 when not typing.
     in property <float> text-x: -1;
     in property <float> text-y: -1;
+    // The text being typed for the text tool (kept here so Rust can commit it on any exit).
+    in-out property <string> pending-text;
 
     in-out property <string> resize-w;
     in-out property <string> resize-h;
@@ -110,7 +135,7 @@ export global Viewer {
     callback mark-begin(float, float);
     callback mark-move(float, float);
     callback mark-end();
-    callback mark-text(string);
+    callback commit-text();
     callback undo();
     callback redo();
     callback clear-marks();
@@ -136,6 +161,8 @@ export global Viewer {
     in property <string> file-type;
     in property <string> dims-text;
     in property <string> size-text;
+    // The three above joined with " | " for the status bar.
+    in property <string> facts-text;
     // The picture is a file (Share and Show in folder need one).
     in property <bool> can-share;
     // The fit-to-window scale the stage computes (for the zoom slider and percentage).
@@ -148,6 +175,9 @@ export global Viewer {
     in property <[Thumb]> thumbs;
     in property <bool> comparing;
     in property <[image]> compare-images;
+    // The grid for the comparison: columns and rows.
+    in property <int> compare-cols: 1;
+    in property <int> compare-rows: 1;
     callback toggle-filmstrip();
     callback thumb-clicked(int, bool);
     callback close-compare();
@@ -181,6 +211,15 @@ export global Player {
     in property <int> video-h: 9;
     in property <string> speed-text: "1×";
     in property <[Choice]> speeds;
+    // The speed as a number (0.25 to 3), for the speed slider.
+    in property <float> speed-value: 1;
+    // Status bar: codec, bitrate, sample rate, channels, resolution and fps, duration, size.
+    in property <string> meta-text;
+    // Waveform of the sound track: an SVG path in a 1 x 2 box (y 0 to 2, centred on 1), and whether it is ready.
+    in property <string> wave-commands;
+    in property <bool> has-wave;
+    // Show the waveform as the seek bar too (the trim range always shows it).
+    in-out property <bool> wave-seek: false;
     // Subtitle controls: delay, size, and a picture subtitle placed as fractions of the video.
     in property <string> sub-delay-text: "0 ms";
     in property <float> sub-scale: 1;
@@ -206,19 +245,132 @@ export global Player {
     callback trim-save();
     callback pick-speed(int);
     callback speed-step(int);
+    callback set-speed(float); // 0.25 to 3
+    callback trim-drag(bool, float); // true: start; the fraction of the timeline
     callback sub-delay(int); // change in ms; 0 resets
     callback sub-size(int); // -1 smaller, +1 larger, 0 resets
 }
 
+// The camera page (src/cameractl.rs): the live preview, photo or video mode, the timer, the grid, the mirror and the
+// device list. Rust sets the state; the page's clicks call the callbacks, and Rust sets the values back.
+export global Camera {
+    in property <image> frame;
+    in property <bool> has-frame;
+    in property <bool> running;
+    in property <bool> recording;
+    in property <string> time-text: "0:00";
+    // Seconds left before a timed photo (0 when none is counting down).
+    in property <int> countdown;
+    in property <string> countdown-text;
+    in property <image> thumb;
+    in property <bool> has-thumb;
+    in property <string> status;
+    in property <[string]> devices;
+    in-out property <int> device-index: 0;
+    // True in video mode, false in photo mode.
+    in-out property <bool> video-mode: false;
+    // 0 off, 1 3 s, 2 5 s, 3 10 s.
+    in-out property <int> timer-index: 0;
+    in-out property <bool> grid: false;
+    in-out property <bool> mirror: true;
+    callback shutter();
+    callback set-device(int);
+    callback set-video(bool);
+    callback set-timer(int);
+    callback set-grid(bool);
+    callback set-mirror(bool);
+    callback open-last();
+}
+
 export global Voice {
     in property <bool> recording;
+    in property <bool> paused;
     in property <string> time-text: "00:00";
     in property <float> level;
     in property <[RecentItem]> takes;
     in property <string> folder;
+    // The microphones (the first is the default one) and the file formats; the index of the one picked.
+    in property <[string]> mics;
+    in-out property <int> mic-index: 0;
+    in property <[string]> formats;
+    in-out property <int> format-index: 0;
+    // Markers added during the recording, as "1   0:12".
+    in property <[string]> markers;
+    // The take picked in the list (-1 for none), and the new name typed for it.
+    in-out property <int> selected: -1;
+    in-out property <string> rename-text;
     callback toggle();
+    callback pause-toggle();
+    callback add-marker();
+    callback pick-mic(int);
+    callback pick-format(int);
     callback open-take(int);
+    callback rename(int, string);
+    callback delete(int);
+    callback reveal(int);
     callback open-folder();
+}
+
+// One Markdown block for the preview. kind: 0 heading (level 1-6), 1 paragraph, 2 list item (indent, check: -1 none,
+// 0 open task, 1 done task), 3 code line, 4 quote, 5 table row (level 1 for the header), 6 rule.
+export struct MdBlock {
+    kind: int,
+    level: int,
+    indent: int,
+    check: int,
+    text: string,
+}
+
+// One row of the JSON tree: depth, key, value summary; containers fold (open) when clicked.
+export struct JsonRow {
+    depth: int,
+    label: string,
+    value: string,
+    container: bool,
+    open: bool,
+    path: string,
+}
+
+// The Text tab. Rust reads the editor's text on demand (TextDoc.text) and fills the status, preview and tree.
+export global TextDoc {
+    // The editor's text (LF line ends) and the caret (byte offset), from the editor.
+    in-out property <string> text;
+    in-out property <int> caret;
+    in property <bool> has-doc;
+    in property <string> file-name;
+    in property <bool> dirty;
+    in property <bool> markdown;
+    in property <bool> json;
+    in property <string> status;
+    // The line under the tools: a JSON error, a result, or nothing.
+    in property <string> message;
+    // 0 editor only; 1 editor with the preview (Markdown) or the tree (JSON) beside it; 2 preview only (Markdown).
+    in-out property <int> view: 0;
+    in-out property <bool> word-wrap: true;
+    in property <[MdBlock]> md-blocks;
+    in property <[JsonRow]> json-rows;
+    // The find bar.
+    in-out property <bool> find-open: false;
+    in property <string> find-status;
+    // A selection the find tools set (sel-serial changes each time, so the editor applies it again).
+    in property <int> sel-start;
+    in property <int> sel-end;
+    in property <int> sel-serial;
+
+    callback caret-moved(int);
+    callback edited();
+    callback save();
+    callback save-as();
+    callback new-doc();
+    callback revert(); // reload the file from disk, dropping the changes
+    callback format-json(int); // 2 or 4 spaces
+    callback minify-json();
+    callback validate-json();
+    callback sort-json();
+    callback toggle-node(string);
+    callback find-next(string);
+    callback replace-one(string, string);
+    callback replace-all(string, string);
 }
 
 export global Settings {

@@ -80,9 +80,12 @@ pub fn refresh(app: &Rc<App>) {
     );
     s.set_defaults_state(
         if install::file_types_registered() {
-            "Rimelight Media is registered for pictures, video and music. Pick it as the default in Windows Settings > Apps > Default apps."
+            match install::not_default() {
+                v if v.is_empty() => "Rimelight Media is the default for every file type it opens.".to_string(),
+                v => format!("Still opening with another app: .{}. Windows lets only you change defaults: Open Windows default apps and set these to Rimelight Media.", v.join(", .")),
+            }
         } else {
-            "Register Rimelight Media's file types first, then pick it as the default in Windows' default apps."
+            "Register Rimelight Media's file types first, then pick it as the default in Windows' default apps.".to_string()
         }
         .into(),
     );

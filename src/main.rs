@@ -12,8 +12,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod cameractl;
 mod capture;
 mod capturectl;
+mod cast;
 mod files;
 mod hotkeys;
 mod install;
@@ -25,6 +27,7 @@ mod platform;
 mod prefs;
 mod settingsctl;
 mod setupctl;
+mod textctl;
 mod ui;
 mod update;
 mod viewer;
@@ -155,7 +158,7 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
     let path = dir.join("selftest-recording.mp4");
     let _ = std::fs::remove_file(&path);
     let rect = platform::ScreenRect { x: 0, y: 0, w: 640, h: 360 };
-    match capture::recorder::start(capture::recorder::Options { screen: Some((rect, 30)), system_audio: true, mic: false, path }) {
+    match capture::recorder::start(capture::recorder::Options { screen: Some((rect, 30)), camera: None, system_audio: true, mic: false, path, mic_name: None }) {
         Ok(rec) => {
             println!("recording: started {:?}", rec.notes);
             std::thread::sleep(Duration::from_secs(2));
@@ -260,13 +263,14 @@ fn main() -> ExitCode {
 
     if !checking {
         app::start_hotkeys(&app);
+        capturectl::prewarm_overlay();
         instance::serve(app::handle_request);
         let keep = app.prefs.borrow().background;
         capturectl::ensure_tray(&app, keep);
     }
 
     if let Some(file) = &args.file {
-        app::open_path(&app, file);
+        app::queue_open(&app, file.clone());
     }
     // The installer's first run: the setup window instead of the app.
     let first_run = !checking && update::FIRST_RUN.load(std::sync::atomic::Ordering::Relaxed) && setupctl::show(&app);

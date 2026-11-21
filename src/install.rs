@@ -4,13 +4,13 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::files::{AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS};
+use crate::files::{AUDIO_EXTS, IMAGE_EXTS, TEXT_EXTS, VIDEO_EXTS};
 
 pub const APP_NAME: &str = "Rimelight Media";
 const EXE_NAME: &str = "rimelight-media.exe";
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const CAPS_KEY: &str = r"Software\RimelightMedia\Capabilities";
-const PROGIDS: [&str; 3] = ["RimelightMedia.Image", "RimelightMedia.Video", "RimelightMedia.Audio"];
+const PROGIDS: [&str; 4] = ["RimelightMedia.Image", "RimelightMedia.Video", "RimelightMedia.Audio", "RimelightMedia.Text"];
 
 pub fn current_exe() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from(EXE_NAME))
@@ -48,17 +48,21 @@ mod reg {
         key.set_value(name, &value)
     }
 
-    pub fn register_file_types(exe: &Path, icon: &Path, kinds: [bool; 3]) -> std::io::Result<()> {
+    pub fn register_file_types(exe: &Path, icon: &Path, kinds: [bool; 4]) -> std::io::Result<()> {
         unregister_file_types();
         let exe_s = exe.display().to_string();
         let open = format!("\"{exe_s}\" \"%1\"");
         let icon_s = if icon.exists() { icon.display().to_string() } else { format!("{exe_s},0") };
-        // Each kind of file shows the logo in its own colour (pictures light blue, video purple, music red).
+        // Each kind of file shows the logo in its own colour (pictures light blue, video purple, music red, text green).
         let type_icon = |kind: &str| {
             let p = icon.with_file_name(format!("rimelight-media-{kind}.ico"));
             if p.exists() { p.display().to_string() } else { icon_s.clone() }
         };
-        for ((progid, (name, exts)), on) in PROGIDS.iter().zip([("Picture", IMAGE_EXTS), ("Video", VIDEO_EXTS), ("Music", AUDIO_EXTS)]).zip(kinds) {
+        for ((progid, (name, exts)), on) in PROGIDS
+            .iter()
+            .zip([("Picture", IMAGE_EXTS), ("Video", VIDEO_EXTS), ("Music", AUDIO_EXTS), ("Text", TEXT_EXTS)])
+            .zip(kinds)
+        {
             if !on {
                 continue;
             }
@@ -66,6 +70,10 @@ mod reg {
             set(&base, "", &format!("{name} ({APP_NAME})"))?;
             set(&format!(r"{base}\DefaultIcon"), "", &type_icon(&name.to_lowercase()))?;
             set(&format!(r"{base}\shell\open\command"), "", &open)?;
+            // Without this, Explorer hides Open for more than 15 files and Enter runs another verb (for pictures, the
+            // desktop slideshow). Player: one start per file, gathered by app::queue_open.
+            set(&format!(r"{base}\shell\open"), "MultiSelectModel", "Player")?;
+            set(&format!(r"{base}\shell"), "", "open")?;
             for ext in exts {
                 set(&format!(r"Software\Classes\.{ext}\OpenWithProgids"), progid, "")?;
                 set(&format!(r"{CAPS_KEY}\FileAssociations"), &format!(".{ext}"), progid)?;
@@ -87,7 +95,7 @@ mod reg {
         for progid in PROGIDS {
             let _ = hk.delete_subkey_all(format!(r"Software\Classes\{progid}"));
         }
-        for ext in IMAGE_EXTS.iter().chain(VIDEO_EXTS).chain(AUDIO_EXTS) {
+        for ext in IMAGE_EXTS.iter().chain(VIDEO_EXTS).chain(AUDIO_EXTS).chain(TEXT_EXTS) {
             if let Ok(k) = hk.open_subkey_with_flags(format!(r"Software\Classes\.{ext}\OpenWithProgids"), KEY_ALL_ACCESS) {
                 for progid in PROGIDS {
                     let _ = k.delete_value(progid);
@@ -100,6 +108,25 @@ mod reg {
             let _ = k.delete_value(APP_NAME);
         }
         crate::platform::file_types_changed();
+    }
+
+    /// The registered extensions whose Windows default (the per-user UserChoice) is not Rimelight Media.
+    pub fn not_default() -> Vec<&'static str> {
+        let hk = hkcu();
+        IMAGE_EXTS
+            .iter()
+            .chain(VIDEO_EXTS)
+            .chain(AUDIO_EXTS)
+            .chain(TEXT_EXTS)
+            .copied()
+            .filter(|ext| {
+                let base = format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}");
+                let ours = ["UserChoiceLatest", "UserChoice"].iter().find_map(|k| {
+                    hk.open_subkey(format!(r"{base}\{k}")).and_then(|k| k.get_value::<String, _>("ProgId")).ok()
+                });
+                !ours.is_some_and(|p| p.starts_with("RimelightMedia."))
+            })
+            .collect()
     }
 
     pub fn file_types_registered() -> bool {
@@ -156,25 +183,34 @@ mod reg {
         false
     }
     pub fn set_windows_printscreen(_: bool) {}
-    pub fn register_file_types(_: &Path, _: &Path, _: [bool; 3]) -> std::io::Result<()> {
+    pub fn register_file_types(_: &Path, _: &Path, _: [bool; 4]) -> std::io::Result<()> {
         Ok(())
     }
     pub fn unregister_file_types() {}
     pub fn file_types_registered() -> bool {
         false
     }
+    pub fn not_default() -> Vec<&'static str> {
+        Vec::new()
+    }
     pub fn set_run_at_login(_: Option<&Path>) {}
     pub fn set_screenclip(_: Option<&Path>) {}
 }
 
-pub use reg::{file_types_registered, set_run_at_login, set_screenclip, set_windows_printscreen, windows_printscreen_on};
+pub use reg::{file_types_registered, not_default, set_run_at_login, set_screenclip, set_windows_printscreen, windows_printscreen_on};
 
 /// Registers the chosen file types (pictures, video, music) for this exe; the others are removed. An installed copy keeps
 /// the same path across updates.
-pub fn register_file_types(kinds: [bool; 3]) -> Result<(), String> {
+pub fn register_file_types(kinds: [bool; 4]) -> Result<(), String> {
     let icon = icon_path();
     write_icon(&icon);
-    for (kind, top, bottom) in [("picture", "#7DD3FC", "#0284C7"), ("video", "#C4B5FD", "#7C3AED"), ("music", "#FDA4AF", "#E11D48")] {
+    // The same colours as the home page's file-type icons (ui/tokens.slint: file-picture, file-video, file-music, file-text).
+    for (kind, top, bottom) in [
+        ("picture", "#7DD3FC", "#0284C7"),
+        ("video", "#C4B5FD", "#7C3AED"),
+        ("music", "#FDA4AF", "#E11D48"),
+        ("text", "#86EFAC", "#16A34A"),
+    ] {
         if let Some(pic) = crate::picture::logo_tinted(256, top, bottom) {
             write_picture_icon(&icon.with_file_name(format!("rimelight-media-{kind}.ico")), pic);
         }

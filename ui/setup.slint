@@ -19,6 +19,7 @@ export component SetupWindow inherits Window {
     in-out property <bool> pictures: true;
     in-out property <bool> video: true;
     in-out property <bool> music: true;
+    in-out property <bool> text: true;
     in-out property <bool> open-now: false;
     callback finish();
 
@@ -71,6 +72,7 @@ export component SetupWindow inherits Window {
             Toggle { text: "Pictures"; detail: "PNG, JPEG, WebP, GIF, SVG, BMP, ICO"; checked <=> root.pictures; }
             Toggle { text: "Video"; detail: "MP4, MKV, WebM, MOV, AVI, MPEG and more"; checked <=> root.video; }
             Toggle { text: "Music"; detail: "MP3, FLAC, WAV, OGG, M4A and more"; checked <=> root.music; }
+            Toggle { text: "Text"; detail: "TXT, Markdown, JSON, TOML, YAML, CSV, logs and more"; checked <=> root.text; }
             Text {
                 text: "Windows lets only you set defaults: after Finish, its Default apps page opens on Rimelight Media so you can confirm. Or pick \"Always\" the next time Windows asks how to open a file.";
                 color: Tokens.text-faint;

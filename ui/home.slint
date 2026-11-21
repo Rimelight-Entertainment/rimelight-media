@@ -1,18 +1,9 @@
-// Home: two panels. Left: drop zone and capture tiles. Right: recent files. Narrow windows stack them.
+// Home: two panels. Left: the drop zone. Right: recent files. Narrow windows stack them.
 import { ScrollView } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { Tile, Button, ButtonKind, Card } from "widgets.slint";
+import { Button, ButtonKind, Card } from "widgets.slint";
 import { Shell, RecentItem } from "state.slint";
-
-struct TileData {
-    icon: image,
-    title: string,
-    detail: string,
-    keys: string,
-    accent: color,
-    action: string,
-}
 
 component RecentRow inherits Rectangle {
     in property <RecentItem> item;
@@ -27,10 +18,10 @@ component RecentRow inherits Rectangle {
         Rectangle {
             width: Tokens.icon-medium;
             Image {
-                source: root.item.kind == "image" ? Icons.image : root.item.kind == "video" ? Icons.video : Icons.music;
+                source: root.item.kind == "image" ? Icons.image : root.item.kind == "video" ? Icons.video : root.item.kind == "text" ? Icons.text : Icons.music;
                 width: Tokens.icon-medium;
                 height: Tokens.icon-medium;
-                colorize: Tokens.text-muted;
+                colorize: root.item.kind == "image" ? Tokens.file-picture : root.item.kind == "video" ? Tokens.file-video : root.item.kind == "text" ? Tokens.file-text : Tokens.file-music;
             }
         }
         VerticalLayout {
@@ -45,31 +36,13 @@ component RecentRow inherits Rectangle {
     }
 }
 
-// Drop zone and capture tiles. The tiles flow into as many columns as fit.
+// The drop zone: drop a file here, or open one.
 component StartPanel inherits VerticalLayout {
     alignment: start;
-    spacing: Tokens.space-5;
-
-    property <[TileData]> tiles: [
-        { icon: Icons.scan, title: "Snip an area", detail: "Drag over any part of the screen", keys: "Print Screen", accent: Tokens.accent-default, action: "snip-region" },
-        { icon: Icons.app-window, title: "Snip a window", detail: "Click the window you want", keys: "Alt + Print Screen", accent: Tokens.accent-default, action: "snip-window" },
-        { icon: Icons.monitor, title: "Whole screen", detail: "Every monitor, saved at once", keys: "Ctrl + Print Screen", accent: Tokens.accent-default, action: "snip-screen" },
-        { icon: Icons.record, title: Shell.recording ? "Stop recording" : "Record the screen", detail: Shell.recording ? Shell.recording-time : "An area, a window or the whole screen", keys: "Shift + Print Screen", accent: Tokens.record-red, action: "record" },
-        { icon: Icons.mic, title: "Record your voice", detail: "Sound from the microphone", keys: "", accent: Tokens.status-success, action: "voice" },
-        { icon: Icons.settings, title: "Settings", detail: "Default apps, keys, folders", keys: "", accent: Tokens.text-muted, action: "settings" },
-    ];
-
-    function run(action: string) {
-        if action == "snip-region" { Shell.snip("region"); }
-        else if action == "snip-window" { Shell.snip("window"); }
-        else if action == "snip-screen" { Shell.snip("screen"); }
-        else if action == "record" { if Shell.recording { Shell.stop-recording(); } else { Shell.record-screen("region"); } }
-        else if action == "voice" { Shell.go("voice"); }
-        else if action == "settings" { Shell.go("settings"); }
-    }
 
     Rectangle {
-        height: 168px;
+        min-height: 168px;
+        preferred-height: 168px;
         border-radius: Tokens.radius-r8;
         border-width: 2px;
         border-color: Shell.drop-hover ? Tokens.accent-default : Tokens.border-subtle;
@@ -81,12 +54,13 @@ component StartPanel inherits VerticalLayout {
             HorizontalLayout {
                 alignment: center;
                 spacing: Tokens.space-2;
-                Image { source: Icons.image; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
-                Image { source: Icons.video; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
-                Image { source: Icons.music; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
+                Image { source: Icons.image; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.file-picture; }
+                Image { source: Icons.video; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.file-video; }
+                Image { source: Icons.music; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.file-music; }
+                Image { source: Icons.text; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.file-text; }
             }
             Text {
-                text: "Drop a picture, video or song here";
+                text: "Drop a picture, video, song or text file here";
                 color: Tokens.text-primary;
                 font-size: Type.heading;
                 font-weight: 600;
@@ -103,27 +77,6 @@ component StartPanel inherits VerticalLayout {
                     clicked => { Shell.open-file(); }
                 }
             }
-        }
-    }
-
-    Text { text: "Capture"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
-
-    grid := Rectangle {
-        property <int> cols: max(1, floor((self.width + Tokens.space-3) / (200px + Tokens.space-3)));
-        property <length> tile-w: (self.width - (self.cols - 1) * Tokens.space-3) / self.cols;
-        property <length> tile-h: 128px;
-        height: ceil(root.tiles.length / self.cols) * (self.tile-h + Tokens.space-3) - Tokens.space-3;
-        for t[i] in root.tiles: Tile {
-            x: mod(i, grid.cols) * (grid.tile-w + Tokens.space-3);
-            y: floor(i / grid.cols) * (grid.tile-h + Tokens.space-3);
-            width: grid.tile-w;
-            height: grid.tile-h;
-            icon: t.icon;
-            title: t.title;
-            detail: t.detail;
-            keys: t.keys;
-            accent: t.accent;
-            clicked => { root.run(t.action); }
         }
     }
 }

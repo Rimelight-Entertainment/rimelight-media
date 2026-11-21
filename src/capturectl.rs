@@ -37,7 +37,16 @@ pub struct CaptureState {
     screen: Option<recorder::Recording>,
     bar: Option<ui::RecBar>,
     voice: Option<recorder::Recording>,
+    /// Markers added during the voice recording (milliseconds on the recording's clock).
+    voice_marks: Vec<u64>,
+    /// The microphone picked in the voice page: 0 is the default one, then the input devices in order.
+    voice_mic: usize,
+    /// The file format picked in the voice page (an index into VOICE_FORMATS).
+    voice_format: usize,
 }
+
+/// The file formats the voice recorder can save.
+pub const VOICE_FORMATS: [&str; 4] = ["m4a", "mp3", "wav", "flac"];
 
 pub fn wire(app: &Rc<App>) {
     let shell = app.ui.global::<ui::Shell>();
@@ -61,6 +70,22 @@ pub fn wire(app: &Rc<App>) {
             files::reveal(&dir);
         })
     });
+    voice.on_pause_toggle(|| with_app(toggle_pause));
+    voice.on_add_marker(|| with_app(add_marker));
+    voice.on_pick_mic(|i| with_app(move |a| pick_mic(a, i)));
+    voice.on_pick_format(|i| with_app(move |a| pick_format(a, i)));
+    voice.on_rename(|i, name| with_app(move |a| rename_take(a, i, name.to_string())));
+    voice.on_delete(|i| with_app(move |a| delete_take(a, i)));
+    voice.on_reveal(|i| {
+        with_app(move |a| {
+            if let Some(p) = takes(a).get(i as usize) {
+                files::reveal(p);
+            }
+        })
+    });
+    voice.set_formats(ModelRc::new(VecModel::from(VOICE_FORMATS.iter().map(|f| SharedString::from(*f)).collect::<Vec<_>>())));
+    voice.set_format_index(0);
+    voice.set_mic_index(0);
     app.slow_tick.start(slint::TimerMode::Repeated, Duration::from_millis(100), || with_app(slow_tick));
 }
 
@@ -101,16 +126,13 @@ fn begin(app: &Rc<App>, mode: &str, purpose: Purpose) {
         }
         c.busy = true;
     }
+    // The main window stays where it is: it is part of the screen grab, and window mode can pick it.
     let main_was_visible = app.ui.window().is_visible();
-    if main_was_visible {
-        let _ = app.ui.hide();
-    }
+    let keep = hwnd_of(app.ui.window());
     let mode = mode.to_string();
     std::thread::spawn(move || {
-        // Let the window fade out of the picture.
-        std::thread::sleep(Duration::from_millis(if main_was_visible { 300 } else { 60 }));
         let result = grab::screenshot();
-        let windows = platform::top_windows();
+        let windows = platform::top_windows(keep);
         post(move |a| {
             a.cap.borrow_mut().busy = false;
             match result {
@@ -133,7 +155,7 @@ fn begin(app: &Rc<App>, mode: &str, purpose: Purpose) {
 }
 
 fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<TopWindow>, mode: &str, purpose: Purpose, main_was_visible: bool) {
-    let Ok(w) = ui::SnipWindow::new() else { return };
+    let Some(w) = SPARE_OVERLAY.with(|s| s.borrow_mut().take()).or_else(|| ui::SnipWindow::new().ok()) else { return };
     w.set_shot(picture::to_slint(&shot));
     w.set_shot_w(shot.w as i32);
     w.set_shot_h(shot.h as i32);
@@ -183,6 +205,8 @@ fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<Top
     // Again after showing: winit may have moved it to fit a monitor.
     w.window().set_position(slint::PhysicalPosition::new(rect.x, rect.y));
     w.window().set_size(slint::PhysicalSize::new(rect.w as u32, rect.h as u32));
+    // No fade or zoom in: the overlay is there at once.
+    platform::no_transitions(hwnd_of(w.window()));
     use slint::winit_030::WinitWindowAccessor as _;
     w.window().with_winit_window(|ww| ww.focus_window());
     app.cap.borrow_mut().snip = Some(Snip { window: w, shot, rect, windows, purpose, main_was_visible, free: Vec::new() });
@@ -192,6 +216,7 @@ fn overlay_cancel(app: &Rc<App>) {
     let snip = app.cap.borrow_mut().snip.take();
     if let Some(s) = snip {
         let _ = s.window.hide();
+        keep_overlay(&s.window);
         if s.main_was_visible {
             show_main(app);
         }
@@ -201,6 +226,7 @@ fn overlay_cancel(app: &Rc<App>) {
 fn overlay_done(app: &Rc<App>, x: f32, y: f32, w: f32, h: f32) {
     let Some(s) = app.cap.borrow_mut().snip.take() else { return };
     let _ = s.window.hide();
+    keep_overlay(&s.window);
     let mode = s.window.get_mode();
     // In window mode, use the window's exact pixels.
     let px = |f: f32, total: i32| (f * total as f32).round() as i32;
@@ -267,13 +293,25 @@ fn finish_snip(app: &Rc<App>, pic: Picture, main_was_visible: bool) {
     }
 }
 
-fn start_screen(app: &Rc<App>, rect: ScreenRect, main_was_visible: bool) {
+/// The Win32 window handle of one of our windows (0 when it has none yet).
+fn hwnd_of(window: &slint::Window) -> isize {
+    use slint::winit_030::WinitWindowAccessor as _;
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+    window
+        .with_winit_window(|w| match w.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
+            _ => 0,
+        })
+        .unwrap_or(0)
+}
+
+fn start_screen(app: &Rc<App>, rect: ScreenRect, _main_was_visible: bool) {
     let (system_audio, mic, fps, dir) = {
         let p = app.prefs.borrow();
         (p.rec_system_audio, p.rec_mic, p.rec_fps, p.recording_dir.clone())
     };
     let path = recorder::new_path(&dir, "Recording", "mp4");
-    let opts = recorder::Options { screen: Some((rect, fps)), system_audio, mic, path };
+    let opts = recorder::Options { screen: Some((rect, fps)), camera: None, system_audio, mic, path, mic_name: None };
     match recorder::start(opts) {
         Ok(rec) => {
             let notes = rec.notes.join("; ");
@@ -283,27 +321,11 @@ fn start_screen(app: &Rc<App>, rect: ScreenRect, main_was_visible: bool) {
             if !notes.is_empty() {
                 toast(app, notes);
             }
-            if main_was_visible {
-                // Stay out of the way: the bar has the Stop button.
-                let _ = app.ui.window().with_winit_window_minimise();
-            }
         }
         Err(e) => {
             show_main(app);
             toast(app, e);
         }
-    }
-}
-
-trait Minimise {
-    fn with_winit_window_minimise(&self) -> Option<()>;
-}
-
-impl Minimise for slint::Window {
-    fn with_winit_window_minimise(&self) -> Option<()> {
-        use slint::winit_030::WinitWindowAccessor as _;
-        let _ = self.show();
-        self.with_winit_window(|w| w.set_minimized(true))
     }
 }
 
@@ -402,12 +424,17 @@ fn toggle_voice(app: &Rc<App>) {
     let v = app.ui.global::<ui::Voice>();
     if let Some(rec) = running {
         v.set_recording(false);
+        v.set_paused(false);
         v.set_level(0.0);
+        let marks = std::mem::take(&mut app.cap.borrow_mut().voice_marks);
         std::thread::spawn(move || {
             let result = rec.finish();
             post(move |a| {
                 match result {
                     Ok(path) => {
+                        if !marks.is_empty() {
+                            write_marks(&path, &marks);
+                        }
                         remember(a, &path);
                         toast(a, format!("Saved {}", files::file_name(&path)));
                     }
@@ -419,14 +446,143 @@ fn toggle_voice(app: &Rc<App>) {
         return;
     }
     let dir = app.prefs.borrow().voice_dir.clone();
-    let opts = recorder::Options { screen: None, system_audio: false, mic: true, path: recorder::new_path(&dir, "Recording", "m4a") };
+    let (mic_name, ext) = {
+        let c = app.cap.borrow();
+        (mic_name_at(c.voice_mic), VOICE_FORMATS[c.voice_format.min(VOICE_FORMATS.len() - 1)])
+    };
+    let opts = recorder::Options { screen: None, camera: None, system_audio: false, mic: true, path: recorder::new_path(&dir, "Recording", ext), mic_name };
     match recorder::start(opts) {
         Ok(rec) => {
-            app.cap.borrow_mut().voice = Some(rec);
+            {
+                let mut c = app.cap.borrow_mut();
+                c.voice = Some(rec);
+                c.voice_marks.clear();
+            }
+            set_marker_list(app);
             v.set_recording(true);
         }
         Err(e) => toast(app, e),
     }
+}
+
+/// The microphone with this index in the voice page's list (0 is the default one).
+fn mic_name_at(index: usize) -> Option<String> {
+    if index == 0 { None } else { recorder_mic_names().get(index - 1).cloned() }
+}
+
+fn recorder_mic_names() -> Vec<String> {
+    crate::capture::audio_in::input_names()
+}
+
+fn toggle_pause(app: &Rc<App>) {
+    let paused = {
+        let c = app.cap.borrow();
+        match c.voice.as_ref() {
+            Some(r) => {
+                let on = !r.is_paused();
+                r.set_paused(on);
+                on
+            }
+            None => return,
+        }
+    };
+    app.ui.global::<ui::Voice>().set_paused(paused);
+}
+
+fn add_marker(app: &Rc<App>) {
+    let ms = {
+        let c = app.cap.borrow();
+        match c.voice.as_ref() {
+            Some(r) if !r.is_paused() => r.elapsed_ms(),
+            _ => return,
+        }
+    };
+    app.cap.borrow_mut().voice_marks.push(ms);
+    set_marker_list(app);
+}
+
+fn set_marker_list(app: &Rc<App>) {
+    let items: Vec<SharedString> = app.cap.borrow().voice_marks.iter().enumerate().map(|(i, ms)| format!("{}   {}", i + 1, files::clock(*ms)).into()).collect();
+    app.ui.global::<ui::Voice>().set_markers(ModelRc::new(VecModel::from(items)));
+}
+
+/// Saves the markers next to the recording, as <name>.json.
+fn write_marks(path: &std::path::Path, marks: &[u64]) {
+    let mut s = String::from("{\n  \"markers\": [\n");
+    for (i, ms) in marks.iter().enumerate() {
+        let comma = if i + 1 < marks.len() { "," } else { "" };
+        s.push_str(&format!("    {{\"ms\": {ms}, \"time\": \"{}\"}}{comma}\n", files::clock(*ms)));
+    }
+    s.push_str("  ]\n}\n");
+    let _ = std::fs::write(path.with_extension("json"), s);
+}
+
+fn pick_mic(app: &Rc<App>, index: i32) {
+    let index = index.max(0) as usize;
+    app.cap.borrow_mut().voice_mic = index;
+    app.ui.global::<ui::Voice>().set_mic_index(index as i32);
+}
+
+fn pick_format(app: &Rc<App>, index: i32) {
+    let index = (index.max(0) as usize).min(VOICE_FORMATS.len() - 1);
+    app.cap.borrow_mut().voice_format = index;
+    app.ui.global::<ui::Voice>().set_format_index(index as i32);
+}
+
+fn refresh_mics(app: &Rc<App>) {
+    let mut names = vec![SharedString::from("Default microphone")];
+    names.extend(recorder_mic_names().into_iter().map(SharedString::from));
+    let v = app.ui.global::<ui::Voice>();
+    v.set_mics(ModelRc::new(VecModel::from(names)));
+    v.set_mic_index(app.cap.borrow().voice_mic as i32);
+    v.set_format_index(app.cap.borrow().voice_format as i32);
+}
+
+/// Renames a take (and its markers file), keeping its format.
+fn rename_take(app: &Rc<App>, index: i32, name: String) {
+    let Some(old) = takes(app).get(index.max(0) as usize).cloned() else { return };
+    let name = name.trim().to_string();
+    if name.is_empty() || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) {
+        toast(app, "That name can't be used.");
+        return;
+    }
+    let file = match old.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{name}.{ext}"),
+        None => name.clone(),
+    };
+    let new = old.with_file_name(file);
+    if new == old {
+        return;
+    }
+    if new.exists() {
+        toast(app, "A recording with that name already exists.");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&old, &new) {
+        toast(app, format!("Could not rename it: {e}"));
+        return;
+    }
+    let old_json = old.with_extension("json");
+    if old_json.is_file() {
+        let _ = std::fs::rename(&old_json, new.with_extension("json"));
+    }
+    toast(app, format!("Renamed to {}", files::file_name(&new)));
+    refresh_takes(app);
+}
+
+/// Deletes a take (and its markers file) to the Recycle Bin.
+fn delete_take(app: &Rc<App>, index: i32) {
+    let Some(p) = takes(app).get(index.max(0) as usize).cloned() else { return };
+    let json = p.with_extension("json");
+    let mut gone = crate::platform::recycle(&p) || std::fs::remove_file(&p).is_ok();
+    if json.is_file() {
+        let _ = crate::platform::recycle(&json) || std::fs::remove_file(&json).is_ok();
+    }
+    if gone {
+        gone = !p.exists();
+    }
+    toast(app, if gone { format!("{} moved to the Recycle Bin", files::file_name(&p)) } else { "Could not delete it.".to_string() });
+    refresh_takes(app);
 }
 
 fn takes(app: &Rc<App>) -> Vec<PathBuf> {
@@ -456,6 +612,9 @@ pub fn refresh_takes(app: &Rc<App>) {
     let v = app.ui.global::<ui::Voice>();
     v.set_takes(ModelRc::new(VecModel::from(items)));
     v.set_folder(app.prefs.borrow().voice_dir.display().to_string().into());
+    // The list changed, so the picked take may be a different file now.
+    v.set_selected(-1);
+    refresh_mics(app);
 }
 
 fn slow_tick(app: &Rc<App>) {
@@ -622,4 +781,26 @@ fn copy_text(app: &Rc<App>, pic: &Picture, main_was_visible: bool) {
         }
         Err(e) => toast(app, format!("Could not read the text: {e}")),
     }
+}
+thread_local! {
+    /// The snip overlay is made once and kept hidden between snips. Windows animates a window's first appearance
+    /// (a zoom from the centre) before its transitions can be turned off, so the first show happens at start-up, off
+    /// screen; every snip after that appears at once.
+    static SPARE_OVERLAY: std::cell::RefCell<Option<ui::SnipWindow>> = const { std::cell::RefCell::new(None) };
+}
+
+fn keep_overlay(w: &ui::SnipWindow) {
+    w.set_shot(slint::Image::default());
+    SPARE_OVERLAY.with(|s| *s.borrow_mut() = Some(w.clone_strong()));
+}
+
+/// Makes the snip overlay ahead of time (see SPARE_OVERLAY).
+pub fn prewarm_overlay() {
+    let Ok(w) = ui::SnipWindow::new() else { return };
+    w.window().set_position(slint::PhysicalPosition::new(-32000, -32000));
+    w.window().set_size(slint::PhysicalSize::new(1, 1));
+    let _ = w.show();
+    platform::no_transitions(hwnd_of(w.window()));
+    let _ = w.hide();
+    SPARE_OVERLAY.with(|s| *s.borrow_mut() = Some(w));
 }

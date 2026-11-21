@@ -18,6 +18,7 @@ pub fn show(app: &Rc<App>) -> bool {
         w.set_pictures(p.file_types[0]);
         w.set_video(p.file_types[1]);
         w.set_music(p.file_types[2]);
+        w.set_text(p.file_types[3]);
     }
     w.set_windows_printscreen_on(install::windows_printscreen_on());
     w.set_take_printscreen(true);
@@ -37,7 +38,7 @@ pub fn show(app: &Rc<App>) -> bool {
 
 fn finish(app: &Rc<App>) {
     let Some(w) = app.setup.borrow_mut().take() else { return };
-    let kinds = [w.get_pictures(), w.get_video(), w.get_music()];
+    let kinds = [w.get_pictures(), w.get_video(), w.get_music(), w.get_text()];
     let startup = w.get_startup();
     let desktop = w.get_desktop();
     let take_ps = w.get_windows_printscreen_on() && w.get_take_printscreen();

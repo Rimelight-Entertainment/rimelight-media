@@ -94,9 +94,29 @@ fn start_source(device: &cpal::Device, loopback: bool) -> Result<(cpal::Stream, 
     Ok((stream, buf))
 }
 
+/// The names of the microphones (inputs) the computer has.
+pub fn input_names() -> Vec<String> {
+    let host = cpal::default_host();
+    host.input_devices().map(|devs| devs.filter_map(|d| d.description().ok().map(|x| x.name().to_string())).collect()).unwrap_or_default()
+}
+
+/// The microphone with this name, or the default one when no name is given (or it is not found).
+fn input_device(name: Option<&str>) -> Option<cpal::Device> {
+    let host = cpal::default_host();
+    match name {
+        Some(want) => host
+            .input_devices()
+            .ok()
+            .and_then(|mut devs| devs.find(|d| d.description().map(|x| x.name() == want).unwrap_or(false)))
+            .or_else(|| host.default_input_device()),
+        None => host.default_input_device(),
+    }
+}
+
 impl Capture {
-    /// Starts the chosen sources. A source that can't start is left out and noted.
-    pub fn start(system: bool, mic: bool) -> Capture {
+    /// Starts the chosen sources. A source that can't start is left out and noted. `mic_name` picks the microphone
+    /// (None: the default one).
+    pub fn start(system: bool, mic: bool, mic_name: Option<&str>) -> Capture {
         let host = cpal::default_host();
         let mut streams = Vec::new();
         let mut sources = Vec::new();
@@ -115,7 +135,7 @@ impl Capture {
             add(host.default_output_device(), true, "Computer sound");
         }
         if mic {
-            add(host.default_input_device(), false, "Microphone");
+            add(input_device(mic_name), false, "Microphone");
         }
         Capture { _streams: streams, sources, level: Arc::new(AtomicU32::new(0)), notes }
     }

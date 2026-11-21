@@ -2,15 +2,18 @@
 // capture.slint.
 import { Tokens, Type, ThemeChoice } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { IconButton, Button, ButtonKind, Choice } from "widgets.slint";
-import { Shell, Viewer, Player, Voice, Settings, RecentItem, Mark } from "state.slint";
+import { IconButton, Button, ButtonKind, Choice, TipBounds, ConfirmDialog } from "widgets.slint";
+import { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, RecentItem, Mark, MdBlock, JsonRow, Cast } from "state.slint";
+import { CastPopup } from "cast_popup.slint";
 import { HomePage } from "home.slint";
 import { ImagePage } from "image_page.slint";
 import { MediaPage } from "media_page.slint";
 import { VoicePage } from "voice_page.slint";
+import { CameraPage } from "camera_page.slint";
 import { SettingsPage } from "settings_page.slint";
+import { TextPage } from "text_page.slint";
 
-export { Shell, Viewer, Player, Voice, Settings, Tokens, ThemeChoice, RecentItem, Mark, Choice }
+export { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, Tokens, ThemeChoice, RecentItem, Mark, MdBlock, JsonRow, Choice, Cast }
 export { SnipWindow, RecBar, Tray, WindowBox } from "capture.slint";
 export { SetupWindow } from "setup.slint";
 
@@ -84,7 +87,20 @@ export component AppWindow inherits Window {
     default-font-family: Type.family;
     default-font-size: Type.body;
 
+    // True while the title's file name is being typed over.
+    property <bool> renaming;
+    changed renaming => { if !self.renaming { keys.focus(); } }
+    init => { TipBounds.window-width = self.width; TipBounds.window-height = self.height; }
+    changed width => { TipBounds.window-width = self.width; }
+    changed height => { TipBounds.window-height = self.height; }
+
     forward-focus: keys;
+
+    // Under the cast button (its right edge lines up with the button's).
+    cast-popup := CastPopup {
+        x: root.width - 300px - 132px;
+        y: Tokens.bar-height + 4px;
+    }
     keys := FocusScope {
         key-pressed(e) => {
             if Shell.key(e.text, e.modifiers.control, e.modifiers.shift, e.modifiers.alt) { return accept; }
@@ -107,6 +123,7 @@ export component AppWindow inherits Window {
                     NavButton { icon: Icons.image; label: "Image"; active: Shell.page == "image"; clicked => { Shell.go("image"); } }
                     NavButton { icon: Icons.music; label: "Audio"; active: Shell.page == "audio"; clicked => { Shell.go("audio"); } }
                     NavButton { icon: Icons.video; label: "Video"; active: Shell.page == "video"; clicked => { Shell.go("video"); } }
+                    NavButton { icon: Icons.text; label: "Text"; active: Shell.page == "text"; clicked => { Shell.go("text"); } }
                 }
                 right-group := HorizontalLayout {
                     x: parent.width - self.width - Tokens.space-2;
@@ -136,32 +153,82 @@ export component AppWindow inherits Window {
                     IconButton { icon: Icons.scan; label: "Snip (Print Screen)"; clicked => { Shell.snip("region"); } }
                     IconButton {
                         icon: Icons.record;
-                        tint: Tokens.record-red;
                         label: Shell.recording ? "Stop recording" : "Record the screen";
                         clicked => { if Shell.recording { Shell.stop-recording(); } else { Shell.record-screen("region"); } }
                     }
                     IconButton { icon: Icons.mic; label: "Voice recorder"; active: Shell.page == "voice"; clicked => { Shell.go("voice"); } }
-                    IconButton { icon: Icons.cast; label: "Cast to a screen (Win+K)"; clicked => { Shell.cast(); } }
+                    IconButton { icon: Icons.camera; label: "Camera"; active: Shell.page == "camera"; clicked => { Shell.go("camera"); } }
+                    cast-btn := IconButton { icon: Icons.cast; label: "Cast to a TV or speaker"; clicked => { Shell.cast(); cast-popup.show(); } }
                     IconButton { icon: Icons.folder-open; label: "Open (Ctrl+O)"; clicked => { Shell.open-file(); } }
                     IconButton { icon: Icons.settings; label: "Settings"; active: Shell.page == "settings"; clicked => { Shell.go("settings"); } }
                     // Close what this tab has open (back to its empty page).
-                    if (Shell.page == "image" && Viewer.info-name != "") || ((Shell.page == "audio" || Shell.page == "video") && Player.media-title != "" && Player.has-video == (Shell.page == "video")): HorizontalLayout {
+                    if (Shell.page == "image" && Viewer.info-name != "") || (Shell.page == "text" && TextDoc.has-doc) || ((Shell.page == "audio" || Shell.page == "video") && Player.media-title != "" && Player.has-video == (Shell.page == "video")): HorizontalLayout {
                         spacing: Tokens.space-1;
                         Rectangle { width: 9px; Rectangle { width: 1px; height: 20px; background: Tokens.border-subtle; } }
-                        IconButton { icon: Icons.x; label: Shell.page == "image" ? "Close the picture" : "Close and stop"; clicked => { Shell.close-tab(); } }
+                        IconButton { icon: Icons.x; label: Shell.page == "image" ? "Close the picture" : Shell.page == "text" ? "Close the text" : "Close and stop"; clicked => { Shell.close-tab(); } }
                     }
                 }
                 // Centred on the window; only as wide as the space both groups leave free on each side.
-                Text {
+                // Click the file name to rename it: Enter renames the file, Escape or leaving the box cancels.
+                title-box := Rectangle {
                     property <length> room: parent.width - 2 * max(left-group.width, right-group.width) - 2 * Tokens.space-4;
-                    width: max(0px, min(self.preferred-width, self.room));
+                    width: max(0px, min(title-text.preferred-width, self.room));
+                    height: parent.height;
                     x: (parent.width - self.width) / 2;
-                    text: Shell.title;
-                    color: Tokens.text-muted;
-                    font-size: Type.caption;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    overflow: elide;
+                    title-text := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: Shell.title;
+                        color: Tokens.text-muted;
+                        font-size: Type.caption;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        visible: !root.renaming;
+                    }
+                    title-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        enabled: Shell.title-name != "" && !root.renaming;
+                        clicked => { root.renaming = true; }
+                    }
+                    // Edits in place: the same bounds, font and alignment as the title, with a subtle box around it.
+                    if root.renaming: Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        border-radius: Tokens.radius-control;
+                        background: Tokens.surface-sunken;
+                        border-width: 1px;
+                        border-color: Tokens.border-subtle;
+                        rename-input := TextInput {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            text: Shell.title-name;
+                            color: Tokens.text-primary;
+                            font-size: Type.caption;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            single-line: true;
+                            init => { self.focus(); self.select-all(); }
+                            accepted => {
+                                root.renaming = false;
+                                Shell.rename(self.text);
+                            }
+                            key-pressed(e) => {
+                                if e.text == "\u{1b}" {
+                                    root.renaming = false;
+                                    return accept;
+                                }
+                                reject
+                            }
+                            changed has-focus => {
+                                if !self.has-focus { root.renaming = false; }
+                            }
+                        }
+                    }
                 }
                 Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.border-subtle; }
             }
@@ -172,7 +239,9 @@ export component AppWindow inherits Window {
                 if Shell.page == "image": ImagePage { }
                 if Shell.page == "audio": MediaSlot { want-video: false; }
                 if Shell.page == "video": MediaSlot { want-video: true; }
+                if Shell.page == "text": TextPage { }
                 if Shell.page == "voice": VoicePage { }
+                if Shell.page == "camera": CameraPage { }
                 if Shell.page == "settings": SettingsPage { }
 
                 if Shell.toast != "": Rectangle {
@@ -189,6 +258,16 @@ export component AppWindow inherits Window {
                     toast-text := Text { text: Shell.toast; color: Tokens.text-primary; font-size: Type.body; }
                 }
             }
+        }
+
+        // The unsaved-changes question (over everything, including the top bar).
+        if Shell.confirm-open: ConfirmDialog {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            name: Shell.confirm-name;
+            answer(choice) => { Shell.confirm-answer(choice); }
         }
     }
 }

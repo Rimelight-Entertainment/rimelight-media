@@ -24,7 +24,7 @@ pub struct TopWindow {
 mod imp {
     use super::{ScreenRect, TopWindow};
     use std::ffi::c_void;
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Dwm::{
         DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
     };
@@ -95,6 +95,8 @@ mod imp {
 
     struct Collect {
         own_pid: u32,
+        /// Our own window that may be snipped or recorded (the main window); other windows of ours are skipped.
+        keep: isize,
         out: Vec<TopWindow>,
     }
 
@@ -112,7 +114,7 @@ mod imp {
                 pid,
             )
         };
-        if !visible || minimised || ex_style & WS_EX_TOOLWINDOW != 0 || pid == collect.own_pid {
+        if !visible || minimised || ex_style & WS_EX_TOOLWINDOW != 0 || (pid == collect.own_pid && hwnd as isize != collect.keep) {
             return 1;
         }
         let title = title_of(hwnd);
@@ -125,8 +127,8 @@ mod imp {
         1
     }
 
-    pub fn top_windows() -> Vec<TopWindow> {
-        let mut collect = Collect { own_pid: std::process::id(), out: Vec::new() };
+    pub fn top_windows(keep: isize) -> Vec<TopWindow> {
+        let mut collect = Collect { own_pid: std::process::id(), keep, out: Vec::new() };
         // SAFETY: the callback only uses lparam as &mut Collect, which outlives this call.
         unsafe {
             EnumWindows(Some(each), (&mut collect as *mut Collect) as LPARAM);
@@ -348,6 +350,11 @@ mod imp {
 
     /// Opens Windows' Cast panel (Win+K): show this screen on a TV or wireless display.
     pub fn open_cast_panel() {
+        // The Settings page that finds wireless displays. It runs in its own process, so nothing is sent into our
+        // window (sending Win+K to our own window is what made the XAML cast picker overrun the stack).
+        if open_uri("ms-settings-connectabledevices:devicediscovery") {
+            return;
+        }
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_LWIN,
         };
@@ -523,6 +530,97 @@ mod imp {
         }
     }
 
+    /// Turns off Windows' show/hide and move animations for one of our windows (the snip overlay appears at once).
+    pub fn no_transitions(hwnd: isize) {
+        use windows_sys::Win32::Graphics::Dwm::DWMWA_TRANSITIONS_FORCEDISABLED;
+        let on: i32 = 1;
+        // SAFETY: `on` is a BOOL-sized value that lives for the call, as DWMWA_TRANSITIONS_FORCEDISABLED expects; a
+        // stale handle only makes the call fail.
+        unsafe {
+            windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                hwnd as HWND,
+                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                (&on as *const i32).cast::<c_void>(),
+                4,
+            );
+        }
+    }
+
+    /// Starts the Win+Shift+S hook (a low-level keyboard hook on its own thread, with a message loop).
+    pub fn start_win_shift_s_hook() {
+        use std::sync::atomic::Ordering;
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, GetMessageW, MSG, SetWindowsHookExW, TranslateMessage, WH_KEYBOARD_LL,
+        };
+        if HOOK_STARTED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::spawn(|| {
+            // SAFETY: the hook procedure is a static fn; the module handle is the process's own; the message loop only
+            // dispatches messages to the hook.
+            unsafe {
+                let module = GetModuleHandleW(std::ptr::null());
+                let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(win_shift_s_proc), module as _, 0);
+                if hook.is_null() {
+                    HOOK_STARTED.store(false, Ordering::SeqCst);
+                    return;
+                }
+                let mut msg: MSG = std::mem::zeroed();
+                while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+        });
+    }
+
+    static HOOK_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static WIN_S_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static SWALLOW_S_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static WIN_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static SHIFT_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Swallows Win+Shift+S and flags it for the app to snip. The Win and Shift states are tracked here from the hook's
+    /// own events (the low-level hook sees VK_LSHIFT/VK_RSHIFT, and the async key state lags behind it). The Win key-up
+    /// is passed on: Shift was pressed in between, so the Start menu stays shut.
+    unsafe extern "system" fn win_shift_s_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        use std::sync::atomic::Ordering;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_LSHIFT, VK_LWIN, VK_RSHIFT, VK_RWIN, VK_SHIFT};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        };
+        if code == HC_ACTION as i32 {
+            // SAFETY: for HC_ACTION, lparam points to a KBDLLHOOKSTRUCT that Windows keeps alive for the call.
+            let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+            let msg = wparam as u32;
+            let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+            let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+            let vk = kb.vkCode;
+            if vk == VK_LWIN as u32 || vk == VK_RWIN as u32 {
+                WIN_HELD.store(down, Ordering::SeqCst);
+            } else if vk == VK_LSHIFT as u32 || vk == VK_RSHIFT as u32 || vk == VK_SHIFT as u32 {
+                SHIFT_HELD.store(down, Ordering::SeqCst);
+            } else if vk == b'S' as u32 {
+                if down && WIN_HELD.load(Ordering::SeqCst) && SHIFT_HELD.load(Ordering::SeqCst) {
+                    SWALLOW_S_UP.store(true, Ordering::SeqCst);
+                    WIN_S_PENDING.store(true, Ordering::SeqCst);
+                    return 1;
+                }
+                if up && SWALLOW_S_UP.swap(false, Ordering::SeqCst) {
+                    return 1;
+                }
+            }
+        }
+        // SAFETY: passes the event on to the next hook, as the hook contract requires.
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+    }
+
+    /// True once after each Win+Shift+S.
+    pub fn take_win_shift_s() -> bool {
+        WIN_S_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn local_time() -> [u16; 6] {
         use windows_sys::Win32::System::SystemInformation::GetLocalTime;
         // SAFETY: GetLocalTime fills the SYSTEMTIME it is given.
@@ -541,11 +639,16 @@ mod imp {
     pub fn virtual_screen() -> ScreenRect {
         ScreenRect::default()
     }
-    pub fn top_windows() -> Vec<TopWindow> {
+    pub fn top_windows(_: isize) -> Vec<TopWindow> {
         Vec::new()
     }
     pub fn file_types_changed() {}
     pub fn exclude_from_capture(_: isize) {}
+    pub fn no_transitions(_: isize) {}
+    pub fn start_win_shift_s_hook() {}
+    pub fn take_win_shift_s() -> bool {
+        false
+    }
     pub fn cursor_monitor() -> Option<((i32, i32), ScreenRect)> {
         None
     }
@@ -656,9 +759,24 @@ pub fn virtual_screen() -> ScreenRect {
     imp::virtual_screen()
 }
 
-/// Visible top-level windows of other apps, front-most first.
-pub fn top_windows() -> Vec<TopWindow> {
-    imp::top_windows()
+/// Visible top-level windows front-most first: other apps' windows, and our own `keep` window (the main window).
+pub fn top_windows(keep: isize) -> Vec<TopWindow> {
+    imp::top_windows(keep)
+}
+
+/// Turns off Windows' animations for one of our windows, so it appears at once.
+pub fn no_transitions(hwnd: isize) {
+    imp::no_transitions(hwnd)
+}
+
+/// Starts the Win+Shift+S hook (once). Win+Shift+S is then swallowed and reported by `take_win_shift_s`.
+pub fn start_win_shift_s_hook() {
+    imp::start_win_shift_s_hook()
+}
+
+/// True once after each Win+Shift+S that the hook swallowed.
+pub fn take_win_shift_s() -> bool {
+    imp::take_win_shift_s()
 }
 
 /// Tells Explorer that file associations changed, so icons and "Open with" refresh.

@@ -51,8 +51,13 @@ pub fn start(on_action: impl Fn(Action) + 'static) -> Option<Hotkeys> {
             failed.join(", ")
         )
     };
+    // Win+Shift+S: the low-level hook swallows it and asks for an area snip here.
+    crate::platform::start_win_shift_s_hook();
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), move || {
+        if crate::platform::take_win_shift_s() {
+            on_action(Action::SnipRegion);
+        }
         while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state != HotKeyState::Pressed {
                 continue;

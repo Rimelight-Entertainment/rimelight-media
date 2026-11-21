@@ -81,7 +81,7 @@ pub fn wire(app: &Rc<App>) {
     v.on_mark_begin(|x, y| with_app(move |a| mark_begin(a, x, y)));
     v.on_mark_move(|x, y| with_app(move |a| mark_move(a, x, y)));
     v.on_mark_end(|| with_app(mark_end));
-    v.on_mark_text(|t| with_app(move |a| mark_text(a, &t)));
+    v.on_commit_text(|| with_app(commit_text));
     v.on_undo(|| with_app(undo));
     v.on_redo(|| with_app(redo));
     v.on_print(|| with_app(print));
@@ -115,9 +115,17 @@ pub fn wire(app: &Rc<App>) {
         with_app(|a| {
             let orig = a.view.borrow().original.clone();
             if let Some(p) = orig {
-                a.view.borrow_mut().pic = Some(p);
+                {
+                    let mut s = a.view.borrow_mut();
+                    s.pic = Some(p);
+                    s.marks.clear();
+                    s.history.clear();
+                    s.future.clear();
+                }
                 show_picture(a, false);
                 viewer(a).set_dirty(false);
+                refresh_undo(a);
+                refresh_marks(a);
             }
         })
     });
@@ -137,10 +145,28 @@ pub fn wire(app: &Rc<App>) {
 
 /// Opens a picture file: the folder list is built at once, the pixels arrive from a worker thread.
 pub fn open(app: &Rc<App>, path: &Path) {
-    let folder = files::sibling_pictures(path);
+    open_with(app, path, None);
+}
+
+/// Opens several pictures at once: the filmstrip shows only them, in the order given.
+pub fn open_set(app: &Rc<App>, paths: &[PathBuf]) {
+    if let Some(first) = paths.first() {
+        open_with(app, first, Some(paths.to_vec()));
+    }
+}
+
+fn open_with(app: &Rc<App>, path: &Path, set: Option<Vec<PathBuf>>) {
+    let folder = set.unwrap_or_else(|| files::sibling_pictures(path));
     let index = folder.iter().position(|p| p == path).unwrap_or(0);
     let generation = {
         let mut s = app.view.borrow_mut();
+        if s.folder != folder {
+            // A new list of pictures: the filmstrip makes its thumbnails again.
+            s.thumbs = None;
+            s.thumbs_dir = None;
+            s.thumbs_gen += 1;
+            s.picked.clear();
+        }
         s.generation += 1;
         s.path = Some(path.to_path_buf());
         s.folder = folder;
@@ -243,9 +269,14 @@ fn show_picture(app: &Rc<App>, fresh: bool) {
     if fresh {
         v.set_fit(true);
     }
-    v.set_dims_text(format!("{} x {}", pic.w, pic.h).into());
-    v.set_file_type(s.path.as_deref().map(|p| files::ext_of(p).to_uppercase()).unwrap_or_else(|| "Not saved".into()).into());
-    v.set_size_text(if s.path.is_some() && s.file_size > 0 { files::human_size(s.file_size).into() } else { SharedString::new() });
+    let file_type = s.path.as_deref().map(|p| files::ext_of(p).to_uppercase()).unwrap_or_else(|| "Not saved".into());
+    let dims = format!("{} x {}", pic.w, pic.h);
+    let size = if s.path.is_some() && s.file_size > 0 { files::human_size(s.file_size) } else { String::new() };
+    let facts: Vec<String> = [file_type.clone(), dims.clone(), size.clone()].into_iter().filter(|f| !f.is_empty()).collect();
+    v.set_facts_text(facts.join(" | ").into());
+    v.set_dims_text(dims.into());
+    v.set_file_type(file_type.into());
+    v.set_size_text(size.into());
     v.set_can_share(s.path.as_ref().is_some_and(|p| p.exists()));
     let mut detail = format!("{} × {} pixels", pic.w, pic.h);
     if let Some(p) = &s.path {
@@ -325,6 +356,8 @@ fn edit(app: &Rc<App>, f: impl FnOnce(&Picture) -> Picture) {
 }
 
 pub fn set_mode(app: &Rc<App>, mode: &str) {
+    // An open text box is committed on a mode switch, so it is a normal mark from then on.
+    commit_text(app);
     let v = viewer(app);
     {
         let mut s = app.view.borrow_mut();
@@ -414,6 +447,8 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
             refresh_marks(app);
         }
         4 => {
+            // A text box still open is committed first; a new one starts here.
+            commit_text(app);
             app.view.borrow_mut().text_at = Some((x, y));
             v.set_text_x(x);
             v.set_text_y(y);
@@ -459,22 +494,23 @@ fn mark_end(app: &Rc<App>) {
     refresh_marks(app);
 }
 
-fn mark_text(app: &Rc<App>, text: &str) {
+/// Ends the text box: what was typed becomes a text mark (when there is text). Safe to call when no box is open.
+pub fn commit_text(app: &Rc<App>) {
     let v = viewer(app);
-    let scale = (v.get_pic_w().max(v.get_pic_h()) as f32 / 1600.0).max(1.0);
-    let width = v.get_ink_width() * scale;
-    let rgba = ink(app);
-    {
-        let mut s = app.view.borrow_mut();
-        if let Some(pos) = s.text_at.take()
-            && !text.trim().is_empty()
-        {
-            s.marks.push(Mark { kind: 4, rgba, width, points: vec![pos], text: text.to_string() });
-            s.redo.clear();
-        }
-    }
+    let text = v.get_pending_text().to_string();
+    v.set_pending_text(SharedString::new());
     v.set_text_x(-1.0);
     v.set_text_y(-1.0);
+    let pos = app.view.borrow_mut().text_at.take();
+    let Some(pos) = pos else { return };
+    if !text.trim().is_empty() {
+        let scale = (v.get_pic_w().max(v.get_pic_h()) as f32 / 1600.0).max(1.0);
+        let width = v.get_ink_width() * scale;
+        let rgba = ink(app);
+        let mut s = app.view.borrow_mut();
+        s.marks.push(Mark { kind: 4, rgba, width, points: vec![pos], text });
+        s.redo.clear();
+    }
     refresh_marks(app);
 }
 
@@ -944,6 +980,7 @@ pub fn close(app: &Rc<App>) {
     }
     viewer(app).set_comparing(false);
     viewer(app).set_file_type(SharedString::new());
+    viewer(app).set_facts_text(SharedString::new());
     viewer(app).set_dims_text(SharedString::new());
     viewer(app).set_size_text(SharedString::new());
     viewer(app).set_can_share(false);
@@ -1124,6 +1161,11 @@ fn thumb_clicked(app: &Rc<App>, i: usize, add: bool) {
         v.set_comparing(false);
         return;
     }
+    // The grid: as square as it can be (2 pictures side by side, 3 as 2 + 1, 4 as 2 by 2, and so on).
+    let cols = (picked.len() as f64).sqrt().ceil() as i32;
+    let rows = (picked.len() as i32 + cols - 1) / cols;
+    v.set_compare_cols(cols);
+    v.set_compare_rows(rows);
     v.set_comparing(true);
     v.set_compare_images(ModelRc::new(VecModel::from(vec![slint::Image::default(); picked.len()])));
     let generation = app.view.borrow().generation;
@@ -1155,4 +1197,17 @@ pub fn close_compare(app: &Rc<App>) {
     app.view.borrow_mut().picked.clear();
     viewer(app).set_comparing(false);
     sync_thumbs(app);
+}
+/// The open picture was renamed on disk: the folder list and the title follow the new name.
+pub fn renamed(app: &Rc<App>, new: &Path) {
+    {
+        let mut s = app.view.borrow_mut();
+        s.path = Some(new.to_path_buf());
+        s.folder = files::sibling_pictures(new);
+        s.index = s.folder.iter().position(|p| p == new).unwrap_or(0);
+        s.file_size = std::fs::metadata(new).map(|m| m.len()).unwrap_or(0);
+    }
+    viewer(app).set_info_name(files::file_name(new).into());
+    update_position(app);
+    show_picture(app, false);
 }

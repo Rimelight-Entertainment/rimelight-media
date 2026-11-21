@@ -43,22 +43,35 @@ export component IconButton inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
+    // The tooltip is kept inside the window: centred under the button, pushed in from the edges, and flipped above
+    // the button when there is no room below it.
     if ta.has-hover && root.label != "": Rectangle {
-        y: root.height + 6px;
-        x: (root.width - self.width) / 2;
-        width: tip.preferred-width + 16px;
+        property <length> w: tip-text.preferred-width + 16px;
+        property <bool> above: root.absolute-position.y + root.height + 30px > TipBounds.window-height;
+        property <length> left: max(4px, min(root.absolute-position.x + (root.width - self.w) / 2, TipBounds.window-width - self.w - 4px));
+        y: self.above ? -30px : root.height + 6px;
+        x: self.left - root.absolute-position.x;
+        width: self.w;
         height: 24px;
         background: Tokens.surface-overlay;
         border-radius: Tokens.radius-control;
         border-width: 1px;
         border-color: Tokens.border-subtle;
         z: 100;
-        tip := Text {
+        tip-text := Text {
+            x: 8px;
             text: root.label;
             color: Tokens.text-primary;
             font-size: Type.caption;
+            vertical-alignment: center;
         }
     }
+}
+
+// The window's size, for placing tooltips (set by the app window).
+export global TipBounds {
+    in-out property <length> window-width: 1200px;
+    in-out property <length> window-height: 780px;
 }
 
 export enum ButtonKind { primary, secondary, ghost, danger }
@@ -219,10 +232,10 @@ export component Slider inherits Rectangle {
                 root.changed(clamp(self.mouse-x / root.width, 0, 1));
             }
         }
+        // The value is not assigned here: that would break a binding to it (the zoom slider follows the zoom).
         pointer-event(e) => {
             if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
-                root.value = clamp(self.mouse-x / root.width, 0, 1);
-                root.released(root.value);
+                root.released(clamp(self.mouse-x / root.width, 0, 1));
             }
         }
     }
@@ -299,7 +312,11 @@ export component Tile inherits Rectangle {
     in property <color> accent: Tokens.accent-default;
     callback clicked();
 
+    // Layouts size a wrapped Text before its width is known, so the detail's lines are estimated from its length and the
+    // tile's width (about 7 px a character), and the tile is that tall: the text never spills out of the card.
+    property <float> detail-lines: max(1, ceil((root.detail.character-count * 7px) / max(1px, self.width - 2 * Tokens.space-4)));
     min-height: 112px;
+    preferred-height: 2 * Tokens.space-4 + 36px + 2 * Tokens.space-1 + 22px + root.detail-lines * 18px + (root.keys != "" ? 20px : 0px);
     border-radius: Tokens.radius-r8;
     background: ta.pressed ? Tokens.surface-pressed : ta.has-hover ? Tokens.surface-hover : Tokens.surface-raised;
     border-width: 1px;
@@ -327,5 +344,49 @@ export component Tile inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+}
+
+// A modal question over the window: a dimmed overlay and a card with a title, a name and the buttons. The overlay takes
+// every click, so nothing behind it works until the question is answered. `answer(0)` Save, `answer(1)` Don't save,
+// `answer(2)` Cancel.
+export component ConfirmDialog inherits Rectangle {
+    in property <string> title: "Save changes?";
+    in property <string> name;
+    in property <string> detail: "Your changes will be lost if you don't save them.";
+    callback answer(int);
+
+    background: Tokens.scrim;
+    // Swallows the clicks that would reach the page behind.
+    TouchArea { }
+
+    Rectangle {
+        width: min(420px, parent.width - 2 * Tokens.space-6);
+        height: layout.preferred-height + 2 * Tokens.space-5;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Tokens.surface-overlay;
+        border-radius: Tokens.radius-r8;
+        border-width: 1px;
+        border-color: Tokens.border-subtle;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #00000060;
+
+        layout := VerticalLayout {
+            padding: Tokens.space-5;
+            spacing: Tokens.space-2;
+            alignment: start;
+            Text { text: root.title; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
+            Text { text: root.name; color: Tokens.text-primary; font-size: Type.body; font-weight: 600; overflow: elide; }
+            Text { text: root.detail; color: Tokens.text-muted; font-size: Type.body; wrap: word-wrap; }
+            Rectangle { height: Tokens.space-3; }
+            HorizontalLayout {
+                alignment: end;
+                spacing: Tokens.space-2;
+                Button { text: "Save"; kind: ButtonKind.primary; clicked => { root.answer(0); } }
+                Button { text: "Don't save"; kind: ButtonKind.secondary; clicked => { root.answer(1); } }
+                Button { text: "Cancel"; kind: ButtonKind.ghost; clicked => { root.answer(2); } }
+            }
+        }
     }
 }

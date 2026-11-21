@@ -119,6 +119,13 @@ pub struct MediaInfo {
     pub subtitles: Vec<Track>,
     pub title: String,
     pub detail: String,
+    /// Container bitrate in bits per second (0 if unknown).
+    pub bitrate: u64,
+    pub video_codec: String,
+    pub fps: f64,
+    pub audio_codec: String,
+    pub sample_rate: u32,
+    pub channels: u16,
 }
 
 fn language_name(code: &str) -> String {
@@ -170,6 +177,9 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
                         info.width = dec.width();
                         info.height = dec.height();
                     }
+                    info.video_codec = codec.to_uppercase();
+                    let r = st.avg_frame_rate();
+                    info.fps = if r.denominator() > 0 { f64::from(r.numerator()) / f64::from(r.denominator()) } else { 0.0 };
                 }
             }
             ff::media::Type::Audio => {
@@ -178,11 +188,16 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
                 if !lang.is_empty() && !label.contains(&lang) {
                     label = format!("{label} ({lang})");
                 }
-                let channels = ff::codec::context::Context::from_parameters(params.clone())
+                let (channels, rate) = ff::codec::context::Context::from_parameters(params.clone())
                     .ok()
                     .and_then(|c| c.decoder().audio().ok())
-                    .map(|d| d.channels())
-                    .unwrap_or(0);
+                    .map(|d| (d.channels(), d.rate()))
+                    .unwrap_or((0, 0));
+                if info.audio.is_empty() {
+                    info.audio_codec = codec.to_uppercase();
+                    info.sample_rate = rate;
+                    info.channels = channels;
+                }
                 let layout = match channels {
                     1 => "mono".to_string(),
                     2 => "stereo".to_string(),
@@ -206,8 +221,9 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
             _ => {}
         }
     }
+    info.bitrate = ictx.bit_rate().max(0) as u64;
     let meta = ictx.metadata();
-    info.title = meta.get("title").filter(|t| !t.trim().is_empty()).map(str::to_string).unwrap_or_else(|| crate::files::file_name(path));
+    info.title =meta.get("title").filter(|t| !t.trim().is_empty()).map(str::to_string).unwrap_or_else(|| crate::files::file_name(path));
     let artist = meta.get("artist").or_else(|| meta.get("album_artist")).unwrap_or_default();
     let album = meta.get("album").unwrap_or_default();
     info.detail = [artist, album].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join("  ·  ");
@@ -252,6 +268,68 @@ pub fn frame_at(path: &Path, ms: u64) -> Result<crate::picture::Picture, String>
         }
     }
     last.ok_or_else(|| "no frame there".into())
+}
+
+/// Loudest sample per bucket of one sound track, for the waveform (0..1). Runs on a worker thread; decodes the whole
+/// track at a low rate and keeps only the peaks.
+pub fn peaks(path: &Path, idx: usize, duration_ms: u64, buckets: usize) -> Result<Vec<f32>, String> {
+    const RATE: u32 = 8_000;
+    let buckets = buckets.max(1);
+    let mut ictx = open_input(path)?;
+    let ctx = {
+        let st = ictx.stream(idx).ok_or("the sound track is gone")?;
+        ff::codec::context::Context::from_parameters(st.parameters()).map_err(|e| e.to_string())?
+    };
+    let mut dec = ctx.decoder().audio().map_err(|e| e.to_string())?;
+    let total = (duration_ms as f64 / 1000.0 * f64::from(RATE)).max(1.0);
+    let per_bucket = (total / buckets as f64).max(1.0);
+    let mut out = vec![0f32; buckets];
+    let mut seen = 0usize;
+    let mut rs: Option<Resampler> = None;
+    let mut decoded = ff::frame::Audio::empty();
+
+    let mut take = |frame: &ff::frame::Audio, rs: &mut Option<Resampler>, seen: &mut usize| -> Result<(), String> {
+        if rs.is_none() {
+            let layout = if frame.channel_layout().channels() > 0 { frame.channel_layout() } else { ff::ChannelLayout::default(i32::from(frame.channels())) };
+            *rs = Some(
+                Resampler::get(frame.format(), layout, frame.rate(), ff::format::Sample::F32(ff::format::sample::Type::Packed), ff::ChannelLayout::default(1), RATE)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        let Some(r) = rs.as_mut() else { return Ok(()) };
+        let mut res = ff::frame::Audio::empty();
+        r.run(frame, &mut res).map_err(|e| e.to_string())?;
+        let bytes = res.data(0).get(..res.samples() * 4).unwrap_or_default();
+        for b in bytes.chunks_exact(4) {
+            let v = f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs();
+            let slot = ((*seen as f64 / per_bucket) as usize).min(buckets - 1);
+            if v > out[slot] {
+                out[slot] = v;
+            }
+            *seen += 1;
+        }
+        Ok(())
+    };
+
+    for (st, pkt) in ictx.packets() {
+        if st.index() != idx || dec.send_packet(&pkt).is_err() {
+            continue;
+        }
+        while dec.receive_frame(&mut decoded).is_ok() {
+            take(&decoded, &mut rs, &mut seen)?;
+        }
+    }
+    let _ = dec.send_eof();
+    while dec.receive_frame(&mut decoded).is_ok() {
+        take(&decoded, &mut rs, &mut seen)?;
+    }
+    let max = out.iter().copied().fold(0f32, f32::max);
+    if max > 0.0 {
+        for v in &mut out {
+            *v /= max;
+        }
+    }
+    Ok(out)
 }
 
 pub struct VideoFrame {

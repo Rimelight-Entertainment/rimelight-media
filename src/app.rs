@@ -11,7 +11,7 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 use crate::files::{self, Kind};
 use crate::prefs::{self, Prefs};
 use crate::ui;
-use crate::{capturectl, mediactl, settingsctl, viewer};
+use crate::{cameractl, capturectl, mediactl, settingsctl, textctl, viewer};
 
 pub struct App {
     pub ui: ui::AppWindow,
@@ -19,7 +19,9 @@ pub struct App {
     pub recents: RefCell<Vec<PathBuf>>,
     pub view: RefCell<viewer::ViewState>,
     pub media: RefCell<mediactl::MediaState>,
+    pub text: RefCell<textctl::TextState>,
     pub cap: RefCell<capturectl::CaptureState>,
+    pub camera: RefCell<cameractl::CameraState>,
     pub tray: RefCell<Option<ui::Tray>>,
     pub hotkeys: RefCell<Option<crate::hotkeys::Hotkeys>>,
     /// A downloaded update waiting to be applied.
@@ -51,6 +53,7 @@ pub fn shutdown() {
     let app = APP.with(|a| a.borrow_mut().take());
     if let Some(app) = app {
         app.media.borrow_mut().take_player();
+        cameractl::stop_all_now(&app);
         capturectl::stop_all_now(&app);
         app.tray.borrow_mut().take();
         app.hotkeys.borrow_mut().take();
@@ -74,7 +77,9 @@ pub fn build(background: bool) -> Result<Rc<App>, slint::PlatformError> {
         recents: RefCell::new(prefs::load_recents()),
         view: RefCell::new(viewer::ViewState::default()),
         media: RefCell::new(mediactl::MediaState::default()),
+        text: RefCell::new(textctl::TextState::default()),
         cap: RefCell::new(capturectl::CaptureState::default()),
+        camera: RefCell::new(cameractl::CameraState::default()),
         tray: RefCell::new(None),
         hotkeys: RefCell::new(None),
         update: RefCell::new(None),
@@ -89,7 +94,9 @@ pub fn build(background: bool) -> Result<Rc<App>, slint::PlatformError> {
     viewer::wire(&app);
     mediactl::wire(&app);
     capturectl::wire(&app);
+    cameractl::wire(&app);
     settingsctl::wire(&app);
+    textctl::wire(&app);
     refresh_recents(&app);
     settingsctl::apply_theme(&app);
     Ok(app)
@@ -98,6 +105,7 @@ pub fn build(background: bool) -> Result<Rc<App>, slint::PlatformError> {
 fn wire_shell(app: &Rc<App>) {
     let shell = app.ui.global::<ui::Shell>();
     shell.on_open_file(|| with_app(open_dialog));
+    shell.on_rename(|name| with_app(move |a| rename_current(a, &name)));
     shell.on_open_recent(|i| {
         with_app(|a| {
             if let Some(p) = recent_at(a, i as usize) {
@@ -132,7 +140,14 @@ fn wire_shell(app: &Rc<App>) {
     });
 
     shell.on_close_tab(|| with_app(close_tab));
-    shell.on_cast(crate::platform::open_cast_panel);
+    // The cast button opens the cast popup, which searches for devices (src/cast.rs).
+    shell.on_cast(|| with_app(crate::cast::refresh));
+    let cast = app.ui.global::<ui::Cast>();
+    cast.on_refresh(|| with_app(crate::cast::refresh));
+    cast.on_pick(|i| with_app(|a| crate::cast::pick(a, i as usize)));
+    cast.on_pause(crate::cast::toggle_play);
+    cast.on_stop(crate::cast::stop);
+    cast.on_system_cast(crate::platform::open_cast_panel);
 
     // Closing the window clears every tab (after asking about unsaved changes): it means "I'm done"; minimise keeps
     // things open. Then stay in the tray when "keep running" is on, otherwise quit.
@@ -142,11 +157,11 @@ fn wire_shell(app: &Rc<App>) {
             if !viewer::confirm_discard(a) {
                 return;
             }
-            clear_all(a);
-            if !a.prefs.borrow().background {
-                capturectl::stop_all_now(a);
-                let _ = slint::quit_event_loop();
+            // Unsaved text asks in the window; the close then goes on from the answer (finish_close).
+            if !textctl::settle(a, textctl::Pending::Quit) {
+                return;
             }
+            finish_close(a);
             response = slint::CloseRequestResponse::HideWindow;
         });
         response
@@ -177,6 +192,12 @@ pub fn go(app: &Rc<App>, page: &str) {
     if matches!(was.as_str(), "audio" | "video") && was != page {
         mediactl::leaving(app);
     }
+    if was == "camera" && page != "camera" {
+        cameractl::leave(app);
+    }
+    if page == "camera" {
+        cameractl::enter(app);
+    }
     if page == "voice" {
         capturectl::refresh_takes(app);
     }
@@ -189,14 +210,85 @@ pub fn go(app: &Rc<App>, page: &str) {
 
 pub fn update_title(app: &Rc<App>) {
     let shell = app.ui.global::<ui::Shell>();
-    let title = match shell.get_page().as_str() {
-        "image" => app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "Picture".into()),
-        "audio" | "video" => app.media.borrow().path.as_deref().map(files::file_name).unwrap_or_default(),
-        "voice" => "Voice recorder".into(),
-        "settings" => "Settings".into(),
-        _ => String::new(),
+    // The file's name alone (what the title shows and the rename box edits), then the title with the app name.
+    let (title, name) = match shell.get_page().as_str() {
+        "image" => {
+            let name = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_default();
+            (if name.is_empty() { "Picture".to_string() } else { name.clone() }, name)
+        }
+        "audio" | "video" => {
+            let name = app.media.borrow().path.as_deref().map(files::file_name).unwrap_or_default();
+            (name.clone(), name)
+        }
+        "text" => (textctl::title(app), String::new()),
+        "voice" => ("Voice recorder".to_string(), String::new()),
+        "camera" => ("Camera".to_string(), String::new()),
+        "settings" => ("Settings".to_string(), String::new()),
+        _ => (String::new(), String::new()),
     };
+    shell.set_title_name(name.into());
     shell.set_title(if title.is_empty() { "Rimelight Media".into() } else { format!("Rimelight Media - {title}").into() });
+}
+
+/// Renames the file in the Image or Audio/Video tab (Enter in the title). The extension is kept when the name has none.
+pub fn rename_current(app: &Rc<App>, typed: &str) {
+    let page = app.ui.global::<ui::Shell>().get_page();
+    let old = match page.as_str() {
+        "image" => app.view.borrow().path.clone(),
+        "audio" | "video" => app.media.borrow().path.clone(),
+        _ => None,
+    };
+    let Some(old) = old else {
+        toast(app, "Save the picture first, then rename it.");
+        return;
+    };
+    let typed = typed.trim();
+    if typed.is_empty() || typed.chars().any(|c| "\\/:*?\"<>|".contains(c)) {
+        toast(app, "A name can't be empty or contain \\ / : * ? \" < > |");
+        return;
+    }
+    let mut name = typed.to_string();
+    if Path::new(&name).extension().is_none()
+        && let Some(ext) = old.extension()
+    {
+        name.push('.');
+        name.push_str(&ext.to_string_lossy());
+    }
+    let Some(dir) = old.parent() else { return };
+    let new = dir.join(&name);
+    if new == old {
+        return;
+    }
+    if new.exists() {
+        toast(app, format!("{name} is already in this folder."));
+        return;
+    }
+    // A playing file is let go first, so Windows lets it be renamed; it is opened again under the new name.
+    let playing = page != "image";
+    if playing {
+        app.media.borrow_mut().take_player();
+    }
+    if let Err(e) = std::fs::rename(&old, &new) {
+        toast(app, format!("Could not rename: {e}"));
+        if playing {
+            mediactl::open(app, &old);
+        }
+        return;
+    }
+    if playing {
+        mediactl::open(app, &new);
+    } else {
+        viewer::renamed(app, &new);
+    }
+    {
+        let mut list = app.recents.borrow_mut();
+        list.retain(|p| p != &old);
+        prefs::push_recent(&mut list, &new);
+        prefs::save_recents(&list);
+    }
+    refresh_recents(app);
+    update_title(app);
+    toast(app, format!("Renamed to {name}"));
 }
 
 pub fn toast(app: &Rc<App>, text: impl Into<SharedString>) {
@@ -227,22 +319,36 @@ pub fn open_dialog(app: &Rc<App>) {
     let mut all: Vec<&str> = files::IMAGE_EXTS.to_vec();
     all.extend_from_slice(files::VIDEO_EXTS);
     all.extend_from_slice(files::AUDIO_EXTS);
+    all.extend_from_slice(files::TEXT_EXTS);
     let picked = rfd::FileDialog::new()
         .set_title("Open")
-        .add_filter("Pictures, video and music", &all)
+        .add_filter("Pictures, video, music and text", &all)
         .add_filter("Pictures", files::IMAGE_EXTS)
         .add_filter("Video", files::VIDEO_EXTS)
         .add_filter("Music", files::AUDIO_EXTS)
+        .add_filter("Text", files::TEXT_EXTS)
         .add_filter("Everything", &["*"])
-        .pick_file();
-    if let Some(path) = picked {
-        open_path(app, &path);
+        .pick_files();
+    if let Some(paths) = picked {
+        open_many(app, &paths);
+    }
+}
+
+/// Opens the files picked together. Several pictures show only those in the filmstrip; one file browses its folder.
+pub fn open_many(app: &Rc<App>, paths: &[PathBuf]) {
+    let Some(first) = paths.first() else { return };
+    if paths.len() > 1 && paths.iter().all(|p| files::kind_of(p) == Some(Kind::Image)) {
+        viewer::open_set(app, paths);
+        remember(app, first);
+    } else {
+        open_path(app, first);
     }
 }
 
 pub fn open_path(app: &Rc<App>, path: &Path) {
     match files::kind_of(path) {
         Some(Kind::Image) => viewer::open(app, path),
+        Some(Kind::Text) => textctl::open(app, path),
         Some(Kind::Video | Kind::Audio) => mediactl::open(app, path),
         None => {
             // Unknown extension: let FFmpeg try it as media.
@@ -389,15 +495,28 @@ pub fn close_tab(app: &Rc<App>) {
             }
         }
         "audio" | "video" => mediactl::close(app),
+        "text" => textctl::close(app),
         _ => {}
     }
     update_title(app);
+}
+
+/// The window is closing, with nothing left unsaved: empties the tabs, then quits, or hides the window when the app keeps
+/// running in the tray.
+pub fn finish_close(app: &Rc<App>) {
+    clear_all(app);
+    if !app.prefs.borrow().background {
+        capturectl::stop_all_now(app);
+        let _ = slint::quit_event_loop();
+    }
+    let _ = app.ui.window().hide();
 }
 
 /// Empties every tab and frees what they held (the window was closed).
 fn clear_all(app: &Rc<App>) {
     viewer::close(app);
     mediactl::close(app);
+    textctl::clear(app);
     if app.ui.global::<ui::Shell>().get_full_screen() {
         toggle_full_screen(app);
     }
@@ -411,9 +530,30 @@ pub fn handle_request(request: crate::instance::Request) {
         Request::Show => show_main(a),
         Request::Open(p) => {
             show_main(a);
-            open_path(a, Path::new(&p));
+            queue_open(a, PathBuf::from(p));
         }
         Request::Snip(mode) => capturectl::snip(a, &mode),
         Request::Nothing => {}
     });
+}
+thread_local! {
+    static PENDING_OPENS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Explorer starts the app once per file when several are opened together; the starts arrive here a few ms apart. They
+/// are gathered for a moment and opened as one set, so the filmstrip shows just those files.
+pub fn queue_open(app: &Rc<App>, path: PathBuf) {
+    let first = PENDING_OPENS.with(|p| {
+        let mut p = p.borrow_mut();
+        p.push(path);
+        p.len() == 1
+    });
+    if first {
+        let app = app.clone();
+        slint::Timer::single_shot(std::time::Duration::from_millis(350), move || {
+            let mut paths = PENDING_OPENS.with(|p| std::mem::take(&mut *p.borrow_mut()));
+            paths.dedup();
+            open_many(&app, &paths);
+        });
+    }
 }
