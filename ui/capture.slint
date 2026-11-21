@@ -12,17 +12,29 @@ export struct WindowBox {
     h: float,
 }
 
-// Covers every monitor with a frozen screenshot. Drag for an area, or hover and click a window.
+// Covers every monitor with a frozen screenshot. Modes: drag an area (region), draw any shape (free), hover and click a
+// window, the whole screen; and two tools: pick a colour (color) and copy the text in an area (text).
 export component SnipWindow inherits Window {
     in property <image> shot;
     in property <int> shot-w: 1;
     in property <int> shot-h: 1;
-    in-out property <string> mode: "region"; // "region", "window", "screen"
+    in-out property <string> mode: "region"; // "region", "free", "window", "screen", "color", "text"
     // "snip" for a screenshot, "record" to choose what to record.
     in property <string> purpose: "snip";
     in property <[WindowBox]> windows;
     callback done(float, float, float, float);
     callback cancel();
+
+    // Freeform: the outline so far, in a 0..10000 square stretched over the screen (Rust keeps the points).
+    in property <string> free-path;
+    callback free-start(float, float);
+    callback free-move(float, float);
+    callback free-end();
+
+    // Colour picker: the colour under the pointer, and the click that copies it.
+    callback color-at(float, float) -> string;
+    in property <color> swatch;
+    callback picked(float, float);
 
     no-frame: true;
     always-on-top: true;
@@ -40,14 +52,27 @@ export component SnipWindow inherits Window {
     property <float> ay;
     property <float> bx;
     property <float> by;
+    // Pointer position (colour picker).
+    property <length> px;
+    property <length> py;
+    property <string> hex;
+    property <bool> boxed: mode == "region" || mode == "text";
     property <float> sel-x: mode == "window" ? (hovered >= 0 ? windows[hovered].x : 0) : mode == "screen" ? 0 : min(ax, bx);
     property <float> sel-y: mode == "window" ? (hovered >= 0 ? windows[hovered].y : 0) : mode == "screen" ? 0 : min(ay, by);
     property <float> sel-w: mode == "window" ? (hovered >= 0 ? windows[hovered].w : 0) : mode == "screen" ? 1 : abs(bx - ax);
     property <float> sel-h: mode == "window" ? (hovered >= 0 ? windows[hovered].h : 0) : mode == "screen" ? 1 : abs(by - ay);
-    property <bool> has-sel: sel-w > 0.002 && sel-h > 0.002;
+    property <bool> has-sel: (boxed || mode == "window" || mode == "screen") && sel-w > 0.002 && sel-h > 0.002;
 
     // The window under (fx, fy), front-most first; -1 for none. Answered in Rust.
     callback hit(float, float) -> int;
+
+    function set-mode(m: string) {
+        root.mode = m;
+        root.ax = 0;
+        root.bx = 0;
+        root.ay = 0;
+        root.by = 0;
+    }
 
     forward-focus: keys;
     keys := FocusScope {
@@ -71,7 +96,7 @@ export component SnipWindow inherits Window {
     property <length> sh: sel-h * self.height;
 
     // Dim everything outside the selection.
-    if !root.has-sel: Rectangle { background: #00000070; }
+    if !root.has-sel && root.mode != "color": Rectangle { background: #00000070; }
     if root.has-sel: Rectangle { x: 0; y: 0; width: parent.width; height: root.sy; background: #00000070; }
     if root.has-sel: Rectangle { x: 0; y: root.sy + root.sh; width: parent.width; height: max(0px, parent.height - root.sy - root.sh); background: #00000070; }
     if root.has-sel: Rectangle { x: 0; y: root.sy; width: root.sx; height: root.sh; background: #00000070; }
@@ -82,7 +107,7 @@ export component SnipWindow inherits Window {
         width: root.sw;
         height: root.sh;
         border-width: 2px;
-        border-color: root.purpose == "record" ? Tokens.record-red : #4DA0FF;
+        border-color: root.purpose == "record" ? Tokens.record-red : root.mode == "text" ? #FFC14D : #4DA0FF;
     }
     if root.has-sel && root.mode != "screen": Rectangle {
         x: root.sx;
@@ -99,22 +124,46 @@ export component SnipWindow inherits Window {
         }
     }
 
+    // Freeform outline.
+    if root.mode == "free" && root.free-path != "": Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 10000;
+        viewbox-height: 10000;
+        commands: root.free-path;
+        stroke: #4DA0FF;
+        stroke-width: 2px;
+        fill: #4DA0FF22;
+    }
+
     TouchArea {
-        mouse-cursor: root.mode == "region" ? crosshair : pointer;
+        mouse-cursor: root.mode == "window" || root.mode == "screen" ? pointer : crosshair;
         moved => {
             let fx = self.mouse-x / root.width;
             let fy = self.mouse-y / root.height;
             if root.mode == "window" {
                 root.hovered = root.hit(fx, fy);
             }
-            if root.mode == "region" && self.pressed {
+            if root.boxed && self.pressed {
                 root.bx = clamp(fx, 0, 1);
                 root.by = clamp(fy, 0, 1);
             }
+            if root.mode == "free" && self.pressed {
+                root.free-move(clamp(fx, 0, 1), clamp(fy, 0, 1));
+            }
         }
         pointer-event(e) => {
-            if e.kind == PointerEventKind.move && root.mode == "window" {
-                root.hovered = root.hit(self.mouse-x / root.width, self.mouse-y / root.height);
+            if e.kind == PointerEventKind.move {
+                if root.mode == "window" {
+                    root.hovered = root.hit(self.mouse-x / root.width, self.mouse-y / root.height);
+                }
+                if root.mode == "color" {
+                    root.px = self.mouse-x;
+                    root.py = self.mouse-y;
+                    root.hex = root.color-at(self.mouse-x / root.width, self.mouse-y / root.height);
+                }
                 return;
             }
             if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
@@ -123,24 +172,71 @@ export component SnipWindow inherits Window {
             if e.button != PointerEventButton.left { return; }
             let fx = self.mouse-x / root.width;
             let fy = self.mouse-y / root.height;
-            if e.kind == PointerEventKind.down && root.mode == "region" {
+            if e.kind == PointerEventKind.down && root.boxed {
                 root.ax = fx;
                 root.ay = fy;
                 root.bx = fx;
                 root.by = fy;
                 root.dragging = true;
             }
+            if e.kind == PointerEventKind.down && root.mode == "free" {
+                root.free-start(fx, fy);
+            }
             if e.kind == PointerEventKind.up {
-                if root.mode == "region" && root.dragging {
+                if root.boxed && root.dragging {
                     root.dragging = false;
                     if root.has-sel { root.done(root.sel-x, root.sel-y, root.sel-w, root.sel-h); }
+                } else if root.mode == "free" {
+                    root.free-end();
                 } else if root.mode == "window" {
                     root.hovered = root.hit(fx, fy);
                     if root.hovered >= 0 { root.done(root.sel-x, root.sel-y, root.sel-w, root.sel-h); }
                 } else if root.mode == "screen" {
                     root.done(0, 0, 1, 1);
+                } else if root.mode == "color" {
+                    root.picked(fx, fy);
                 }
             }
+        }
+    }
+
+    // Colour picker loupe: the pixels around the pointer, 9x larger, with the colour's value.
+    if root.mode == "color" && root.hex != "": Rectangle {
+        property <int> cx: floor(root.px / root.width * root.shot-w);
+        property <int> cy: floor(root.py / root.height * root.shot-h);
+        x: root.px + 24px + self.width > root.width ? root.px - 24px - self.width : root.px + 24px;
+        y: root.py + 24px + self.height > root.height ? root.py - 24px - self.height : root.py + 24px;
+        width: 135px;
+        height: 167px;
+        border-radius: 8px;
+        background: #1B1E24F0;
+        border-width: 1px;
+        border-color: #2F3540;
+        clip: true;
+        Image {
+            x: 0;
+            y: 0;
+            width: 135px;
+            height: 135px;
+            source: root.shot;
+            source-clip-x: parent.cx - 7;
+            source-clip-y: parent.cy - 7;
+            source-clip-width: 15;
+            source-clip-height: 15;
+            image-fit: fill;
+            image-rendering: pixelated;
+        }
+        Rectangle { x: 63px; y: 63px; width: 9px; height: 9px; border-width: 1px; border-color: #FFFFFF; }
+        HorizontalLayout {
+            y: 135px;
+            height: 32px;
+            padding-left: 8px;
+            spacing: 8px;
+            Rectangle {
+                width: 16px;
+                Rectangle { width: 16px; height: 16px; border-radius: 3px; background: root.swatch; border-width: 1px; border-color: #FFFFFF60; }
+            }
+            Text { text: root.hex; color: #F2F1EE; font-size: 13px; font-weight: 600; vertical-alignment: center; }
         }
     }
 
@@ -159,14 +255,23 @@ export component SnipWindow inherits Window {
         bar := HorizontalLayout {
             padding: 8px;
             spacing: 4px;
-            IconButton { on-stage: true; icon: Icons.scan; label: "Area"; active: root.mode == "region"; clicked => { root.mode = "region"; root.ax = 0; root.bx = 0; root.ay = 0; root.by = 0; } }
-            IconButton { on-stage: true; icon: Icons.app-window; label: "Window"; active: root.mode == "window"; clicked => { root.mode = "window"; } }
-            IconButton { on-stage: true; icon: Icons.monitor; label: "Whole screen"; active: root.mode == "screen"; clicked => { root.mode = "screen"; } }
+            IconButton { on-stage: true; icon: Icons.scan; label: "Rectangle"; active: root.mode == "region"; clicked => { root.set-mode("region"); } }
+            if root.purpose == "snip": IconButton { on-stage: true; icon: Icons.lasso; label: "Freeform"; active: root.mode == "free"; clicked => { root.set-mode("free"); } }
+            IconButton { on-stage: true; icon: Icons.app-window; label: "Window"; active: root.mode == "window"; clicked => { root.set-mode("window"); } }
+            IconButton { on-stage: true; icon: Icons.monitor; label: "Whole screen"; active: root.mode == "screen"; clicked => { root.set-mode("screen"); } }
+            if root.purpose == "snip": Rectangle { width: 9px; Rectangle { width: 1px; height: 20px; background: #2F3540; } }
+            if root.purpose == "snip": IconButton { on-stage: true; icon: Icons.pipette; label: "Colour picker"; active: root.mode == "color"; clicked => { root.set-mode("color"); } }
+            if root.purpose == "snip": IconButton { on-stage: true; icon: Icons.text-scan; label: "Copy text (text extractor)"; active: root.mode == "text"; clicked => { root.set-mode("text"); } }
             Rectangle { width: 9px; Rectangle { width: 1px; height: 20px; background: #2F3540; } }
             Text {
                 text: root.purpose == "record"
                     ? (root.mode == "screen" ? "Click to record the whole screen" : root.mode == "window" ? "Click a window to record it" : "Drag over the area to record")
-                    : (root.mode == "screen" ? "Click anywhere to snip the whole screen" : root.mode == "window" ? "Click a window" : "Drag to snip an area");
+                    : root.mode == "screen" ? "Click anywhere to snip the whole screen"
+                    : root.mode == "window" ? "Click a window"
+                    : root.mode == "free" ? "Draw around what you want"
+                    : root.mode == "color" ? "Click to copy a colour"
+                    : root.mode == "text" ? "Drag over text to copy it"
+                    : "Drag to snip an area";
                 color: #F2F1EE;
                 font-size: 13px;
                 vertical-alignment: center;
@@ -260,10 +365,17 @@ export component Tray inherits SystemTrayIcon {
     clicked => { root.open(); }
 
     Menu {
+        MenuItem { title: "Rimelight Media"; enabled: false; }
+        MenuSeparator { }
         MenuItem { title: "Open Rimelight Media"; activated => { root.open(); } }
+        MenuSeparator { }
         MenuItem { title: "Snip an area"; activated => { root.snip("region"); } }
+        MenuItem { title: "Freeform snip"; activated => { root.snip("free"); } }
         MenuItem { title: "Snip a window"; activated => { root.snip("window"); } }
         MenuItem { title: "Snip the whole screen"; activated => { root.snip("screen"); } }
+        MenuItem { title: "Pick a colour"; activated => { root.snip("color"); } }
+        MenuItem { title: "Copy text from the screen"; activated => { root.snip("text"); } }
+        MenuSeparator { }
         MenuItem { title: recording ? "Stop recording" : "Record the screen"; activated => { root.record(); } }
         MenuItem { title: "Record your voice"; activated => { root.voice(); } }
         MenuSeparator { }

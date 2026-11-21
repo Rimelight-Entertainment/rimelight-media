@@ -30,6 +30,7 @@ pub fn show(app: &Rc<App>) -> bool {
     if w.show().is_err() {
         return false;
     }
+    crate::app::center_window(w.window());
     *app.setup.borrow_mut() = Some(w);
     true
 }
@@ -67,6 +68,7 @@ fn finish(app: &Rc<App>) {
     }
     if open_now {
         show_main(app);
+        crate::app::center_window(app.ui.window());
     } else if !startup {
         let _ = slint::quit_event_loop();
     }

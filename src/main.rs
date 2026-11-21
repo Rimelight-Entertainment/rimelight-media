@@ -17,6 +17,7 @@ mod capturectl;
 mod files;
 mod hotkeys;
 mod install;
+mod instance;
 mod media;
 mod mediactl;
 mod picture;
@@ -53,6 +54,8 @@ fn parse() -> Result<Args, String> {
             Some("--background") => args.background = true,
             Some("--write-icon") => args.write_icon = Some(it.next().ok_or("--write-icon needs a file")?.into()),
             Some("--snip") => args.snip = Some(it.next().and_then(|s| s.into_string().ok()).ok_or("--snip needs region, window or screen")?),
+            // Win+Shift+S (and Print Screen without the Snipping Tool) start the ms-screenclip: link.
+            Some(uri) if uri.to_ascii_lowercase().starts_with("ms-screenclip:") => args.snip = Some(instance::screenclip_mode(uri)),
             Some(flag) if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             _ => args.file = Some(PathBuf::from(a)),
         }
@@ -119,6 +122,20 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
                 ok = false;
                 println!("codec {name}: FAILED: {e}")
             }
+        }
+    }
+    // Text extractor: write text into a white picture, read it back with Windows' text recognition.
+    let blank = picture::Picture { w: 640, h: 120, rgba: vec![255; 640 * 120 * 4] };
+    let mark = picture::Mark { kind: 4, rgba: [0, 0, 0, 255], width: 10.0, points: vec![(20.0, 30.0)], text: "Rimelight Media 2026".into() };
+    match picture::burn_marks(&blank, &[mark]).and_then(|p| platform::recognise_text(&p.rgba, p.w, p.h)) {
+        Ok(text) if text.contains("Rimelight") => println!("text extractor: ok, read {text:?}"),
+        Ok(text) => {
+            ok = false;
+            println!("text extractor: read {text:?}, expected the sample text")
+        }
+        Err(e) => {
+            ok = false;
+            println!("text extractor: failed: {e}")
         }
     }
     match picture::load_animation(&dir.join("sample.gif")) {
@@ -202,6 +219,22 @@ fn main() -> ExitCode {
     }
 
     let checking = args.screenshot.is_some();
+
+    // One running copy: hand this start's request to it and leave.
+    if !checking {
+        let request = if let Some(f) = &args.file {
+            instance::Request::Open(f.display().to_string())
+        } else if let Some(m) = &args.snip {
+            instance::Request::Snip(m.clone())
+        } else if args.background {
+            instance::Request::Nothing
+        } else {
+            instance::Request::Show
+        };
+        if instance::forward(&request) {
+            return ExitCode::SUCCESS;
+        }
+    }
     let mut selector = slint::BackendSelector::new().backend_name("winit".into());
     if checking {
         // A check never takes focus and stays behind the person's windows (a covered window still draws on Windows).
@@ -227,6 +260,7 @@ fn main() -> ExitCode {
 
     if !checking {
         app::start_hotkeys(&app);
+        instance::serve(app::handle_request);
         let keep = app.prefs.borrow().background;
         capturectl::ensure_tray(&app, keep);
     }
@@ -240,6 +274,9 @@ fn main() -> ExitCode {
         if let Err(e) = app.ui.show() {
             eprintln!("{TOOL}: {e}");
             return ExitCode::FAILURE;
+        }
+        if !checking {
+            app::center_window(app.ui.window());
         }
     }
     if let Some(mode) = &args.snip {
@@ -293,6 +330,9 @@ fn main() -> ExitCode {
     let result = slint::run_event_loop_until_quit();
     drop(_check_timer);
     app::shutdown();
+    if !checking {
+        instance::release();
+    }
     drop(app);
     match result {
         Ok(()) => ExitCode::SUCCESS,

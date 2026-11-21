@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
 
 use crate::app::{App, go, post, remember, toast, update_title, with_app};
 use crate::files;
@@ -29,7 +29,18 @@ pub struct ViewState {
     anim_frame: usize,
     anim_playing: bool,
     anim_timer: slint::Timer,
+    /// Earlier versions of the picture (Undo) and undone ones (Redo), newest last.
+    history: Vec<Picture>,
+    future: Vec<Picture>,
+    /// Filmstrip: its thumbnails (for the folder in thumbs_dir) and the pictures picked to compare.
+    thumbs: Option<Rc<VecModel<ui::Thumb>>>,
+    thumbs_dir: Option<PathBuf>,
+    thumbs_gen: u64,
+    picked: Vec<usize>,
 }
+
+/// Picture edits kept for Undo.
+const MAX_HISTORY: usize = 20;
 
 fn viewer(app: &Rc<App>) -> ui::Viewer<'_> {
     app.ui.global::<ui::Viewer>()
@@ -73,6 +84,11 @@ pub fn wire(app: &Rc<App>) {
     v.on_mark_text(|t| with_app(move |a| mark_text(a, &t)));
     v.on_undo(|| with_app(undo));
     v.on_redo(|| with_app(redo));
+    v.on_print(|| with_app(print));
+    v.on_share(|| with_app(share));
+    v.on_toggle_filmstrip(|| with_app(toggle_filmstrip));
+    v.on_thumb_clicked(|i, add| with_app(move |a| thumb_clicked(a, i as usize, add)));
+    v.on_close_compare(|| with_app(close_compare));
     v.on_clear_marks(|| {
         with_app(|a| {
             let mut s = a.view.borrow_mut();
@@ -134,6 +150,8 @@ pub fn open(app: &Rc<App>, path: &Path) {
         s.marks.clear();
         s.redo.clear();
         s.file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        s.history.clear();
+        s.future.clear();
         stop_anim(&mut s);
         s.generation
     };
@@ -196,6 +214,8 @@ pub fn open_picture(app: &Rc<App>, pic: Picture, path: Option<PathBuf>) {
         s.pic = Some(pic);
         s.marks.clear();
         s.redo.clear();
+        s.history.clear();
+        s.future.clear();
     }
     let v = viewer(app);
     v.set_loading(false);
@@ -223,6 +243,10 @@ fn show_picture(app: &Rc<App>, fresh: bool) {
     if fresh {
         v.set_fit(true);
     }
+    v.set_dims_text(format!("{} x {}", pic.w, pic.h).into());
+    v.set_file_type(s.path.as_deref().map(|p| files::ext_of(p).to_uppercase()).unwrap_or_else(|| "Not saved".into()).into());
+    v.set_size_text(if s.path.is_some() && s.file_size > 0 { files::human_size(s.file_size).into() } else { SharedString::new() });
+    v.set_can_share(s.path.as_ref().is_some_and(|p| p.exists()));
     let mut detail = format!("{} × {} pixels", pic.w, pic.h);
     if let Some(p) = &s.path {
         if s.file_size > 0 {
@@ -249,6 +273,7 @@ fn show_picture(app: &Rc<App>, fresh: bool) {
 }
 
 fn update_position(app: &Rc<App>) {
+    sync_thumbs(app);
     let s = app.view.borrow();
     let v = viewer(app);
     let n = s.folder.len();
@@ -264,7 +289,7 @@ pub fn step(app: &Rc<App>, delta: i32) {
         (i >= 0 && (i as usize) < s.folder.len()).then(|| s.folder[i as usize].clone())
     };
     if viewer(app).get_dirty() {
-        toast(app, "Changes not saved. Save, or Undo all, first.");
+        toast(app, "Changes not saved: save them, or undo them, first.");
         return;
     }
     if let Some(p) = next {
@@ -282,6 +307,11 @@ fn edit(app: &Rc<App>, f: impl FnOnce(&Picture) -> Picture) {
         match s.pic.take() {
             Some(p) => {
                 s.pic = Some(f(&p));
+                s.history.push(p);
+                if s.history.len() > MAX_HISTORY {
+                    s.history.remove(0);
+                }
+                s.future.clear();
                 true
             }
             None => false,
@@ -290,6 +320,7 @@ fn edit(app: &Rc<App>, f: impl FnOnce(&Picture) -> Picture) {
     if changed {
         viewer(app).set_dirty(true);
         show_picture(app, false);
+        refresh_undo(app);
     }
 }
 
@@ -447,22 +478,87 @@ fn mark_text(app: &Rc<App>, text: &str) {
     refresh_marks(app);
 }
 
+/// Undo: the last mark while drawing, otherwise the last edit of the picture.
 fn undo(app: &Rc<App>) {
-    let mut s = app.view.borrow_mut();
-    if let Some(m) = s.marks.pop() {
-        s.redo.push(m);
+    if viewer(app).get_mode() == "markup" {
+        let mut s = app.view.borrow_mut();
+        if let Some(m) = s.marks.pop() {
+            s.redo.push(m);
+        }
+        drop(s);
+        refresh_marks(app);
+        return;
     }
-    drop(s);
-    refresh_marks(app);
+    let changed = {
+        let mut s = app.view.borrow_mut();
+        match (s.history.pop(), s.pic.take()) {
+            (Some(prev), Some(cur)) => {
+                s.future.push(cur);
+                s.pic = Some(prev);
+                true
+            }
+            (prev, cur) => {
+                s.pic = cur;
+                if let Some(p) = prev {
+                    s.history.push(p);
+                }
+                false
+            }
+        }
+    };
+    if changed {
+        let dirty = !app.view.borrow().history.is_empty();
+        viewer(app).set_dirty(dirty);
+        show_picture(app, false);
+    }
+    refresh_undo(app);
 }
 
 fn redo(app: &Rc<App>) {
-    let mut s = app.view.borrow_mut();
-    if let Some(m) = s.redo.pop() {
-        s.marks.push(m);
+    if viewer(app).get_mode() == "markup" {
+        let mut s = app.view.borrow_mut();
+        if let Some(m) = s.redo.pop() {
+            s.marks.push(m);
+        }
+        drop(s);
+        refresh_marks(app);
+        return;
     }
-    drop(s);
-    refresh_marks(app);
+    let changed = {
+        let mut s = app.view.borrow_mut();
+        match (s.future.pop(), s.pic.take()) {
+            (Some(next), Some(cur)) => {
+                s.history.push(cur);
+                s.pic = Some(next);
+                true
+            }
+            (next, cur) => {
+                s.pic = cur;
+                if let Some(n) = next {
+                    s.future.push(n);
+                }
+                false
+            }
+        }
+    };
+    if changed {
+        viewer(app).set_dirty(true);
+        show_picture(app, false);
+    }
+    refresh_undo(app);
+}
+
+/// Undo and Redo follow the marks while drawing, the picture's edits otherwise.
+fn refresh_undo(app: &Rc<App>) {
+    let s = app.view.borrow();
+    let v = viewer(app);
+    if v.get_mode() == "markup" {
+        v.set_can_undo(!s.marks.is_empty());
+        v.set_can_redo(!s.redo.is_empty());
+    } else {
+        v.set_can_undo(!s.history.is_empty());
+        v.set_can_redo(!s.future.is_empty());
+    }
 }
 
 fn to_ui(m: &Mark) -> ui::Mark {
@@ -482,10 +578,9 @@ fn to_ui(m: &Mark) -> ui::Mark {
 fn refresh_marks(app: &Rc<App>) {
     let s = app.view.borrow();
     let items: Vec<ui::Mark> = s.marks.iter().chain(s.drawing.iter()).map(to_ui).collect();
-    let v = viewer(app);
-    v.set_can_undo(!s.marks.is_empty());
-    v.set_can_redo(!s.redo.is_empty());
-    v.set_marks(ModelRc::new(VecModel::from(items)));
+    viewer(app).set_marks(ModelRc::new(VecModel::from(items)));
+    drop(s);
+    refresh_undo(app);
 }
 
 fn current(app: &Rc<App>) -> Option<Picture> {
@@ -614,6 +709,7 @@ pub fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool) -> bool {
             "s" => save(app),
             "z" => undo(app),
             "y" => redo(app),
+            "p" => print(app),
             _ => return false,
         }
         return true;
@@ -830,8 +926,8 @@ fn delete_current(app: &Rc<App>) {
     }
 }
 
-/// Clears the picture page and goes home.
-fn close(app: &Rc<App>) {
+/// Empties the picture tab and frees the picture, its edits and the filmstrip.
+pub fn close(app: &Rc<App>) {
     {
         let mut s = app.view.borrow_mut();
         stop_anim(&mut s);
@@ -842,7 +938,16 @@ fn close(app: &Rc<App>) {
         s.folder.clear();
         s.marks.clear();
         s.redo.clear();
+        s.history.clear();
+        s.future.clear();
+        s.picked.clear();
     }
+    viewer(app).set_comparing(false);
+    viewer(app).set_file_type(SharedString::new());
+    viewer(app).set_dims_text(SharedString::new());
+    viewer(app).set_size_text(SharedString::new());
+    viewer(app).set_can_share(false);
+    refresh_undo(app);
     let v = viewer(app);
     v.set_animated(false);
     v.set_dirty(false);
@@ -850,5 +955,204 @@ fn close(app: &Rc<App>) {
     v.set_picture(slint::Image::default());
     v.set_info_name(SharedString::new());
     v.set_position(SharedString::new());
-    go(app, "home");
+    v.set_has_prev(false);
+    v.set_has_next(false);
+    v.set_show_info(false);
+    v.set_compare_images(ModelRc::default());
+    v.set_thumbs(ModelRc::default());
+    {
+        let mut s = app.view.borrow_mut();
+        s.thumbs = None;
+        s.thumbs_dir = None;
+        s.thumbs_gen += 1;
+    }
+    crate::app::update_title(app);
+}
+
+/// Before the picture goes away: true when there's nothing unsaved, or the person saved it or chose to discard it.
+pub fn confirm_discard(app: &Rc<App>) -> bool {
+    if !viewer(app).get_dirty() {
+        return true;
+    }
+    let name = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "this snip".into());
+    let answer = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("Rimelight Media")
+        .set_description(format!("Save the changes to {name}?"))
+        .set_buttons(rfd::MessageButtons::YesNoCancelCustom("Save".into(), "Don't save".into(), "Cancel".into()))
+        .show();
+    match answer {
+        rfd::MessageDialogResult::Custom(c) if c == "Save" => {
+            save(app);
+            !viewer(app).get_dirty()
+        }
+        rfd::MessageDialogResult::Custom(c) if c == "Don't save" => true,
+        rfd::MessageDialogResult::Yes => {
+            save(app);
+            !viewer(app).get_dirty()
+        }
+        rfd::MessageDialogResult::No => true,
+        _ => false,
+    }
+}
+fn print(app: &Rc<App>) {
+    let Some(pic) = current(app) else { return };
+    let title = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "Picture".into());
+    match crate::platform::print_image(crate::app::main_hwnd(app), &pic.rgba, pic.w, pic.h, &title) {
+        Ok(true) => toast(app, "Sent to the printer"),
+        Ok(false) => {}
+        Err(e) => toast(app, format!("Could not print: {e}")),
+    }
+}
+
+fn share(app: &Rc<App>) {
+    let Some(path) = app.view.borrow().path.clone().filter(|p| p.exists()) else {
+        toast(app, "Save the picture first, then share it.");
+        return;
+    };
+    if viewer(app).get_dirty() {
+        toast(app, "Sharing the saved file: changes not saved yet aren't included.");
+    }
+    if let Err(e) = crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path)) {
+        toast(app, format!("Could not share: {e}"));
+    }
+}
+
+fn toggle_filmstrip(app: &Rc<App>) {
+    let v = viewer(app);
+    v.set_filmstrip(!v.get_filmstrip());
+    sync_thumbs(app);
+}
+
+/// Keeps the filmstrip in step with the folder: new thumbnails (made in the background) for a new folder, otherwise
+/// only the current and picked marks.
+fn sync_thumbs(app: &Rc<App>) {
+    if !viewer(app).get_filmstrip() {
+        return;
+    }
+    let (folder, dir, same) = {
+        let s = app.view.borrow();
+        let dir = s.folder.first().and_then(|p| p.parent()).map(Path::to_path_buf);
+        let same = s.thumbs.as_ref().is_some_and(|m| m.row_count() == s.folder.len()) && s.thumbs_dir == dir;
+        (s.folder.clone(), dir, same)
+    };
+    if !same {
+        let model = Rc::new(VecModel::from(
+            folder
+                .iter()
+                .map(|p| ui::Thumb { image: slint::Image::default(), name: files::file_name(p).into(), current: false, selected: false })
+                .collect::<Vec<_>>(),
+        ));
+        let generation = {
+            let mut s = app.view.borrow_mut();
+            s.thumbs_gen += 1;
+            s.thumbs = Some(Rc::clone(&model));
+            s.thumbs_dir = dir;
+            s.picked.clear();
+            s.thumbs_gen
+        };
+        viewer(app).set_thumbs(ModelRc::from(model));
+        std::thread::spawn(move || {
+            for (i, p) in folder.into_iter().enumerate() {
+                let Some(pic) = picture::thumbnail(&p, 240, 176) else { continue };
+                let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pic.rgba, pic.w, pic.h);
+                let keep_going = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+                let flag = std::sync::Arc::clone(&keep_going);
+                post(move |a| {
+                    let s = a.view.borrow();
+                    if s.thumbs_gen != generation {
+                        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                    if let Some(m) = s.thumbs.as_ref()
+                        && let Some(mut row) = m.row_data(i)
+                    {
+                        row.image = slint::Image::from_rgba8(buf);
+                        m.set_row_data(i, row);
+                    }
+                });
+                if !keep_going.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+            }
+        });
+    }
+    let s = app.view.borrow();
+    if let Some(m) = s.thumbs.as_ref() {
+        for i in 0..m.row_count() {
+            if let Some(mut row) = m.row_data(i) {
+                let (current, selected) = (i == s.index, s.picked.contains(&i));
+                if row.current != current || row.selected != selected {
+                    row.current = current;
+                    row.selected = selected;
+                    m.set_row_data(i, row);
+                }
+            }
+        }
+    }
+}
+
+/// A click in the filmstrip opens that picture; Ctrl+click (or Shift+click) picks pictures to compare side by side.
+fn thumb_clicked(app: &Rc<App>, i: usize, add: bool) {
+    let Some(path) = app.view.borrow().folder.get(i).cloned() else { return };
+    if !add {
+        if viewer(app).get_dirty() {
+            toast(app, "Changes not saved: save them, or undo them, first.");
+            return;
+        }
+        app.view.borrow_mut().picked.clear();
+        viewer(app).set_comparing(false);
+        open(app, &path);
+        return;
+    }
+    let picked = {
+        let mut s = app.view.borrow_mut();
+        if s.picked.is_empty() {
+            let current = s.index;
+            s.picked.push(current);
+        }
+        if let Some(at) = s.picked.iter().position(|p| *p == i) {
+            s.picked.remove(at);
+        } else {
+            s.picked.push(i);
+        }
+        s.picked.iter().filter_map(|p| s.folder.get(*p).cloned()).collect::<Vec<_>>()
+    };
+    sync_thumbs(app);
+    let v = viewer(app);
+    if picked.len() < 2 {
+        v.set_comparing(false);
+        return;
+    }
+    v.set_comparing(true);
+    v.set_compare_images(ModelRc::new(VecModel::from(vec![slint::Image::default(); picked.len()])));
+    let generation = app.view.borrow().generation;
+    for (slot, p) in picked.into_iter().enumerate() {
+        std::thread::spawn(move || {
+            let Ok(pic) = picture::load(&p) else { return };
+            // Side by side, each needs only a screen's worth of pixels.
+            let pic = if pic.w.max(pic.h) > 2560 {
+                let f = 2560.0 / pic.w.max(pic.h) as f32;
+                picture::resize(&pic, (pic.w as f32 * f) as u32, (pic.h as f32 * f) as u32)
+            } else {
+                pic
+            };
+            let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pic.rgba, pic.w, pic.h);
+            post(move |a| {
+                if a.view.borrow().generation != generation {
+                    return;
+                }
+                let model = viewer(a).get_compare_images();
+                if slot < model.row_count() {
+                    model.set_row_data(slot, slint::Image::from_rgba8(buf));
+                }
+            });
+        });
+    }
+}
+
+pub fn close_compare(app: &Rc<App>) {
+    app.view.borrow_mut().picked.clear();
+    viewer(app).set_comparing(false);
+    sync_thumbs(app);
 }

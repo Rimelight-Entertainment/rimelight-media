@@ -18,7 +18,7 @@ pub fn wire(app: &Rc<App>) {
     s.on_check_updates(|| with_app(|a| crate::app::check_updates(a, true)));
     s.on_open_releases(|| {
         if let Some(url) = crate::update::releases_page() {
-            let _ = std::process::Command::new("explorer").arg(url).spawn();
+            crate::platform::open_uri(&url);
         }
     });
     s.on_register_defaults(|| {
@@ -143,4 +143,10 @@ pub fn apply_theme(app: &Rc<App>) {
         _ => ui::ThemeChoice::System,
     };
     app.ui.global::<ui::Tokens>().set_theme(theme);
+    // The tray menu is a Windows menu: it follows the same choice (1 like Windows, 2 dark, 3 light).
+    crate::platform::set_menu_theme(match app.prefs.borrow().theme {
+        0 => 3,
+        1 => 2,
+        _ => 1,
+    });
 }

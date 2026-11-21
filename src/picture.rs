@@ -52,6 +52,22 @@ pub fn load(path: &Path) -> Result<Picture, String> {
     Ok(Picture { w: rgba.width(), h: rgba.height(), rgba: rgba.into_raw() })
 }
 
+/// A small version of a picture file (filmstrip), at most w x h, upright.
+pub fn thumbnail(path: &Path, w: u32, h: u32) -> Option<Picture> {
+    if crate::files::ext_of(path) == "svg" {
+        let pic = load_svg(path).ok()?;
+        let s = (w as f32 / pic.w as f32).min(h as f32 / pic.h as f32).min(1.0);
+        return Some(resize(&pic, ((pic.w as f32 * s) as u32).max(1), ((pic.h as f32 * s) as u32).max(1)));
+    }
+    use image::ImageDecoder as _;
+    let mut decoder = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_decoder().ok()?;
+    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).ok()?.thumbnail(w, h);
+    img.apply_orientation(orientation);
+    let rgba = img.into_rgba8();
+    Some(Picture { w: rgba.width(), h: rgba.height(), rgba: rgba.into_raw() })
+}
+
 /// An animated picture (GIF or WebP): every frame, full canvas, with how long it shows.
 pub struct Animation {
     pub frames: Vec<(Picture, u32)>,
@@ -349,7 +365,17 @@ pub fn copy_to_clipboard(pic: &Picture) -> Result<(), String> {
 
 /// The app icon (the logo drawn at `size`), for the tray-less places that need pixels: the .ico file at install.
 pub fn logo(size: u32) -> Option<Picture> {
-    let data = include_bytes!("../assets/icons/logo-color.svg");
+    render_logo(include_str!("../assets/icons/logo-color.svg"), size)
+}
+
+/// The logo with its gradient in other colours (one per kind of file in Explorer).
+pub fn logo_tinted(size: u32, top: &str, bottom: &str) -> Option<Picture> {
+    let svg = include_str!("../assets/icons/logo-color.svg").replace("#4DA0FF", top).replace("#1659C4", bottom);
+    render_logo(&svg, size)
+}
+
+fn render_logo(svg: &str, size: u32) -> Option<Picture> {
+    let data = svg.as_bytes();
     let tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
     let scale = size as f32 / tree.size().width();
     let mut pixmap = tiny_skia::Pixmap::new(size, size)?;

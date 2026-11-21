@@ -26,6 +26,8 @@ struct Snip {
     windows: Vec<TopWindow>,
     purpose: Purpose,
     main_was_visible: bool,
+    /// Freeform outline so far, as fractions of the screen.
+    free: Vec<(f32, f32)>,
 }
 
 #[derive(Default)]
@@ -166,6 +168,15 @@ fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<Top
     });
     w.on_done(|x, y, ww, hh| with_app(move |a| overlay_done(a, x, y, ww, hh)));
     w.on_cancel(|| with_app(overlay_cancel));
+    w.on_free_start(|x, y| with_app(move |a| free_point(a, x, y, true)));
+    w.on_free_move(|x, y| with_app(move |a| free_point(a, x, y, false)));
+    w.on_free_end(|| with_app(free_end));
+    w.on_color_at(|x, y| {
+        let mut out = SharedString::new();
+        with_app(|a| out = color_at(a, x, y));
+        out
+    });
+    w.on_picked(|x, y| with_app(move |a| color_picked(a, x, y)));
     w.window().set_position(slint::PhysicalPosition::new(rect.x, rect.y));
     w.window().set_size(slint::PhysicalSize::new(rect.w as u32, rect.h as u32));
     let _ = w.show();
@@ -174,7 +185,7 @@ fn show_overlay(app: &Rc<App>, shot: Picture, rect: ScreenRect, windows: Vec<Top
     w.window().set_size(slint::PhysicalSize::new(rect.w as u32, rect.h as u32));
     use slint::winit_030::WinitWindowAccessor as _;
     w.window().with_winit_window(|ww| ww.focus_window());
-    app.cap.borrow_mut().snip = Some(Snip { window: w, shot, rect, windows, purpose, main_was_visible });
+    app.cap.borrow_mut().snip = Some(Snip { window: w, shot, rect, windows, purpose, main_was_visible, free: Vec::new() });
 }
 
 fn overlay_cancel(app: &Rc<App>) {
@@ -205,6 +216,10 @@ fn overlay_done(app: &Rc<App>, x: f32, y: f32, w: f32, h: f32) {
     let x1 = (area.x + area.w).clamp(x0 + 1, s.shot.w as i32);
     let y1 = (area.y + area.h).clamp(y0 + 1, s.shot.h as i32);
     match s.purpose {
+        Purpose::Snip if mode == "text" => {
+            let pic = picture::crop_px(&s.shot, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+            copy_text(app, &pic, s.main_was_visible);
+        }
         Purpose::Snip => {
             let pic = picture::crop_px(&s.shot, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
             finish_snip(app, pic, s.main_was_visible);
@@ -488,4 +503,123 @@ pub fn ensure_tray(app: &Rc<App>, on: bool) {
     });
     let _ = tray.show();
     *app.tray.borrow_mut() = Some(tray);
+}
+
+fn free_point(app: &Rc<App>, x: f32, y: f32, first: bool) {
+    let mut c = app.cap.borrow_mut();
+    let Some(s) = c.snip.as_mut() else { return };
+    if first {
+        s.free.clear();
+    }
+    if let Some(&(lx, ly)) = s.free.last()
+        && (lx - x).abs() < 0.0008
+        && (ly - y).abs() < 0.0008
+    {
+        return;
+    }
+    s.free.push((x, y));
+    let mut path = String::new();
+    for (i, (px, py)) in s.free.iter().enumerate() {
+        path.push_str(&format!("{} {:.0} {:.0} ", if i == 0 { "M" } else { "L" }, px * 10000.0, py * 10000.0));
+    }
+    if s.free.len() > 2 {
+        path.push('Z');
+    }
+    s.window.set_free_path(path.into());
+}
+
+/// Freeform: the shape's bounding box, with everything outside the shape transparent.
+fn free_end(app: &Rc<App>) {
+    let points = app.cap.borrow().snip.as_ref().map(|s| s.free.clone()).unwrap_or_default();
+    if points.len() < 3 {
+        if let Some(s) = app.cap.borrow().snip.as_ref() {
+            s.window.set_free_path(SharedString::new());
+        }
+        return;
+    }
+    let Some(s) = app.cap.borrow_mut().snip.take() else { return };
+    let _ = s.window.hide();
+    let (sw, sh) = (s.shot.w as f32, s.shot.h as f32);
+    let px: Vec<(f32, f32)> = points.iter().map(|(x, y)| (x * sw, y * sh)).collect();
+    let x0 = px.iter().map(|p| p.0).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
+    let y0 = px.iter().map(|p| p.1).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
+    let x1 = (px.iter().map(|p| p.0).fold(0.0, f32::max).ceil() as u32).min(s.shot.w);
+    let y1 = (px.iter().map(|p| p.1).fold(0.0, f32::max).ceil() as u32).min(s.shot.h);
+    if x1 <= x0 + 1 || y1 <= y0 + 1 {
+        if s.main_was_visible {
+            show_main(app);
+        }
+        return;
+    }
+    let mut pic = picture::crop_px(&s.shot, x0, y0, x1 - x0, y1 - y0);
+    for y in 0..pic.h {
+        for x in 0..pic.w {
+            if !inside(&px, x0 as f32 + x as f32 + 0.5, y0 as f32 + y as f32 + 0.5) {
+                pic.rgba[((y * pic.w + x) * 4 + 3) as usize] = 0;
+            }
+        }
+    }
+    finish_snip(app, pic, s.main_was_visible);
+}
+
+/// Even-odd point-in-polygon test.
+fn inside(poly: &[(f32, f32)], x: f32, y: f32) -> bool {
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+fn pixel_at(s: &Snip, x: f32, y: f32) -> [u8; 3] {
+    let px = ((x * s.shot.w as f32) as u32).min(s.shot.w - 1);
+    let py = ((y * s.shot.h as f32) as u32).min(s.shot.h - 1);
+    let i = ((py * s.shot.w + px) * 4) as usize;
+    [s.shot.rgba[i], s.shot.rgba[i + 1], s.shot.rgba[i + 2]]
+}
+
+/// The colour under the pointer as "#RRGGBB" (and the loupe's swatch).
+fn color_at(app: &Rc<App>, x: f32, y: f32) -> SharedString {
+    let c = app.cap.borrow();
+    let Some(s) = c.snip.as_ref() else { return SharedString::new() };
+    let [r, g, b] = pixel_at(s, x, y);
+    s.window.set_swatch(slint::Color::from_rgb_u8(r, g, b));
+    format!("#{r:02X}{g:02X}{b:02X}").into()
+}
+
+fn color_picked(app: &Rc<App>, x: f32, y: f32) {
+    let Some(s) = app.cap.borrow_mut().snip.take() else { return };
+    let _ = s.window.hide();
+    let [r, g, b] = pixel_at(&s, x, y);
+    let hex = format!("#{r:02X}{g:02X}{b:02X}");
+    let copied = arboard::Clipboard::new().and_then(|mut cb| cb.set_text(hex.clone())).is_ok();
+    if s.main_was_visible {
+        show_main(app);
+    }
+    toast(app, if copied { format!("Copied {hex} (rgb {r}, {g}, {b})") } else { format!("{hex}: could not copy it") });
+}
+
+/// Text extractor: Windows' text recognition on the area, copied to the clipboard.
+fn copy_text(app: &Rc<App>, pic: &Picture, main_was_visible: bool) {
+    let result = crate::platform::recognise_text(&pic.rgba, pic.w, pic.h);
+    if main_was_visible {
+        show_main(app);
+    }
+    match result {
+        Ok(text) if text.trim().is_empty() => toast(app, "No text found there"),
+        Ok(text) => {
+            let lines = text.lines().count();
+            match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+                Ok(()) => toast(app, format!("Copied {lines} line{} of text", if lines == 1 { "" } else { "s" })),
+                Err(e) => toast(app, format!("Could not copy the text: {e}")),
+            }
+        }
+        Err(e) => toast(app, format!("Could not read the text: {e}")),
+    }
 }

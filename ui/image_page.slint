@@ -1,8 +1,8 @@
 // The picture viewer and editor: zoom and pan, folder browsing, crop, rotate, flip, resize and markup.
-import { LineEdit } from "std-widgets.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { IconButton, Button, ButtonKind, Card, Toggle } from "widgets.slint";
+import { IconButton, Button, ButtonKind, Card, Toggle, Slider } from "widgets.slint";
 import { Viewer, Shell } from "state.slint";
 
 component Divider inherits Rectangle {
@@ -57,9 +57,20 @@ component Handle inherits Rectangle {
 export component ImagePage inherits Rectangle {
     background: Tokens.stage;
 
+    // The scale showing now, and zooming around the middle of the stage.
+    property <float> cur-scale: Viewer.fit ? Viewer.fit-scale : Viewer.scale;
+    function zoom-to(s: float) {
+        let new = clamp(s, 0.02, 40);
+        let ratio = new / root.cur-scale;
+        Viewer.pan-x = Viewer.fit ? 0px : Viewer.pan-x * ratio;
+        Viewer.pan-y = Viewer.fit ? 0px : Viewer.pan-y * ratio;
+        Viewer.scale = new;
+        Viewer.fit = false;
+    }
+
     VerticalLayout {
-        // Top toolbar: changes with the edit mode.
-        Rectangle {
+        // Main toolbar: file actions on the left, edit tools on the right (hidden in full screen).
+        if !Shell.full-screen: Rectangle {
             height: Tokens.bar-height;
             background: Tokens.surface-raised;
             HorizontalLayout {
@@ -68,45 +79,38 @@ export component ImagePage inherits Rectangle {
                 padding-top: 6px;
                 padding-bottom: 6px;
                 spacing: Tokens.space-1;
-                alignment: start;
+                IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: Viewer.dirty; clicked => { Viewer.save(); } }
+                Button { text: "Save as"; kind: ButtonKind.ghost; clicked => { Viewer.save-as(); } }
+                IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; clicked => { Viewer.copy(); } }
+                IconButton { icon: Icons.printer; label: "Print (Ctrl+P)"; clicked => { Viewer.print(); } }
+                IconButton { icon: Icons.share; label: "Share"; enabled: Viewer.can-share; clicked => { Viewer.share(); } }
+                IconButton { icon: Icons.folder-open; label: "Show in folder"; enabled: Viewer.can-share; clicked => { Viewer.open-folder(); } }
+                Divider { }
+                IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: Viewer.can-undo; clicked => { Viewer.undo(); } }
+                IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: Viewer.can-redo; clicked => { Viewer.redo(); } }
+                Rectangle { horizontal-stretch: 1; }
+                IconButton { icon: Icons.rotate; label: "Rotate (R)"; enabled: !Viewer.comparing; clicked => { Viewer.rotate(); } }
+                IconButton { icon: Icons.flip-h; label: "Flip left-right"; enabled: !Viewer.comparing; clicked => { Viewer.flip(true); } }
+                IconButton { icon: Icons.flip-v; label: "Flip upside down"; enabled: !Viewer.comparing; clicked => { Viewer.flip(false); } }
+                IconButton { icon: Icons.crop; label: "Crop (C)"; enabled: !Viewer.comparing; active: Viewer.mode == "crop"; clicked => { Viewer.set-mode(Viewer.mode == "crop" ? "" : "crop"); } }
+                IconButton { icon: Icons.pen; label: "Draw (M)"; enabled: !Viewer.comparing; active: Viewer.mode == "markup"; clicked => { Viewer.set-mode(Viewer.mode == "markup" ? "" : "markup"); } }
+                IconButton { icon: Icons.resize; label: "Resize"; enabled: !Viewer.comparing; active: Viewer.mode == "resize"; clicked => { Viewer.set-mode(Viewer.mode == "resize" ? "" : "resize"); } }
+                Divider { }
+                IconButton { icon: Icons.trash; label: "Delete (Del)"; clicked => { Viewer.delete-current(); } }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.border-subtle; }
+        }
 
-                if Viewer.mode == "": HorizontalLayout {
-                    spacing: Tokens.space-1;
-                    IconButton { icon: Icons.zoom-out; label: "Zoom out (-)"; clicked => { Shell.key("-", false, false, false); } }
-                    Text {
-                        text: Viewer.fit ? "Fit" : round(Viewer.scale * 100) + "%";
-                        color: Tokens.text-muted;
-                        font-size: Type.caption;
-                        width: 44px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    IconButton { icon: Icons.zoom-in; label: "Zoom in (+)"; clicked => { Shell.key("+", false, false, false); } }
-                    IconButton { icon: Icons.maximize; label: "Fit (0)"; active: Viewer.fit; clicked => { Viewer.fit = true; Viewer.pan-x = 0; Viewer.pan-y = 0; } }
-                    if Viewer.animated: HorizontalLayout {
-                        spacing: Tokens.space-1;
-                        Divider { }
-                        IconButton { icon: Icons.chevron-left; label: "Previous frame (,)"; clicked => { Viewer.anim-step(-1); } }
-                        IconButton { icon: Viewer.anim-playing ? Icons.pause : Icons.play; label: Viewer.anim-playing ? "Pause (Space)" : "Play (Space)"; clicked => { Viewer.anim-toggle(); } }
-                        IconButton { icon: Icons.chevron-right; label: "Next frame (.)"; clicked => { Viewer.anim-step(1); } }
-                        Text { text: Viewer.frame-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; min-width: 120px; horizontal-alignment: center; }
-                        IconButton { icon: Icons.camera; label: "Save this frame as PNG"; clicked => { Viewer.save-frame(); } }
-                    }
-                    Divider { }
-                    IconButton { icon: Icons.rotate; label: "Rotate (R)"; clicked => { Viewer.rotate(); } }
-                    IconButton { icon: Icons.flip-h; label: "Flip left-right"; clicked => { Viewer.flip(true); } }
-                    IconButton { icon: Icons.flip-v; label: "Flip upside down"; clicked => { Viewer.flip(false); } }
-                    IconButton { icon: Icons.crop; label: "Crop (C)"; clicked => { Viewer.set-mode("crop"); } }
-                    IconButton { icon: Icons.pen; label: "Markup (M)"; clicked => { Viewer.set-mode("markup"); } }
-                    IconButton { icon: Icons.resize; label: "Resize"; clicked => { Viewer.set-mode("resize"); } }
-                    Divider { }
-                    IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; clicked => { Viewer.copy(); } }
-                    IconButton { icon: Icons.trash; label: "Delete (Del)"; clicked => { Viewer.delete-current(); } }
-                    IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: Viewer.dirty; clicked => { Viewer.save(); } }
-                    Button { text: "Save as"; kind: ButtonKind.ghost; clicked => { Viewer.save-as(); } }
-                    if Viewer.dirty: Button { text: "Undo all"; kind: ButtonKind.ghost; clicked => { Viewer.revert(); } }
-                }
-
+        // Second bar: the edit in progress (crop, draw, resize), under the main one.
+        if Viewer.mode != "" && !Shell.full-screen: Rectangle {
+            height: Tokens.bar-height;
+            background: Tokens.surface-base;
+            HorizontalLayout {
+                padding-left: Tokens.space-2;
+                padding-right: Tokens.space-2;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                spacing: Tokens.space-1;
                 if Viewer.mode == "crop": HorizontalLayout {
                     spacing: Tokens.space-1;
                     Text { text: "Crop"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; vertical-alignment: center; }
@@ -154,8 +158,6 @@ export component ImagePage inherits Rectangle {
                     Button { text: "Medium"; kind: Viewer.ink-width == 6 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.ink-width = 6; } }
                     Button { text: "Thick"; kind: Viewer.ink-width == 12 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Viewer.ink-width = 12; } }
                     Divider { }
-                    IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: Viewer.can-undo; clicked => { Viewer.undo(); } }
-                    IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: Viewer.can-redo; clicked => { Viewer.redo(); } }
                     IconButton { icon: Icons.trash; label: "Clear all marks"; enabled: Viewer.marks.length > 0; clicked => { Viewer.clear-marks(); } }
                     Rectangle { width: Tokens.space-2; }
                     Button { text: "Cancel"; clicked => { Viewer.set-mode(""); } }
@@ -183,11 +185,9 @@ export component ImagePage inherits Rectangle {
                     Button { text: "Cancel"; clicked => { Viewer.set-mode(""); } }
                     Button { text: "Apply"; kind: ButtonKind.primary; clicked => { Viewer.apply-resize(); } }
                 }
-
                 Rectangle { horizontal-stretch: 1; }
-                IconButton { icon: Icons.folder-open; label: "Show in folder"; clicked => { Viewer.open-folder(); } }
-                IconButton { icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; clicked => { Viewer.toggle-info(); } }
             }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.border-subtle; }
         }
 
         HorizontalLayout {
@@ -196,6 +196,8 @@ export component ImagePage inherits Rectangle {
                 clip: true;
 
                 property <float> fit-scale: min((self.width - 48px) / 1px / Viewer.pic-w, (self.height - 48px) / 1px / Viewer.pic-h, 1.0);
+                init => { Viewer.fit-scale = self.fit-scale; }
+                changed fit-scale => { Viewer.fit-scale = self.fit-scale; }
                 property <float> s: Viewer.fit || Viewer.mode != "" ? fit-scale : Viewer.scale;
                 property <length> pw: Viewer.pic-w * s * 1px;
                 property <length> ph: Viewer.pic-h * s * 1px;
@@ -449,14 +451,32 @@ export component ImagePage inherits Rectangle {
                     background: #00000060;
                     clicked => { Viewer.next(); }
                 }
-                if Viewer.position != "" && Viewer.mode == "": Rectangle {
-                    x: (parent.width - self.width) / 2;
-                    y: parent.height - self.height - Tokens.space-3;
-                    width: pos.preferred-width + 20px;
-                    height: 26px;
-                    border-radius: 13px;
-                    background: #00000080;
-                    pos := Text { text: Viewer.position; color: Tokens.text-on-stage; font-size: Type.caption; }
+                // Side-by-side comparison of the pictures picked in the filmstrip.
+                if Viewer.comparing: Rectangle {
+                    background: Tokens.stage;
+                    HorizontalLayout {
+                        padding: Tokens.space-3;
+                        spacing: Tokens.space-3;
+                        for img in Viewer.compare-images: Image {
+                            source: img;
+                            image-fit: contain;
+                        }
+                    }
+                    Button {
+                        x: parent.width - self.width - Tokens.space-3;
+                        y: Tokens.space-3;
+                        text: "Close comparison";
+                        clicked => { Viewer.close-compare(); }
+                    }
+                }
+                if Viewer.info-name == "" && !Viewer.loading: VerticalLayout {
+                    alignment: center;
+                    spacing: Tokens.space-3;
+                    Text { text: "No picture open"; color: Tokens.text-on-stage; font-size: Type.heading; horizontal-alignment: center; }
+                    HorizontalLayout {
+                        alignment: center;
+                        Button { text: "Open a picture"; kind: ButtonKind.primary; has-icon: true; icon: Icons.folder-open; clicked => { Shell.open-file(); } }
+                    }
                 }
                 if Viewer.loading: Text {
                     text: "Opening…";
@@ -486,6 +506,127 @@ export component ImagePage inherits Rectangle {
                     Text { text: Viewer.info-name; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
                     Text { text: Viewer.info-detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
                 }
+            }
+        }
+
+        // Filmstrip: the pictures in the folder. Click to open; Ctrl+click to pick several and compare them.
+        if Viewer.filmstrip && !Shell.full-screen: Rectangle {
+            height: 104px;
+            background: Tokens.surface-sunken;
+            ScrollView {
+                HorizontalLayout {
+                    padding: Tokens.space-2;
+                    spacing: 6px;
+                    alignment: start;
+                    for t[i] in Viewer.thumbs: Rectangle {
+                        width: 120px;
+                        height: 88px;
+                        border-radius: Tokens.radius-control;
+                        background: thumb-ta.has-hover ? Tokens.surface-hover : #00000030;
+                        border-width: t.current || t.selected ? 2px : 0px;
+                        border-color: t.selected ? Tokens.accent-default : Tokens.text-primary;
+                        clip: true;
+                        Image {
+                            source: t.image;
+                            width: parent.width - 6px;
+                            height: parent.height - 6px;
+                            image-fit: contain;
+                        }
+                        if t.selected: Rectangle {
+                            x: 6px;
+                            y: 6px;
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 9px;
+                            background: Tokens.accent-fill;
+                            Image { source: Icons.check; width: 12px; height: 12px; colorize: Tokens.text-on-accent; }
+                        }
+                        thumb-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            pointer-event(e) => {
+                                if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                                    Viewer.thumb-clicked(i, e.modifiers.control || e.modifiers.shift);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Status bar: file facts on the left, position and filmstrip in the middle, zoom on the right.
+        if !Shell.full-screen: Rectangle {
+            height: 34px;
+            background: Tokens.surface-raised;
+            Rectangle { y: 0; height: 1px; background: Tokens.border-subtle; }
+
+            HorizontalLayout {
+                x: Tokens.space-2;
+                width: self.preferred-width;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                spacing: Tokens.space-2;
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; clicked => { Viewer.toggle-info(); } }
+                if Viewer.file-type != "": Text { text: Viewer.file-type; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
+                if Viewer.dims-text != "": HorizontalLayout {
+                    spacing: Tokens.space-1;
+                    Rectangle { width: 14px; Image { source: Icons.dims; width: 14px; height: 14px; colorize: Tokens.text-muted; } }
+                    Text { text: Viewer.dims-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
+                }
+                if Viewer.size-text != "": HorizontalLayout {
+                    spacing: Tokens.space-1;
+                    Rectangle { width: 14px; Image { source: Icons.save; width: 14px; height: 14px; colorize: Tokens.text-muted; } }
+                    Text { text: Viewer.size-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
+                }
+            }
+
+            HorizontalLayout {
+                x: (parent.width - self.width) / 2;
+                width: self.preferred-width;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                spacing: Tokens.space-1;
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.film; label: "Filmstrip"; active: Viewer.filmstrip; clicked => { Viewer.toggle-filmstrip(); } }
+                if Viewer.position != "": Text { text: Viewer.position; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; min-width: 48px; horizontal-alignment: center; }
+                if Viewer.animated: HorizontalLayout {
+                    spacing: Tokens.space-1;
+                    Divider { height: 28px; }
+                    IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.chevron-left; label: "Previous frame (,)"; clicked => { Viewer.anim-step(-1); } }
+                    IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Viewer.anim-playing ? Icons.pause : Icons.play; label: Viewer.anim-playing ? "Pause (Space)" : "Play (Space)"; clicked => { Viewer.anim-toggle(); } }
+                    IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.chevron-right; label: "Next frame (.)"; clicked => { Viewer.anim-step(1); } }
+                    Text { text: Viewer.frame-text; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
+                    IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.camera; label: "Save this frame as PNG"; clicked => { Viewer.save-frame(); } }
+                }
+            }
+
+            HorizontalLayout {
+                x: parent.width - self.width - Tokens.space-2;
+                width: self.preferred-width;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                spacing: Tokens.space-1;
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fit; label: "Fit to window (0)"; active: Viewer.fit; clicked => { Viewer.fit = true; Viewer.pan-x = 0; Viewer.pan-y = 0; } }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-out; label: "Zoom out (-)"; clicked => { root.zoom-to(root.cur-scale / 1.25); } }
+                Text {
+                    text: round(root.cur-scale * 100) + "%";
+                    color: Tokens.text-muted;
+                    font-size: Type.caption;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                    width: 44px;
+                }
+                Rectangle {
+                    width: 120px;
+                    Slider {
+                        width: parent.width;
+                        on-stage: false;
+                        value: log(root.cur-scale / 0.02, 2000);
+                        changed(v) => { root.zoom-to(0.02 * pow(2000, v)); }
+                        released(v) => { root.zoom-to(0.02 * pow(2000, v)); }
+                    }
+                }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.zoom-in; label: "Zoom in (+)"; clicked => { root.zoom-to(root.cur-scale * 1.25); } }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.fullscreen; label: "Full screen (F11)"; clicked => { Shell.toggle-full-screen(); } }
             }
         }
     }

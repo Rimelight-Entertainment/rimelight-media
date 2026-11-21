@@ -295,6 +295,226 @@ mod imp {
         }
     }
 
+    /// A user folder (Pictures, Videos, Music), wherever Windows keeps it (OneDrive can move them).
+    pub fn known_folder(which: super::UserFolder) -> Option<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt as _;
+        use windows_sys::Win32::System::Com::CoTaskMemFree;
+        use windows_sys::Win32::UI::Shell::{FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos, SHGetKnownFolderPath};
+        let id = match which {
+            super::UserFolder::Pictures => &FOLDERID_Pictures,
+            super::UserFolder::Videos => &FOLDERID_Videos,
+            super::UserFolder::Music => &FOLDERID_Music,
+        };
+        // SAFETY: SHGetKnownFolderPath allocates the string; it is read up to its NUL and freed with CoTaskMemFree.
+        unsafe {
+            let mut p: *mut u16 = std::ptr::null_mut();
+            let hr = SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &mut p);
+            if hr != 0 || p.is_null() {
+                if !p.is_null() {
+                    CoTaskMemFree(p.cast());
+                }
+                return None;
+            }
+            let len = (0..).take_while(|&i| *p.add(i) != 0).count();
+            let path = std::ffi::OsString::from_wide(std::slice::from_raw_parts(p, len));
+            CoTaskMemFree(p.cast());
+            Some(path.into())
+        }
+    }
+
+    /// Light or dark pop-up menus (the tray menu) for this process: 1 follow Windows, 2 dark, 3 light. Uses uxtheme's
+    /// SetPreferredAppMode/FlushMenuThemes (by ordinal: not in the public headers, but how Windows' own apps and
+    /// Chromium do it). Does nothing when they are missing.
+    pub fn set_menu_theme(mode: i32) {
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+        let name = wide("uxtheme.dll");
+        // SAFETY: uxtheme stays loaded; the ordinals 135 (SetPreferredAppMode(int) -> int) and 136 (FlushMenuThemes())
+        // have had these signatures since Windows 10 1903, and a missing one is skipped.
+        unsafe {
+            let lib = LoadLibraryW(name.as_ptr());
+            if lib.is_null() {
+                return;
+            }
+            if let Some(f) = GetProcAddress(lib, 135usize as *const u8) {
+                let set: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
+                set(mode);
+            }
+            if let Some(f) = GetProcAddress(lib, 136usize as *const u8) {
+                let flush: unsafe extern "system" fn() = std::mem::transmute(f);
+                flush();
+            }
+        }
+    }
+
+    /// Opens Windows' Cast panel (Win+K): show this screen on a TV or wireless display.
+    pub fn open_cast_panel() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_LWIN,
+        };
+        let key = |vk: u16, up: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT { wVk: vk, wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { 0 }, time: 0, dwExtraInfo: 0 },
+            },
+        };
+        let inputs = [key(VK_LWIN, false), key(b'K' as u16, false), key(b'K' as u16, true), key(VK_LWIN, true)];
+        // SAFETY: four well-formed keyboard inputs, sized as SendInput requires.
+        unsafe {
+            SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+
+    /// The text in a picture, line by line, with Windows' built-in text recognition (the languages of the user's
+    /// profile).
+    pub fn recognise_text(rgba: &[u8], w: u32, h: u32) -> Result<String, String> {
+        use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
+        use windows::Media::Ocr::OcrEngine;
+        use windows::Storage::Streams::DataWriter;
+        let e = |e: windows::core::Error| e.message().to_string();
+        let max = OcrEngine::MaxImageDimension().map_err(e)?;
+        if w > max || h > max {
+            return Err(format!("the area is too large to read (at most {max} pixels a side)"));
+        }
+        let engine = OcrEngine::TryCreateFromUserProfileLanguages()
+            .map_err(|_| "Windows has no text recognition for your languages (Settings > Time & language > Language: add the OCR feature)".to_string())?;
+        let mut bgra = Vec::with_capacity(rgba.len());
+        for p in rgba.chunks_exact(4) {
+            bgra.extend_from_slice(&[p[2], p[1], p[0], 255]);
+        }
+        let writer = DataWriter::new().map_err(e)?;
+        writer.WriteBytes(&bgra).map_err(e)?;
+        let buffer = writer.DetachBuffer().map_err(e)?;
+        let bitmap = SoftwareBitmap::CreateCopyFromBuffer(&buffer, BitmapPixelFormat::Bgra8, w as i32, h as i32).map_err(e)?;
+        let result = engine.RecognizeAsync(&bitmap).map_err(e)?.join().map_err(e)?;
+        let lines = result.Lines().map_err(e)?;
+        let mut out = Vec::new();
+        for i in 0..lines.Size().map_err(e)? {
+            out.push(lines.GetAt(i).map_err(e)?.Text().map_err(e)?.to_string());
+        }
+        Ok(out.join("\n"))
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn open_uri(uri: &str) -> bool {
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let (verb, target) = (wide("open"), wide(uri));
+        // SAFETY: both strings are NUL-terminated and outlive the call; a result above 32 means success.
+        let r = unsafe {
+            ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), target.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL)
+        };
+        r as isize > 32
+    }
+
+    /// Prints one picture, fitted to the page with a small margin, after Windows' print dialog. Ok(false) when the
+    /// person cancels.
+    pub fn print_image(owner: isize, rgba: &[u8], w: u32, h: u32, title: &str) -> Result<bool, String> {
+        use windows_sys::Win32::Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteDC, GetDeviceCaps, HALFTONE, HORZRES, SRCCOPY,
+            SetBrushOrgEx, SetStretchBltMode, StretchDIBits, VERTRES,
+        };
+        use windows_sys::Win32::Storage::Xps::{DOCINFOW, EndDoc, EndPage, StartDocW, StartPage};
+        use windows_sys::Win32::UI::Controls::Dialogs::{PD_NOPAGENUMS, PD_NOSELECTION, PD_RETURNDC, PRINTDLGW, PrintDlgW};
+        // BGRA rows for GDI.
+        let mut bgra = Vec::with_capacity(rgba.len());
+        for p in rgba.chunks_exact(4) {
+            bgra.extend_from_slice(&[p[2], p[1], p[0], 255]);
+        }
+        let name = wide(title);
+        // SAFETY: PRINTDLGW is zeroed and sized as PrintDlgW requires; the device context it returns is used for one
+        // document and deleted; `bgra` and `name` outlive every call that reads them.
+        unsafe {
+            let mut pd: PRINTDLGW = std::mem::zeroed();
+            pd.lStructSize = std::mem::size_of::<PRINTDLGW>() as u32;
+            pd.hwndOwner = owner as HWND;
+            pd.Flags = PD_RETURNDC | PD_NOPAGENUMS | PD_NOSELECTION;
+            pd.nCopies = 1;
+            if PrintDlgW(&mut pd) == 0 || pd.hDC.is_null() {
+                return Ok(false);
+            }
+            let dc = pd.hDC;
+            let (pw, ph) = (GetDeviceCaps(dc, HORZRES as i32), GetDeviceCaps(dc, VERTRES as i32));
+            let margin = (pw.min(ph) as f64 * 0.04) as i32;
+            let (aw, ah) = (f64::from(pw - 2 * margin), f64::from(ph - 2 * margin));
+            let scale = (aw / f64::from(w)).min(ah / f64::from(h));
+            let (dw, dh) = ((f64::from(w) * scale) as i32, (f64::from(h) * scale) as i32);
+            let (dx, dy) = ((pw - dw) / 2, (ph - dh) / 2);
+            let doc = DOCINFOW {
+                cbSize: std::mem::size_of::<DOCINFOW>() as i32,
+                lpszDocName: name.as_ptr(),
+                lpszOutput: std::ptr::null(),
+                lpszDatatype: std::ptr::null(),
+                fwType: 0,
+            };
+            let mut ok = StartDocW(dc, &doc) > 0 && StartPage(dc) > 0;
+            if ok {
+                let mut info: BITMAPINFO = std::mem::zeroed();
+                info.bmiHeader = BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w as i32,
+                    biHeight: -(h as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB,
+                    ..std::mem::zeroed()
+                };
+                SetStretchBltMode(dc, HALFTONE);
+                SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut());
+                ok = StretchDIBits(dc, dx, dy, dw, dh, 0, 0, w as i32, h as i32, bgra.as_ptr().cast(), &info, DIB_RGB_COLORS, SRCCOPY) != 0;
+                ok &= EndPage(dc) > 0;
+                ok &= EndDoc(dc) > 0;
+            }
+            DeleteDC(dc);
+            if ok { Ok(true) } else { Err("the printer refused the page".into()) }
+        }
+    }
+
+    thread_local! {
+        static SHARE_HOOK: std::cell::Cell<Option<(isize, i64)>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Opens Windows' Share panel for a picture file.
+    pub fn share_file(owner: isize, path: &std::path::Path, title: &str) -> Result<(), String> {
+        use windows::ApplicationModel::DataTransfer::{DataRequestedEventArgs, DataTransferManager};
+        use windows::Foundation::TypedEventHandler;
+        use windows::Storage::StorageFile;
+        use windows::Storage::Streams::RandomAccessStreamReference;
+        use windows::Win32::UI::Shell::IDataTransferManagerInterop;
+        use windows::core::{HSTRING, Ref, factory};
+        let e = |e: windows::core::Error| e.message().to_string();
+        // Checks the file now (a clear error), then again inside the handler (Windows' file object stays on its thread).
+        let path = HSTRING::from(path);
+        StorageFile::GetFileFromPathAsync(&path).map_err(e)?.join().map_err(e)?;
+        let interop = factory::<DataTransferManager, IDataTransferManagerInterop>().map_err(e)?;
+        let hwnd = windows::Win32::Foundation::HWND(owner as *mut _);
+        // SAFETY: hwnd is our own top-level window.
+        let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd) }.map_err(e)?;
+        // One handler per window: drop the one an earlier share added.
+        if let Some((w, token)) = SHARE_HOOK.with(|h| h.take())
+            && w == owner
+        {
+            let _ = manager.RemoveDataRequested(token);
+        }
+        let title = HSTRING::from(title);
+        let handler = TypedEventHandler::<DataTransferManager, DataRequestedEventArgs>::new(
+            move |_, args: Ref<DataRequestedEventArgs>| {
+                let args = args.ok()?;
+                let data = args.Request()?.Data()?;
+                data.Properties()?.SetTitle(&title)?;
+                let file = StorageFile::GetFileFromPathAsync(&path)?.join()?;
+                data.SetBitmap(&RandomAccessStreamReference::CreateFromFile(&file)?)?;
+                Ok(())
+            },
+        );
+        let token = manager.DataRequested(&handler).map_err(e)?;
+        SHARE_HOOK.with(|h| h.set(Some((owner, token))));
+        // SAFETY: as above.
+        unsafe { interop.ShowShareUIForWindow(hwnd) }.map_err(e)
+    }
+
     pub fn exclude_from_capture(hwnd: isize) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
         // SAFETY: hwnd is one of our own live windows (from winit); a stale handle only makes the call fail.
@@ -332,6 +552,23 @@ mod imp {
     pub fn recycle(path: &std::path::Path) -> bool {
         std::fs::remove_file(path).is_ok()
     }
+    pub fn open_uri(_: &str) -> bool {
+        false
+    }
+    pub fn known_folder(_: super::UserFolder) -> Option<std::path::PathBuf> {
+        None
+    }
+    pub fn set_menu_theme(_: i32) {}
+    pub fn open_cast_panel() {}
+    pub fn recognise_text(_: &[u8], _: u32, _: u32) -> Result<String, String> {
+        Err("text recognition is Windows-only for now".into())
+    }
+    pub fn print_image(_: isize, _: &[u8], _: u32, _: u32, _: &str) -> Result<bool, String> {
+        Err("printing is Windows-only for now".into())
+    }
+    pub fn share_file(_: isize, _: &std::path::Path, _: &str) -> Result<(), String> {
+        Err("sharing is Windows-only for now".into())
+    }
     pub struct ScreenGrabber;
     impl ScreenGrabber {
         pub fn new(_: ScreenRect) -> Option<ScreenGrabber> {
@@ -352,6 +589,48 @@ mod imp {
 /// The pointer position and the rectangle of the monitor it is on (physical pixels).
 pub fn cursor_monitor() -> Option<((i32, i32), ScreenRect)> {
     imp::cursor_monitor()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UserFolder {
+    Pictures,
+    Videos,
+    Music,
+}
+
+/// A user folder where Windows keeps it (OneDrive may move it); None when Windows doesn't say.
+pub fn known_folder(which: UserFolder) -> Option<std::path::PathBuf> {
+    imp::known_folder(which)
+}
+
+/// Pop-up menus (the tray's) in 1 Windows' theme, 2 dark or 3 light.
+pub fn set_menu_theme(mode: i32) {
+    imp::set_menu_theme(mode)
+}
+
+/// Windows' Cast panel (Win+K).
+pub fn open_cast_panel() {
+    imp::open_cast_panel()
+}
+
+/// Text in a picture (RGBA), with Windows' built-in text recognition.
+pub fn recognise_text(rgba: &[u8], w: u32, h: u32) -> Result<String, String> {
+    imp::recognise_text(rgba, w, h)
+}
+
+/// Opens a web address or a Windows settings link (ms-settings:...) with the system.
+pub fn open_uri(uri: &str) -> bool {
+    imp::open_uri(uri)
+}
+
+/// Prints a picture (RGBA) after Windows' print dialog; Ok(false) when cancelled.
+pub fn print_image(owner: isize, rgba: &[u8], w: u32, h: u32, title: &str) -> Result<bool, String> {
+    imp::print_image(owner, rgba, w, h, title)
+}
+
+/// Opens Windows' Share panel for a picture file.
+pub fn share_file(owner: isize, path: &std::path::Path, title: &str) -> Result<(), String> {
+    imp::share_file(owner, path, title)
 }
 
 /// Moves a file to the Recycle Bin (undoable from there). True when it went.

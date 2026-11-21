@@ -118,7 +118,7 @@ export component SettingsPage inherits Rectangle {
                             }
                             Toggle {
                                 text: "Use Print Screen for Rimelight Media";
-                                detail: "Turns off Windows' own Print Screen snipping, which takes the key first.";
+                                detail: "Turns off Windows' own Print Screen snipping, which takes the key first. Win+Shift+S comes to Rimelight Media once the Snipping Tool is uninstalled.";
                                 checked <=> Settings.printscreen-ours;
                                 toggled => { Settings.changed(); }
                             }

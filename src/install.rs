@@ -22,7 +22,10 @@ fn icon_path() -> PathBuf {
 
 /// Writes the app icon (the logo) as an .ico file, for file types and shortcuts.
 pub fn write_icon(path: &Path) -> bool {
-    let Some(pic) = crate::picture::logo(256) else { return false };
+    crate::picture::logo(256).is_some_and(|pic| write_picture_icon(path, pic))
+}
+
+fn write_picture_icon(path: &Path, pic: crate::picture::Picture) -> bool {
     let Some(img) = image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba) else { return false };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -50,13 +53,18 @@ mod reg {
         let exe_s = exe.display().to_string();
         let open = format!("\"{exe_s}\" \"%1\"");
         let icon_s = if icon.exists() { icon.display().to_string() } else { format!("{exe_s},0") };
+        // Each kind of file shows the logo in its own colour (pictures light blue, video purple, music red).
+        let type_icon = |kind: &str| {
+            let p = icon.with_file_name(format!("rimelight-media-{kind}.ico"));
+            if p.exists() { p.display().to_string() } else { icon_s.clone() }
+        };
         for ((progid, (name, exts)), on) in PROGIDS.iter().zip([("Picture", IMAGE_EXTS), ("Video", VIDEO_EXTS), ("Music", AUDIO_EXTS)]).zip(kinds) {
             if !on {
                 continue;
             }
             let base = format!(r"Software\Classes\{progid}");
             set(&base, "", &format!("{name} ({APP_NAME})"))?;
-            set(&format!(r"{base}\DefaultIcon"), "", &icon_s)?;
+            set(&format!(r"{base}\DefaultIcon"), "", &type_icon(&name.to_lowercase()))?;
             set(&format!(r"{base}\shell\open\command"), "", &open)?;
             for ext in exts {
                 set(&format!(r"Software\Classes\.{ext}\OpenWithProgids"), progid, "")?;
@@ -112,6 +120,22 @@ mod reg {
         }
     }
 
+    /// The ms-screenclip: link Windows starts for Win+Shift+S (and for Print Screen when its own snipping is on). The
+    /// Snipping Tool owns it while installed; once it is removed, Windows starts Rimelight Media instead.
+    pub fn set_screenclip(exe: Option<&Path>) {
+        let base = r"Software\Classes\ms-screenclip";
+        match exe {
+            Some(exe) => {
+                let _ = set(base, "", "URL:Screen snip");
+                let _ = set(base, "URL Protocol", "");
+                let _ = set(&format!(r"{base}\shell\open\command"), "", &format!("\"{}\" \"%1\"", exe.display()));
+            }
+            None => {
+                let _ = hkcu().delete_subkey_all(base);
+            }
+        }
+    }
+
     pub fn set_run_at_login(exe: Option<&Path>) {
         let Ok((key, _)) = hkcu().create_subkey(RUN_KEY) else { return };
         match exe {
@@ -140,16 +164,20 @@ mod reg {
         false
     }
     pub fn set_run_at_login(_: Option<&Path>) {}
+    pub fn set_screenclip(_: Option<&Path>) {}
 }
 
-pub use reg::{file_types_registered, set_run_at_login, set_windows_printscreen, windows_printscreen_on};
+pub use reg::{file_types_registered, set_run_at_login, set_screenclip, set_windows_printscreen, windows_printscreen_on};
 
 /// Registers the chosen file types (pictures, video, music) for this exe; the others are removed. An installed copy keeps
 /// the same path across updates.
 pub fn register_file_types(kinds: [bool; 3]) -> Result<(), String> {
     let icon = icon_path();
-    if !icon.exists() {
-        write_icon(&icon);
+    write_icon(&icon);
+    for (kind, top, bottom) in [("picture", "#7DD3FC", "#0284C7"), ("video", "#C4B5FD", "#7C3AED"), ("music", "#FDA4AF", "#E11D48")] {
+        if let Some(pic) = crate::picture::logo_tinted(256, top, bottom) {
+            write_picture_icon(&icon.with_file_name(format!("rimelight-media-{kind}.ico")), pic);
+        }
     }
     reg::register_file_types(&current_exe(), &icon, kinds).map_err(|e| e.to_string())
 }
@@ -224,6 +252,7 @@ pub fn after_install() {
     p.background = true;
     p.save();
     set_run_at_login(Some(&launcher_path()));
+    set_screenclip(Some(&launcher_path()));
 }
 
 /// After an update: the same integration, kept as the person chose it.
@@ -234,6 +263,7 @@ pub fn after_update() {
     if p.background {
         set_run_at_login(Some(&launcher_path()));
     }
+    set_screenclip(Some(&launcher_path()));
 }
 
 /// Removes everything this module added, and the app's settings folder (the uninstall hook runs it). Pictures,
@@ -246,13 +276,18 @@ pub fn unregister_all() {
     remove_shortcuts();
     reg::unregister_file_types();
     set_run_at_login(None);
+    set_screenclip(None);
     let _ = std::fs::remove_dir_all(crate::prefs::data_dir());
 }
 
+/// Windows Settings > Default apps, on Rimelight Media's page. (Started through the shell: Explorer given an
+/// ms-settings link with an encoded space opened the Documents folder instead.)
 pub fn open_default_apps_settings() {
-    let _ = std::process::Command::new("explorer").arg("ms-settings:defaultapps?registeredAppUser=Rimelight%20Media").spawn();
+    if !crate::platform::open_uri(&format!("ms-settings:defaultapps?registeredAppUser={APP_NAME}")) {
+        crate::platform::open_uri("ms-settings:defaultapps");
+    }
 }
 
 pub fn open_printscreen_settings() {
-    let _ = std::process::Command::new("explorer").arg("ms-settings:easeofaccess-keyboard").spawn();
+    crate::platform::open_uri("ms-settings:easeofaccess-keyboard");
 }

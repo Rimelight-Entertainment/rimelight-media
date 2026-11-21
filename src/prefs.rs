@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::platform::UserFolder;
+
 pub const MAX_RECENTS: usize = 12;
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,10 @@ fn home() -> PathBuf {
     std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
+fn user_folder(which: UserFolder, home: &Path, fallback: &str) -> PathBuf {
+    crate::platform::known_folder(which).unwrap_or_else(|| home.join(fallback))
+}
+
 pub fn data_dir() -> PathBuf {
     std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home).join("Rimelight Media")
 }
@@ -48,10 +54,10 @@ impl Default for Prefs {
             rec_mic: false,
             rec_fps: 30,
             volume: 1.0,
-            // The folders Windows' own tools use.
-            screenshot_dir: home.join("Pictures").join("Screenshots"),
-            recording_dir: home.join("Videos").join("Captures"),
-            voice_dir: home.join("Documents").join("Sound Recordings"),
+            // Each kind in its own user folder (where Windows keeps it, OneDrive included).
+            screenshot_dir: user_folder(UserFolder::Pictures, &home, "Pictures").join("Screenshots"),
+            recording_dir: user_folder(UserFolder::Videos, &home, "Videos").join("Captures"),
+            voice_dir: user_folder(UserFolder::Music, &home, "Music").join("Recordings"),
             desktop_shortcut: true,
             file_types: [true; 3],
             printscreen_changed: false,
@@ -82,7 +88,8 @@ impl Prefs {
                 "volume" => p.volume = v.parse().unwrap_or(1.0f32).clamp(0.0, 1.0),
                 "screenshot_dir" if !v.is_empty() => p.screenshot_dir = PathBuf::from(v),
                 "recording_dir" if !v.is_empty() => p.recording_dir = PathBuf::from(v),
-                "voice_dir" if !v.is_empty() => p.voice_dir = PathBuf::from(v),
+                // 0.1.x saved Documents\Sound Recordings as the default: voice notes now go to Music\Recordings.
+                "voice_dir" if !v.is_empty() && !v.ends_with(r"Documents\Sound Recordings") => p.voice_dir = PathBuf::from(v),
                 "desktop_shortcut" => p.desktop_shortcut = flag(v),
                 "printscreen_changed" => p.printscreen_changed = flag(v),
                 "file_types" => {

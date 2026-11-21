@@ -131,17 +131,23 @@ fn wire_shell(app: &Rc<App>) {
         handled
     });
 
-    // Closing the window: stay in the tray when "keep running" is on, otherwise quit.
+    shell.on_close_tab(|| with_app(close_tab));
+    shell.on_cast(crate::platform::open_cast_panel);
+
+    // Closing the window clears every tab (after asking about unsaved changes): it means "I'm done"; minimise keeps
+    // things open. Then stay in the tray when "keep running" is on, otherwise quit.
     app.ui.window().on_close_requested(|| {
-        let mut response = slint::CloseRequestResponse::HideWindow;
+        let mut response = slint::CloseRequestResponse::KeepWindowShown;
         with_app(|a| {
-            mediactl::pause(a);
+            if !viewer::confirm_discard(a) {
+                return;
+            }
+            clear_all(a);
             if !a.prefs.borrow().background {
                 capturectl::stop_all_now(a);
                 let _ = slint::quit_event_loop();
-            } else {
-                response = slint::CloseRequestResponse::HideWindow;
             }
+            response = slint::CloseRequestResponse::HideWindow;
         });
         response
     });
@@ -167,7 +173,8 @@ fn wire_shell(app: &Rc<App>) {
 
 pub fn go(app: &Rc<App>, page: &str) {
     let shell = app.ui.global::<ui::Shell>();
-    if shell.get_page() == "media" && page != "media" {
+    let was = shell.get_page();
+    if matches!(was.as_str(), "audio" | "video") && was != page {
         mediactl::leaving(app);
     }
     if page == "voice" {
@@ -184,12 +191,12 @@ pub fn update_title(app: &Rc<App>) {
     let shell = app.ui.global::<ui::Shell>();
     let title = match shell.get_page().as_str() {
         "image" => app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "Picture".into()),
-        "media" => app.media.borrow().path.as_deref().map(files::file_name).unwrap_or_default(),
+        "audio" | "video" => app.media.borrow().path.as_deref().map(files::file_name).unwrap_or_default(),
         "voice" => "Voice recorder".into(),
         "settings" => "Settings".into(),
         _ => String::new(),
     };
-    shell.set_title(if title.is_empty() { "Rimelight Media".into() } else { format!("{title} - Rimelight Media").into() });
+    shell.set_title(if title.is_empty() { "Rimelight Media".into() } else { format!("Rimelight Media - {title}").into() });
 }
 
 pub fn toast(app: &Rc<App>, text: impl Into<SharedString>) {
@@ -296,6 +303,10 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
             toggle_full_screen(app);
             return true;
         }
+        if page == "image" && app.ui.global::<ui::Viewer>().get_comparing() {
+            viewer::close_compare(app);
+            return true;
+        }
         if page == "image" && !app.ui.global::<ui::Viewer>().get_mode().is_empty() {
             viewer::set_mode(app, "");
             return true;
@@ -305,7 +316,7 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
     let _ = alt;
     match page.as_str() {
         "image" => viewer::on_key(app, text, ctrl, shift),
-        "media" => mediactl::on_key(app, text, ctrl, shift),
+        "audio" | "video" => mediactl::on_key(app, text, ctrl, shift),
         _ => false,
     }
 }
@@ -346,4 +357,63 @@ pub fn start_hotkeys(app: &Rc<App>) {
     let keys = crate::hotkeys::start(|action| with_app(|a| capturectl::hotkey(a, action)));
     *app.hotkeys.borrow_mut() = keys;
     settingsctl::refresh(app);
+}
+/// Centres a window on the monitor the pointer is on (Windows opens new windows at its own default spot).
+pub fn center_window(window: &slint::Window) {
+    let size = window.size();
+    if let Some((_, mon)) = crate::platform::cursor_monitor() {
+        let x = mon.x + (mon.w - size.width as i32).max(0) / 2;
+        let y = mon.y + (mon.h - size.height as i32).max(0) / 2;
+        window.set_position(slint::PhysicalPosition::new(x, y));
+    }
+}
+
+/// The main window's handle (owner of the print and share dialogs).
+pub fn main_hwnd(app: &Rc<App>) -> isize {
+    use slint::winit_030::WinitWindowAccessor as _;
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+    app.ui
+        .window()
+        .with_winit_window(|w| match w.window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
+            _ => 0,
+        })
+        .unwrap_or(0)
+}
+/// The X in the top bar: back to the empty version of this tab (asking first about unsaved changes).
+pub fn close_tab(app: &Rc<App>) {
+    match app.ui.global::<ui::Shell>().get_page().as_str() {
+        "image" => {
+            if viewer::confirm_discard(app) {
+                viewer::close(app);
+            }
+        }
+        "audio" | "video" => mediactl::close(app),
+        _ => {}
+    }
+    update_title(app);
+}
+
+/// Empties every tab and frees what they held (the window was closed).
+fn clear_all(app: &Rc<App>) {
+    viewer::close(app);
+    mediactl::close(app);
+    if app.ui.global::<ui::Shell>().get_full_screen() {
+        toggle_full_screen(app);
+    }
+    go(app, "home");
+}
+
+/// A request from a later start (single instance): a file, a snip, or just the window.
+pub fn handle_request(request: crate::instance::Request) {
+    use crate::instance::Request;
+    with_app(|a| match request {
+        Request::Show => show_main(a),
+        Request::Open(p) => {
+            show_main(a);
+            open_path(a, Path::new(&p));
+        }
+        Request::Snip(mode) => capturectl::snip(a, &mode),
+        Request::Nothing => {}
+    });
 }

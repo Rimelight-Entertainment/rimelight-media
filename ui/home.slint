@@ -1,9 +1,18 @@
-// Home: open a file, start a capture, or reopen something recent.
+// Home: two panels. Left: drop zone and capture tiles. Right: recent files. Narrow windows stack them.
 import { ScrollView } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
 import { Tile, Button, ButtonKind, Card } from "widgets.slint";
 import { Shell, RecentItem } from "state.slint";
+
+struct TileData {
+    icon: image,
+    title: string,
+    detail: string,
+    keys: string,
+    accent: color,
+    action: string,
+}
 
 component RecentRow inherits Rectangle {
     in property <RecentItem> item;
@@ -36,133 +45,154 @@ component RecentRow inherits Rectangle {
     }
 }
 
-export component HomePage inherits Rectangle {
-    background: Tokens.surface-base;
+// Drop zone and capture tiles. The tiles flow into as many columns as fit.
+component StartPanel inherits VerticalLayout {
+    alignment: start;
+    spacing: Tokens.space-5;
 
-    ScrollView {
-        HorizontalLayout {
+    property <[TileData]> tiles: [
+        { icon: Icons.scan, title: "Snip an area", detail: "Drag over any part of the screen", keys: "Print Screen", accent: Tokens.accent-default, action: "snip-region" },
+        { icon: Icons.app-window, title: "Snip a window", detail: "Click the window you want", keys: "Alt + Print Screen", accent: Tokens.accent-default, action: "snip-window" },
+        { icon: Icons.monitor, title: "Whole screen", detail: "Every monitor, saved at once", keys: "Ctrl + Print Screen", accent: Tokens.accent-default, action: "snip-screen" },
+        { icon: Icons.record, title: Shell.recording ? "Stop recording" : "Record the screen", detail: Shell.recording ? Shell.recording-time : "An area, a window or the whole screen", keys: "Shift + Print Screen", accent: Tokens.record-red, action: "record" },
+        { icon: Icons.mic, title: "Record your voice", detail: "Sound from the microphone", keys: "", accent: Tokens.status-success, action: "voice" },
+        { icon: Icons.settings, title: "Settings", detail: "Default apps, keys, folders", keys: "", accent: Tokens.text-muted, action: "settings" },
+    ];
+
+    function run(action: string) {
+        if action == "snip-region" { Shell.snip("region"); }
+        else if action == "snip-window" { Shell.snip("window"); }
+        else if action == "snip-screen" { Shell.snip("screen"); }
+        else if action == "record" { if Shell.recording { Shell.stop-recording(); } else { Shell.record-screen("region"); } }
+        else if action == "voice" { Shell.go("voice"); }
+        else if action == "settings" { Shell.go("settings"); }
+    }
+
+    Rectangle {
+        height: 168px;
+        border-radius: Tokens.radius-r8;
+        border-width: 2px;
+        border-color: Shell.drop-hover ? Tokens.accent-default : Tokens.border-subtle;
+        background: Shell.drop-hover ? Tokens.status-info-surface : Tokens.surface-raised;
+        VerticalLayout {
             alignment: center;
-            VerticalLayout {
-                max-width: 960px;
-                padding: Tokens.space-8;
-                spacing: Tokens.space-6;
-                alignment: start;
-
-                // Drop zone and open button.
-                Rectangle {
-                    height: 168px;
-                    border-radius: Tokens.radius-r8;
-                    border-width: 2px;
-                    border-color: Shell.drop-hover ? Tokens.accent-default : Tokens.border-subtle;
-                    background: Shell.drop-hover ? Tokens.status-info-surface : Tokens.surface-raised;
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: Tokens.space-3;
-                        HorizontalLayout {
-                            alignment: center;
-                            spacing: Tokens.space-2;
-                            Image { source: Icons.image; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
-                            Image { source: Icons.video; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
-                            Image { source: Icons.music; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
-                        }
-                        Text {
-                            text: "Drop a picture, video or song here";
-                            color: Tokens.text-primary;
-                            font-size: Type.heading;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                        }
-                        HorizontalLayout {
-                            alignment: center;
-                            Button {
-                                text: "Open a file";
-                                kind: ButtonKind.primary;
-                                has-icon: true;
-                                icon: Icons.folder-open;
-                                clicked => { Shell.open-file(); }
-                            }
-                        }
-                    }
-                }
-
-                Text { text: "Capture"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
-                GridLayout {
-                    spacing: Tokens.space-3;
-                    Row {
-                        Tile {
-                            icon: Icons.scan;
-                            title: "Snip an area";
-                            detail: "Drag over any part of the screen";
-                            keys: "Print Screen";
-                            clicked => { Shell.snip("region"); }
-                        }
-                        Tile {
-                            icon: Icons.app-window;
-                            title: "Snip a window";
-                            detail: "Click the window you want";
-                            keys: "Alt + Print Screen";
-                            clicked => { Shell.snip("window"); }
-                        }
-                        Tile {
-                            icon: Icons.monitor;
-                            title: "Whole screen";
-                            detail: "Every monitor, saved at once";
-                            keys: "Ctrl + Print Screen";
-                            clicked => { Shell.snip("screen"); }
-                        }
-                    }
-                    Row {
-                        Tile {
-                            icon: Icons.record;
-                            accent: Tokens.record-red;
-                            title: Shell.recording ? "Stop recording" : "Record the screen";
-                            detail: Shell.recording ? Shell.recording-time : "Pick an area, a window or the whole screen";
-                            keys: "Shift + Print Screen";
-                            clicked => {
-                                if Shell.recording { Shell.stop-recording(); } else { Shell.record-screen("region"); }
-                            }
-                        }
-                        Tile {
-                            icon: Icons.mic;
-                            accent: Tokens.status-success;
-                            title: "Record your voice";
-                            detail: "Sound from the microphone";
-                            clicked => { Shell.go("voice"); }
-                        }
-                        Tile {
-                            icon: Icons.settings;
-                            accent: Tokens.text-muted;
-                            title: "Settings";
-                            detail: "Default apps, keys, folders";
-                            clicked => { Shell.go("settings"); }
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    Text { text: "Recent"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; vertical-alignment: center; }
-                    Rectangle { }
-                    if Shell.recents.length > 0: Button {
-                        text: "Clear";
-                        kind: ButtonKind.ghost;
-                        clicked => { Shell.clear-recents(); }
-                    }
-                }
-                if Shell.recents.length == 0: Text {
-                    text: "Files you open show up here.";
-                    color: Tokens.text-muted;
-                    font-size: Type.body;
-                }
-                if Shell.recents.length > 0: Card {
-                    VerticalLayout {
-                        padding: Tokens.space-1;
-                        for r[i] in Shell.recents: RecentRow {
-                            item: r;
-                            clicked => { Shell.open-recent(i); }
-                        }
-                    }
+            spacing: Tokens.space-3;
+            padding: Tokens.space-3;
+            HorizontalLayout {
+                alignment: center;
+                spacing: Tokens.space-2;
+                Image { source: Icons.image; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
+                Image { source: Icons.video; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
+                Image { source: Icons.music; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.accent-text; }
+            }
+            Text {
+                text: "Drop a picture, video or song here";
+                color: Tokens.text-primary;
+                font-size: Type.heading;
+                font-weight: 600;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: center;
+                Button {
+                    text: "Open a file";
+                    kind: ButtonKind.primary;
+                    has-icon: true;
+                    icon: Icons.folder-open;
+                    clicked => { Shell.open-file(); }
                 }
             }
+        }
+    }
+
+    Text { text: "Capture"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
+
+    grid := Rectangle {
+        property <int> cols: max(1, floor((self.width + Tokens.space-3) / (200px + Tokens.space-3)));
+        property <length> tile-w: (self.width - (self.cols - 1) * Tokens.space-3) / self.cols;
+        property <length> tile-h: 128px;
+        height: ceil(root.tiles.length / self.cols) * (self.tile-h + Tokens.space-3) - Tokens.space-3;
+        for t[i] in root.tiles: Tile {
+            x: mod(i, grid.cols) * (grid.tile-w + Tokens.space-3);
+            y: floor(i / grid.cols) * (grid.tile-h + Tokens.space-3);
+            width: grid.tile-w;
+            height: grid.tile-h;
+            icon: t.icon;
+            title: t.title;
+            detail: t.detail;
+            keys: t.keys;
+            accent: t.accent;
+            clicked => { root.run(t.action); }
+        }
+    }
+}
+
+component RecentPanel inherits VerticalLayout {
+    spacing: Tokens.space-3;
+    HorizontalLayout {
+        Text { text: "Recent"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; vertical-alignment: center; }
+        Rectangle { }
+        if Shell.recents.length > 0: Button {
+            text: "Clear";
+            kind: ButtonKind.ghost;
+            clicked => { Shell.clear-recents(); }
+        }
+    }
+    if Shell.recents.length == 0: Text {
+        text: "Files you open show up here.";
+        color: Tokens.text-muted;
+        font-size: Type.body;
+        wrap: word-wrap;
+    }
+    if Shell.recents.length > 0: Card {
+        VerticalLayout {
+            padding: Tokens.space-1;
+            for r[i] in Shell.recents: RecentRow {
+                item: r;
+                clicked => { Shell.open-recent(i); }
+            }
+        }
+    }
+}
+
+export component HomePage inherits Rectangle {
+    background: Tokens.surface-base;
+    property <bool> wide: self.width >= 900px;
+
+    if root.wide: HorizontalLayout {
+        padding: Tokens.space-6;
+        spacing: Tokens.space-6;
+        ScrollView {
+            horizontal-stretch: 3;
+            VerticalLayout {
+                padding-right: Tokens.space-2;
+                StartPanel { }
+            }
+        }
+        Rectangle {
+            width: 1px;
+            background: Tokens.border-subtle;
+        }
+        ScrollView {
+            horizontal-stretch: 2;
+            min-width: 280px;
+            max-width: 480px;
+            VerticalLayout {
+                padding-right: Tokens.space-2;
+                alignment: start;
+                RecentPanel { }
+            }
+        }
+    }
+
+    if !root.wide: ScrollView {
+        VerticalLayout {
+            padding: Tokens.space-5;
+            spacing: Tokens.space-6;
+            alignment: start;
+            StartPanel { }
+            RecentPanel { }
         }
     }
 }

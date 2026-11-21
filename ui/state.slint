@@ -18,8 +18,16 @@ export struct Mark {
     text: string,
 }
 
+// One picture in the filmstrip.
+export struct Thumb {
+    image: image,
+    name: string,
+    current: bool,
+    selected: bool,
+}
+
 export global Shell {
-    // "home", "image", "media", "voice", "settings"
+    // "home", "image", "audio", "video", "voice", "settings"
     in-out property <string> page: "home";
     in property <string> title: "Rimelight Media";
     // A downloaded update waiting for a restart (its version), or empty.
@@ -40,6 +48,10 @@ export global Shell {
     callback stop-recording();
     callback toggle-full-screen();
     callback apply-update();
+    // Back to the empty version of the current tab.
+    callback close-tab();
+    // Windows' Cast panel (show the screen on a TV or wireless display).
+    callback cast();
     callback key(string, bool, bool, bool) -> bool; // text, ctrl, shift, alt
 }
 
@@ -119,6 +131,26 @@ export global Viewer {
     callback save-frame();
     // Recycle Bin for a file, discard for a snip that was never saved.
     callback delete-current();
+
+    // Status bar.
+    in property <string> file-type;
+    in property <string> dims-text;
+    in property <string> size-text;
+    // The picture is a file (Share and Show in folder need one).
+    in property <bool> can-share;
+    // The fit-to-window scale the stage computes (for the zoom slider and percentage).
+    in-out property <float> fit-scale: 1;
+    callback print();
+    callback share();
+
+    // Filmstrip, and side-by-side comparison of the pictures picked in it (Ctrl+click).
+    in-out property <bool> filmstrip;
+    in property <[Thumb]> thumbs;
+    in property <bool> comparing;
+    in property <[image]> compare-images;
+    callback toggle-filmstrip();
+    callback thumb-clicked(int, bool);
+    callback close-compare();
 }
 
 export global Player {
@@ -130,7 +162,8 @@ export global Player {
     in property <string> length-text;
     in-out property <float> volume: 1;
     in property <bool> muted;
-    in property <bool> looping;
+    // Repeat: 0 off, 1 once more, 2 forever.
+    in property <int> loop-mode;
     in property <string> subtitle;
     in property <[Choice]> audio-tracks;
     in property <[Choice]> subtitle-tracks;

@@ -2,7 +2,7 @@
 // capture.slint.
 import { Tokens, Type, ThemeChoice } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { IconButton, Choice } from "widgets.slint";
+import { IconButton, Button, ButtonKind, Choice } from "widgets.slint";
 import { Shell, Viewer, Player, Voice, Settings, RecentItem, Mark } from "state.slint";
 import { HomePage } from "home.slint";
 import { ImagePage } from "image_page.slint";
@@ -18,6 +18,8 @@ component NavButton inherits Rectangle {
     in property <image> icon;
     in property <string> label;
     in property <bool> active;
+    // Show the icon in its own colours (the app logo).
+    in property <bool> full-colour;
     callback clicked();
     height: Tokens.control-height;
     width: row.preferred-width + Tokens.space-4;
@@ -28,15 +30,46 @@ component NavButton inherits Rectangle {
     row := HorizontalLayout {
         alignment: center;
         spacing: Tokens.space-2;
-        Rectangle {
+        if !root.full-colour: Rectangle {
             width: Tokens.icon-small;
             Image { source: root.icon; width: Tokens.icon-small; height: Tokens.icon-small; colorize: root.active ? Tokens.accent-text : Tokens.text-muted; }
+        }
+        if root.full-colour: Rectangle {
+            width: 18px;
+            Image { source: root.icon; width: 18px; height: 18px; }
         }
         Text { text: root.label; color: root.active ? Tokens.text-primary : Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
     }
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+}
+
+// The Audio and Video tabs: the player when what's loaded is that kind, otherwise an empty page.
+component MediaSlot inherits Rectangle {
+    in property <bool> want-video;
+    background: Tokens.stage;
+    if Player.media-title != "" && Player.has-video == root.want-video: MediaPage { }
+    if !(Player.media-title != "" && Player.has-video == root.want-video): VerticalLayout {
+        alignment: center;
+        spacing: Tokens.space-3;
+        Text {
+            text: root.want-video ? "No video open" : "No music open";
+            color: Tokens.text-on-stage;
+            font-size: Type.heading;
+            horizontal-alignment: center;
+        }
+        if Player.media-title != "": Text {
+            text: (Player.has-video ? "Playing a video: " : "Playing: ") + Player.media-title;
+            color: #9AA4B2;
+            font-size: Type.body;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Button { text: root.want-video ? "Open a video" : "Open music"; kind: ButtonKind.primary; has-icon: true; icon: Icons.folder-open; clicked => { Shell.open-file(); } }
+        }
     }
 }
 
@@ -63,30 +96,24 @@ export component AppWindow inherits Window {
             if !Shell.full-screen: Rectangle {
                 height: Tokens.bar-height;
                 background: Tokens.surface-raised;
-                HorizontalLayout {
-                    padding-left: Tokens.space-3;
-                    padding-right: Tokens.space-2;
+                // Left: the tabs. Right: capture, open, settings. The title is centred on the whole bar, over both.
+                left-group := HorizontalLayout {
+                    x: Tokens.space-2;
+                    width: self.preferred-width;
                     padding-top: 6px;
                     padding-bottom: 6px;
                     spacing: Tokens.space-1;
-                    Rectangle {
-                        width: 24px;
-                        Image { source: Icons.logo; width: 22px; height: 22px; }
-                    }
-                    Rectangle { width: Tokens.space-1; }
-                    NavButton { icon: Icons.house; label: "Home"; active: Shell.page == "home"; clicked => { Shell.go("home"); } }
-                    if Viewer.info-name != "": NavButton { icon: Icons.image; label: "Picture"; active: Shell.page == "image"; clicked => { Shell.go("image"); } }
-                    if Player.media-title != "": NavButton { icon: Player.has-video ? Icons.video : Icons.music; label: Player.has-video ? "Video" : "Music"; active: Shell.page == "media"; clicked => { Shell.go("media"); } }
-                    NavButton { icon: Icons.mic; label: "Voice"; active: Shell.page == "voice"; clicked => { Shell.go("voice"); } }
-                    Text {
-                        horizontal-stretch: 1;
-                        text: Shell.title;
-                        color: Tokens.text-muted;
-                        font-size: Type.caption;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
+                    NavButton { icon: Icons.logo; full-colour: true; label: "Home"; active: Shell.page == "home"; clicked => { Shell.go("home"); } }
+                    NavButton { icon: Icons.image; label: "Image"; active: Shell.page == "image"; clicked => { Shell.go("image"); } }
+                    NavButton { icon: Icons.music; label: "Audio"; active: Shell.page == "audio"; clicked => { Shell.go("audio"); } }
+                    NavButton { icon: Icons.video; label: "Video"; active: Shell.page == "video"; clicked => { Shell.go("video"); } }
+                }
+                right-group := HorizontalLayout {
+                    x: parent.width - self.width - Tokens.space-2;
+                    width: self.preferred-width;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: Tokens.space-1;
                     if Shell.recording: Rectangle {
                         width: rec-row.preferred-width + Tokens.space-4;
                         border-radius: Tokens.radius-control;
@@ -113,8 +140,28 @@ export component AppWindow inherits Window {
                         label: Shell.recording ? "Stop recording" : "Record the screen";
                         clicked => { if Shell.recording { Shell.stop-recording(); } else { Shell.record-screen("region"); } }
                     }
+                    IconButton { icon: Icons.mic; label: "Voice recorder"; active: Shell.page == "voice"; clicked => { Shell.go("voice"); } }
+                    IconButton { icon: Icons.cast; label: "Cast to a screen (Win+K)"; clicked => { Shell.cast(); } }
                     IconButton { icon: Icons.folder-open; label: "Open (Ctrl+O)"; clicked => { Shell.open-file(); } }
                     IconButton { icon: Icons.settings; label: "Settings"; active: Shell.page == "settings"; clicked => { Shell.go("settings"); } }
+                    // Close what this tab has open (back to its empty page).
+                    if (Shell.page == "image" && Viewer.info-name != "") || ((Shell.page == "audio" || Shell.page == "video") && Player.media-title != "" && Player.has-video == (Shell.page == "video")): HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        Rectangle { width: 9px; Rectangle { width: 1px; height: 20px; background: Tokens.border-subtle; } }
+                        IconButton { icon: Icons.x; label: Shell.page == "image" ? "Close the picture" : "Close and stop"; clicked => { Shell.close-tab(); } }
+                    }
+                }
+                // Centred on the window; only as wide as the space both groups leave free on each side.
+                Text {
+                    property <length> room: parent.width - 2 * max(left-group.width, right-group.width) - 2 * Tokens.space-4;
+                    width: max(0px, min(self.preferred-width, self.room));
+                    x: (parent.width - self.width) / 2;
+                    text: Shell.title;
+                    color: Tokens.text-muted;
+                    font-size: Type.caption;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
                 }
                 Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.border-subtle; }
             }
@@ -123,7 +170,8 @@ export component AppWindow inherits Window {
                 vertical-stretch: 1;
                 if Shell.page == "home": HomePage { }
                 if Shell.page == "image": ImagePage { }
-                if Shell.page == "media": MediaPage { }
+                if Shell.page == "audio": MediaSlot { want-video: false; }
+                if Shell.page == "video": MediaSlot { want-video: true; }
                 if Shell.page == "voice": VoicePage { }
                 if Shell.page == "settings": SettingsPage { }
 

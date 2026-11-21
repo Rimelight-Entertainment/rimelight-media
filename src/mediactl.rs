@@ -29,7 +29,10 @@ pub struct MediaState {
     preview: Option<f32>,
     trim: (u64, u64),
     muted: bool,
-    looping: bool,
+    /// Repeat: 0 off, 1 once more, 2 forever.
+    loop_mode: i32,
+    /// Repeat-once has played its extra time.
+    repeated: bool,
     last_pos_text: String,
     last_size: (u32, u32),
     generation: u64,
@@ -62,7 +65,8 @@ impl Default for MediaState {
             preview: None,
             trim: (0, 0),
             muted: false,
-            looping: false,
+            loop_mode: 0,
+            repeated: false,
             last_pos_text: String::new(),
             last_size: (0, 0),
             generation: 0,
@@ -114,16 +118,7 @@ pub fn wire(app: &Rc<App>) {
         })
     });
     p.on_toggle_mute(|| with_app(toggle_mute));
-    p.on_toggle_loop(|| {
-        with_app(|a| {
-            let mut m = a.media.borrow_mut();
-            m.looping = !m.looping;
-            if let Some(pl) = m.player.as_ref() {
-                pl.set_looping(m.looping);
-            }
-            player_ui(a).set_looping(m.looping);
-        })
-    });
+    p.on_toggle_loop(|| with_app(cycle_loop));
     p.on_pick_audio(|i| with_app(move |a| pick_audio(a, i as usize)));
     p.on_pick_subtitle(|i| with_app(move |a| pick_subtitle(a, i as usize)));
     p.on_load_subtitle_file(|| with_app(load_subtitle_file));
@@ -160,7 +155,7 @@ pub fn open(app: &Rc<App>, path: &Path) {
     p.set_media_title(files::file_name(path).into());
     p.set_media_detail(SharedString::new());
     p.set_has_video(files::kind_of(path) == Some(files::Kind::Video));
-    go(app, "media");
+    go(app, if files::kind_of(path) == Some(files::Kind::Audio) { "audio" } else { "video" });
     let path = path.to_path_buf();
     std::thread::spawn(move || {
         let result = player::probe(&path);
@@ -188,6 +183,11 @@ fn output_size(app: &Rc<App>) -> (u32, u32) {
 fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
     let p = player_ui(app);
     p.set_has_video(info.video.is_some());
+    // The extension guessed the tab; the file decides (a .mkv with only sound is music).
+    let page = app.ui.global::<ui::Shell>().get_page();
+    if matches!(page.as_str(), "audio" | "video") {
+        go(app, if info.video.is_some() { "video" } else { "audio" });
+    }
     p.set_video_w(info.width.max(1) as i32);
     p.set_video_h(info.height.max(1) as i32);
     p.set_has_sub_picture(false);
@@ -211,7 +211,7 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
             {
                 let m = app.media.borrow();
                 pl.set_muted(m.muted);
-                pl.set_looping(m.looping);
+                pl.set_looping(m.loop_mode == 2);
             }
             {
                 let m = app.media.borrow();
@@ -221,6 +221,7 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
             pl.play();
             let mut m = app.media.borrow_mut();
             m.shown_sub_picture = 0;
+            m.repeated = false;
             m.audio_track = info.audio.iter().find(|t| t.default).or(info.audio.first()).map(|t| t.index);
             m.trim = (0, info.duration_ms);
             m.sub_files = sub_files;
@@ -250,6 +251,11 @@ fn tick(app: &Rc<App>) {
     if size != m.last_size {
         pl.set_output_size(size.0, size.1);
     }
+    // Repeat once: play it one more time after it ends.
+    let replay = m.loop_mode == 1 && !m.repeated && pl.ended();
+    if replay {
+        pl.play();
+    }
     let frame = pl.take_frame();
     let pos = pl.position_ms();
     let dur = pl.duration_ms().max(1);
@@ -258,6 +264,9 @@ fn tick(app: &Rc<App>) {
     let (subtitle, sub_picture) = pl.subtitle_now();
     let error = pl.error();
     m.last_size = size;
+    if replay {
+        m.repeated = true;
+    }
     let preview = m.preview;
     let text = files::clock(pos);
     let text_changed = text != m.last_pos_text;
@@ -391,7 +400,7 @@ fn pick_audio(app: &Rc<App>, i: usize) {
             let mut m = app.media.borrow_mut();
             pl.set_volume(app.prefs.borrow().volume);
             pl.set_muted(m.muted);
-            pl.set_looping(m.looping);
+            pl.set_looping(m.loop_mode == 2);
             pl.set_speed(m.speed);
             pl.set_sub_delay(m.sub_delay_ms);
             if playing {
@@ -697,4 +706,48 @@ fn show_sub_picture(app: &Rc<App>, picture: Option<std::sync::Arc<crate::media::
     p.set_sub_w(pic.w as f32 / vw);
     p.set_sub_h(pic.h as f32 / vh);
     p.set_has_sub_picture(true);
+}
+/// Repeat: off, then once more, then forever.
+fn cycle_loop(app: &Rc<App>) {
+    let mode = {
+        let mut m = app.media.borrow_mut();
+        m.loop_mode = (m.loop_mode + 1) % 3;
+        m.repeated = false;
+        if let Some(pl) = m.player.as_ref() {
+            pl.set_looping(m.loop_mode == 2);
+        }
+        m.loop_mode
+    };
+    player_ui(app).set_loop_mode(mode);
+    toast(app, ["Repeat off", "Repeat once", "Repeat forever"][mode as usize]);
+}
+
+/// Empties the Audio/Video tab: stops playback and frees the player and its pictures.
+pub fn close(app: &Rc<App>) {
+    {
+        let mut m = app.media.borrow_mut();
+        m.player = None;
+        m.generation += 1;
+        m.path = None;
+        m.info = None;
+        m.sub_files.clear();
+        m.shown_sub_picture = 0;
+        m.repeated = false;
+    }
+    let p = player_ui(app);
+    p.set_frame(slint::Image::default());
+    p.set_media_title(SharedString::new());
+    p.set_media_detail(SharedString::new());
+    p.set_has_video(false);
+    p.set_playing(false);
+    p.set_position(0.0);
+    p.set_subtitle(SharedString::new());
+    p.set_has_sub_picture(false);
+    p.set_sub_picture(slint::Image::default());
+    p.set_error(SharedString::new());
+    p.set_buffering(false);
+    p.set_trim_mode(false);
+    p.set_audio_tracks(ModelRc::default());
+    p.set_subtitle_tracks(ModelRc::default());
+    crate::app::update_title(app);
 }

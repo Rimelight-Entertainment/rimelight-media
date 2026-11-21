@@ -293,7 +293,17 @@ export component MediaPage inherits Rectangle {
                             enabled: Player.has-video;
                             clicked => { sub-popup.show(); }
                         }
-                        IconButton { on-stage: true; icon: Icons.repeat; label: "Repeat"; active: Player.looping; clicked => { Player.toggle-loop(); } }
+                        Rectangle {
+                            width: 32px;
+                            IconButton {
+                                on-stage: true;
+                                icon: Icons.repeat;
+                                label: Player.loop-mode == 0 ? "Repeat: off" : Player.loop-mode == 1 ? "Repeat: once" : "Repeat: forever";
+                                active: Player.loop-mode > 0;
+                                clicked => { Player.toggle-loop(); }
+                            }
+                            if Player.loop-mode == 1: Text { x: 21px; y: 1px; text: "1"; color: Tokens.accent-default; font-size: 10px; font-weight: 700; }
+                        }
                         if Player.has-video: IconButton { on-stage: true; icon: Icons.camera; label: "Save this frame as a picture"; clicked => { Player.snapshot(); } }
                         IconButton { on-stage: true; icon: Icons.scissors; label: "Trim"; active: Player.trim-mode; clicked => { Player.trim-mode = !Player.trim-mode; } }
                         IconButton { on-stage: true; icon: Icons.maximize; label: "Full screen (F)"; active: Shell.full-screen; clicked => { Shell.toggle-full-screen(); } }
