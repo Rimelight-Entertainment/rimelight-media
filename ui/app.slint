@@ -7,6 +7,7 @@ import { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, RecentItem, Ma
 import { CastPopup } from "cast_popup.slint";
 import { HomePage } from "home.slint";
 import { ImagePage } from "image_page.slint";
+import { NewCanvasDialog } from "canvas_dialog.slint";
 import { MediaPage } from "media_page.slint";
 import { VoicePage } from "voice_page.slint";
 import { CameraPage } from "camera_page.slint";
@@ -158,6 +159,7 @@ export component AppWindow inherits Window {
                     }
                     IconButton { icon: Icons.mic; label: "Voice recorder"; active: Shell.page == "voice"; clicked => { Shell.go("voice"); } }
                     IconButton { icon: Icons.camera; label: "Camera"; active: Shell.page == "camera"; clicked => { Shell.go("camera"); } }
+                    IconButton { icon: Icons.brush; label: "Canvas (Ctrl+N): a new blank picture to draw on"; clicked => { Shell.canvas-popup-open = true; } }
                     cast-btn := IconButton { icon: Icons.cast; label: "Cast to a TV or speaker"; clicked => { Shell.cast(); cast-popup.show(); } }
                     IconButton { icon: Icons.folder-open; label: "Open (Ctrl+O)"; clicked => { Shell.open-file(); } }
                     IconButton { icon: Icons.settings; label: "Settings"; active: Shell.page == "settings"; clicked => { Shell.go("settings"); } }
@@ -261,6 +263,14 @@ export component AppWindow inherits Window {
         }
 
         // The unsaved-changes question (over everything, including the top bar).
+        // The "New canvas" size question (Ctrl+N or the Canvas button).
+        if Shell.canvas-popup-open: NewCanvasDialog {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+        }
+
         if Shell.confirm-open: ConfirmDialog {
             x: 0px;
             y: 0px;

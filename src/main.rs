@@ -131,7 +131,15 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
     }
     // Text extractor: write text into a white picture, read it back with Windows' text recognition.
     let blank = picture::Picture { w: 640, h: 120, rgba: vec![255; 640 * 120 * 4] };
-    let mark = picture::Mark { kind: 4, rgba: [0, 0, 0, 255], width: 10.0, points: vec![(20.0, 30.0)], text: "Rimelight Media 2026".into() };
+    let mark = picture::Mark {
+        kind: 4,
+        rgba: [0, 0, 0, 255],
+        width: 10.0,
+        points: vec![(20.0, 30.0)],
+        text: "Rimelight Media 2026".into(),
+        filled: false,
+        image: None,
+    };
     match picture::burn_marks(&blank, &[mark]).and_then(|p| platform::recognise_text(&p.rgba, p.w, p.h)) {
         Ok(text) if text.contains("Rimelight") => println!("text extractor: ok, read {text:?}"),
         Ok(text) => {

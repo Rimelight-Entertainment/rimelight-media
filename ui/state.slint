@@ -7,7 +7,8 @@ export struct RecentItem {
     kind: string, // "image", "video", "audio"
 }
 
-// One markup mark, in picture pixels. kind: 0 pen, 1 highlighter, 2 arrow, 3 box, 4 text.
+// One markup mark, in picture pixels. kind: 0 pen, 1 highlighter, 2 arrow, 3 box, 4 text, 5 picture, 6 ellipse, 7 line.
+// x, y, w, h: the box round it (its top-left corner and size).
 export struct Mark {
     kind: int,
     colour: color,
@@ -15,7 +16,11 @@ export struct Mark {
     commands: string,
     x: float,
     y: float,
+    w: float,
+    h: float,
     text: string,
+    picture: image,
+    filled: bool,
 }
 
 // One picture in the filmstrip.
@@ -60,6 +65,10 @@ export global Shell {
     // Opens the cast popup (and searches for devices).
     callback cast();
     callback key(string, bool, bool, bool) -> bool; // text, ctrl, shift, alt
+    // Canvas: the "New canvas" question (Ctrl+N or the top bar) and its answer. preset: 0 window size, 1 1920 x 1080,
+    // 2 A4 at 150 dpi, 3 custom (width and height as typed).
+    in-out property <bool> canvas-popup-open;
+    callback new-canvas(int, string, string, bool);
 }
 
 // Casting to a TV or speaker (src/cast.rs): the devices found on the network and the cast in progress.
@@ -108,9 +117,28 @@ export global Viewer {
     in-out property <float> crop-aspect: 0;
 
     in property <[Mark]> marks;
+    // Tools: 0 pen, 1 highlighter, 2 arrow, 3 box, 4 text, 5 eraser, 6 ellipse, 7 line, 8 eyedropper, 9 paint bucket,
+    // 10 rectangle select, 11 move.
     in-out property <int> tool: 0;
     in-out property <color> ink: #E5484D;
     in-out property <float> ink-width: 6;
+    // Box and ellipse are filled with the ink.
+    in-out property <bool> fill-shape;
+    // Up to six recent colours, newest first.
+    in property <[color]> recent-colours;
+    // A canvas (a new document with no file yet).
+    in property <bool> canvas;
+    // The rectangle selection (picture pixels), and the mark picked for moving or resizing.
+    in property <bool> has-sel;
+    in property <float> sel-x;
+    in property <float> sel-y;
+    in property <float> sel-w;
+    in property <float> sel-h;
+    in property <bool> has-box;
+    in property <float> box-x;
+    in property <float> box-y;
+    in property <float> box-w;
+    in property <float> box-h;
     in property <bool> can-undo;
     in property <bool> can-redo;
     // Where the text tool is typing (picture pixels); -1 when not typing.
@@ -181,6 +209,14 @@ export global Viewer {
     callback toggle-filmstrip();
     callback thumb-clicked(int, bool);
     callback close-compare();
+
+    // Markup tools and colours.
+    callback set-tool(int);
+    callback pick-colour(color);
+    callback pick-hex(string);
+    callback crop-selection();
+    callback cut-selection();
+    callback delete-selection();
 }
 
 export global Player {
@@ -401,4 +437,6 @@ export global Settings {
     callback open-default-settings();
     callback open-printscreen-settings();
     callback pick-folder(bool); // true: screenshots
+    in property <string> canvas-folder;
+    callback pick-canvas-folder();
 }

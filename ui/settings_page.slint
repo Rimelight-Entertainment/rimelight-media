@@ -171,6 +171,7 @@ export component SettingsPage inherits Rectangle {
                                 Button { text: "60"; kind: Settings.rec-fps == 60 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.rec-fps = 60; Settings.changed(); } }
                             }
                             FolderRow { label: "Recordings folder"; path: Settings.recording-folder; change => { Settings.pick-folder(false); } }
+                            FolderRow { label: "Canvas folder"; path: Settings.canvas-folder; change => { Settings.pick-canvas-folder(); } }
                         }
                     }
                 }

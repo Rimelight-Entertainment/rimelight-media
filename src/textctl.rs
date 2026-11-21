@@ -208,6 +208,11 @@ pub fn settle(app: &Rc<App>, then: Pending) -> bool {
 /// The question's answer: 0 Save (then the action, if the save worked), 1 Don't save (the action, dropping the changes),
 /// 2 Cancel (nothing).
 fn answer(app: &Rc<App>, choice: i32) {
+    // The same dialog asks about an unsaved canvas (the picture page) when one is waiting for the answer.
+    if crate::viewer::has_pending(app) {
+        crate::viewer::answer(app, choice);
+        return;
+    }
     app.ui.global::<ui::Shell>().set_confirm_open(false);
     let pending = app.text.borrow_mut().pending.take();
     let Some(then) = pending else { return };

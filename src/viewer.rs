@@ -1,7 +1,9 @@
 //! The picture page: open (in the background), browse the folder, zoom, crop, rotate, flip, resize, markup and save.
+//! The canvas (Ctrl+N) is a new blank picture with no file: it uses the same markup engine.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
 
@@ -9,6 +11,18 @@ use crate::app::{App, go, post, remember, toast, update_title, with_app};
 use crate::files;
 use crate::picture::{self, Mark, Picture};
 use crate::ui;
+
+/// A mark being moved (or, for a two-point mark, its last corner dragged to resize it).
+#[derive(Clone)]
+struct Grab {
+    index: usize,
+    corner: bool,
+    start: (f32, f32),
+    origin: Mark,
+}
+
+/// The action waiting for the answer to the in-app question about unsaved canvas changes.
+type Then = Box<dyn FnOnce(&Rc<App>)>;
 
 #[derive(Default)]
 pub struct ViewState {
@@ -37,10 +51,27 @@ pub struct ViewState {
     thumbs_dir: Option<PathBuf>,
     thumbs_gen: u64,
     picked: Vec<usize>,
+    /// Canvas: a new document with no file, and its background colour.
+    pub canvas: bool,
+    canvas_bg: [u8; 4],
+    /// The rectangle selection (picture pixels: x, y, width, height), and a rectangle being dragged out.
+    sel: Option<(f32, f32, f32, f32)>,
+    selecting: Option<(f32, f32)>,
+    /// The mark picked for moving or resizing, and the drag in progress.
+    selected: Option<usize>,
+    grab: Option<Grab>,
+    /// Up to six recent colours, newest first.
+    recent: Vec<[u8; 4]>,
+    /// Slint images of the picture marks (made once per picture, kept while the mark exists).
+    mark_images: Vec<(Arc<Picture>, slint::Image)>,
+    /// What to do after the in-app question about unsaved canvas changes.
+    pending: Option<Then>,
 }
 
 /// Picture edits kept for Undo.
 const MAX_HISTORY: usize = 20;
+/// Paint bucket: how far a pixel's colour may differ from the seed's (per channel).
+const FILL_TOLERANCE: u8 = 16;
 
 fn viewer(app: &Rc<App>) -> ui::Viewer<'_> {
     app.ui.global::<ui::Viewer>()
@@ -95,6 +126,8 @@ pub fn wire(app: &Rc<App>) {
             let mut cleared = std::mem::take(&mut s.marks);
             cleared.reverse();
             s.redo = cleared;
+            s.selected = None;
+            s.grab = None;
             drop(s);
             refresh_marks(a);
         })
@@ -108,6 +141,12 @@ pub fn wire(app: &Rc<App>) {
             set_mode(a, "");
         })
     });
+    v.on_set_tool(|t| with_app(move |a| set_tool(a, t)));
+    v.on_pick_colour(|c| with_app(move |a| pick_colour(a, [c.red(), c.green(), c.blue(), 255])));
+    v.on_pick_hex(|t: SharedString| with_app(move |a| pick_hex(a, &t)));
+    v.on_crop_selection(|| with_app(crop_selection));
+    v.on_cut_selection(|| with_app(|a| remove_selection(a, true)));
+    v.on_delete_selection(|| with_app(|a| remove_selection(a, false)));
     v.on_save(|| with_app(save));
     v.on_save_as(|| with_app(save_as));
     v.on_copy(|| with_app(copy));
@@ -118,7 +157,7 @@ pub fn wire(app: &Rc<App>) {
                 {
                     let mut s = a.view.borrow_mut();
                     s.pic = Some(p);
-                    s.marks.clear();
+                    clear_markup(&mut s);
                     s.history.clear();
                     s.future.clear();
                 }
@@ -141,6 +180,9 @@ pub fn wire(app: &Rc<App>) {
             }
         })
     });
+    app.ui.global::<ui::Shell>().on_new_canvas(|preset, w, h, transparent| {
+        with_app(move |a| new_canvas(a, preset, &w, &h, transparent));
+    });
 }
 
 /// Opens a picture file: the folder list is built at once, the pixels arrive from a worker thread.
@@ -155,7 +197,30 @@ pub fn open_set(app: &Rc<App>, paths: &[PathBuf]) {
     }
 }
 
+/// Forgets the markup in progress and the marks (the picture itself stays).
+fn clear_markup(s: &mut ViewState) {
+    s.marks.clear();
+    s.redo.clear();
+    s.drawing = None;
+    s.text_at = None;
+    s.sel = None;
+    s.selecting = None;
+    s.selected = None;
+    s.grab = None;
+    s.mark_images.clear();
+}
+
+/// A canvas with changes not saved yet.
+pub fn canvas_unsaved(app: &Rc<App>) -> bool {
+    app.view.borrow().canvas && viewer(app).get_dirty()
+}
+
 fn open_with(app: &Rc<App>, path: &Path, set: Option<Vec<PathBuf>>) {
+    if canvas_unsaved(app) {
+        let (p, set) = (path.to_path_buf(), set);
+        settle_canvas(app, move |a| open_with(a, &p, set));
+        return;
+    }
     let folder = set.unwrap_or_else(|| files::sibling_pictures(path));
     let index = folder.iter().position(|p| p == path).unwrap_or(0);
     let generation = {
@@ -168,13 +233,13 @@ fn open_with(app: &Rc<App>, path: &Path, set: Option<Vec<PathBuf>>) {
             s.picked.clear();
         }
         s.generation += 1;
+        s.canvas = false;
         s.path = Some(path.to_path_buf());
         s.folder = folder;
         s.index = index;
         s.pic = None;
         s.original = None;
-        s.marks.clear();
-        s.redo.clear();
+        clear_markup(&mut s);
         s.file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         s.history.clear();
         s.future.clear();
@@ -182,6 +247,7 @@ fn open_with(app: &Rc<App>, path: &Path, set: Option<Vec<PathBuf>>) {
         s.generation
     };
     viewer(app).set_animated(false);
+    viewer(app).set_canvas(false);
     let v = viewer(app);
     v.set_loading(true);
     v.set_error(SharedString::new());
@@ -229,21 +295,26 @@ fn open_with(app: &Rc<App>, path: &Path, set: Option<Vec<PathBuf>>) {
 
 /// Shows a picture that isn't a file yet (a fresh snip). `path` is where it was saved, if it was.
 pub fn open_picture(app: &Rc<App>, pic: Picture, path: Option<PathBuf>) {
+    if canvas_unsaved(app) {
+        settle_canvas(app, move |a| open_picture(a, pic, path));
+        return;
+    }
     {
         let mut s = app.view.borrow_mut();
         s.generation += 1;
+        s.canvas = false;
         s.folder = path.as_ref().map(|p| files::sibling_pictures(p)).unwrap_or_default();
         s.index = path.as_ref().and_then(|p| s.folder.iter().position(|f| f == p)).unwrap_or(0);
         s.file_size = path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()).unwrap_or(0);
         s.path = path.clone();
         s.original = Some(pic.clone());
         s.pic = Some(pic);
-        s.marks.clear();
-        s.redo.clear();
+        clear_markup(&mut s);
         s.history.clear();
         s.future.clear();
     }
     let v = viewer(app);
+    v.set_canvas(false);
     v.set_loading(false);
     v.set_error(SharedString::new());
     v.set_mode(SharedString::new());
@@ -359,13 +430,7 @@ pub fn set_mode(app: &Rc<App>, mode: &str) {
     // An open text box is committed on a mode switch, so it is a normal mark from then on.
     commit_text(app);
     let v = viewer(app);
-    {
-        let mut s = app.view.borrow_mut();
-        s.marks.clear();
-        s.redo.clear();
-        s.drawing = None;
-        s.text_at = None;
-    }
+    clear_markup(&mut app.view.borrow_mut());
     v.set_text_x(-1.0);
     v.set_text_y(-1.0);
     match mode {
@@ -422,16 +487,108 @@ fn ink(app: &Rc<App>) -> [u8; 4] {
     [c.red(), c.green(), c.blue(), c.alpha()]
 }
 
+/// Sets the ink and keeps the colour in the recent list.
+fn pick_colour(app: &Rc<App>, rgba: [u8; 4]) {
+    viewer(app).set_ink(slint::Color::from_argb_u8(rgba[3], rgba[0], rgba[1], rgba[2]));
+    remember_colour(app, rgba);
+}
+
+/// The custom colour box: "#RRGGBB" (the # is optional).
+fn pick_hex(app: &Rc<App>, text: &str) {
+    let t = text.trim().trim_start_matches('#');
+    let parsed = if t.len() == 6 { u32::from_str_radix(t, 16).ok() } else { None };
+    match parsed {
+        Some(v) => pick_colour(app, [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]),
+        None => toast(app, "Type a colour as six hex digits, like #3FD6B8."),
+    }
+}
+
+fn remember_colour(app: &Rc<App>, rgba: [u8; 4]) {
+    {
+        let mut s = app.view.borrow_mut();
+        s.recent.retain(|c| *c != rgba);
+        s.recent.insert(0, rgba);
+        s.recent.truncate(6);
+    }
+    let colours: Vec<slint::Color> =
+        app.view.borrow().recent.iter().map(|c| slint::Color::from_argb_u8(c[3], c[0], c[1], c[2])).collect();
+    viewer(app).set_recent_colours(ModelRc::new(VecModel::from(colours)));
+}
+
+/// Picks a markup tool. Picking another tool lets go of the picked mark (and of the selection, except for the
+/// rectangle select tool itself).
+fn set_tool(app: &Rc<App>, tool: i32) {
+    viewer(app).set_tool(tool);
+    {
+        let mut s = app.view.borrow_mut();
+        s.selected = None;
+        s.grab = None;
+        s.selecting = None;
+        if tool != 10 {
+            s.sel = None;
+        }
+    }
+    refresh_marks(app);
+}
+
+fn rect_of(a: (f32, f32), b: (f32, f32)) -> (f32, f32, f32, f32) {
+    (a.0.min(b.0), a.1.min(b.1), (a.0 - b.0).abs(), (a.1 - b.1).abs())
+}
+
 fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
     let v = viewer(app);
     let tool = v.get_tool();
     let width = v.get_ink_width();
     // Marks scale with the picture so they read the same on a small and a large picture.
     let scale = (v.get_pic_w().max(v.get_pic_h()) as f32 / 1600.0).max(1.0);
+    let reach = 16.0 * scale;
+
+    // A picked mark (a picture, or one the move tool picked) is dragged from anywhere on it; its last corner resizes it.
+    let picked = {
+        let s = app.view.borrow();
+        s.selected.and_then(|i| s.marks.get(i).map(|m| (i, m.clone()))).and_then(|(i, m)| {
+            let corner = m.points.len() == 2 && m.kind != 4 && (m.points[1].0 - x).hypot(m.points[1].1 - y) <= reach;
+            (corner || m.distance(x, y) <= reach).then_some((i, corner, m))
+        })
+    };
+    if let Some((index, corner, origin)) = picked {
+        app.view.borrow_mut().grab = Some(Grab { index, corner, start: (x, y), origin });
+        return;
+    }
+
     match tool {
+        11 => {
+            // The move tool picks the nearest mark and drags it.
+            let hit = {
+                let s = app.view.borrow();
+                s.marks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (i, m.distance(x, y)))
+                    .filter(|(_, d)| *d <= reach)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(i, _)| i)
+            };
+            {
+                let mut s = app.view.borrow_mut();
+                s.grab = hit.map(|i| Grab { index: i, corner: false, start: (x, y), origin: s.marks[i].clone() });
+                s.selected = hit;
+            }
+            refresh_marks(app);
+        }
+        10 => {
+            // The rectangle select drags out a selection.
+            {
+                let mut s = app.view.borrow_mut();
+                s.selecting = Some((x, y));
+                s.sel = None;
+            }
+            refresh_marks(app);
+        }
+        8 => eyedrop(app, x, y),
+        9 => bucket(app, x, y),
         5 => {
             let mut s = app.view.borrow_mut();
-            let reach = 16.0 * scale;
             if let Some((i, _)) = s
                 .marks
                 .iter()
@@ -443,6 +600,7 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
                 let m = s.marks.remove(i);
                 s.redo.push(m);
             }
+            s.selected = None;
             drop(s);
             refresh_marks(app);
         }
@@ -458,7 +616,16 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
             if tool == 1 {
                 rgba[3] = 110;
             }
-            app.view.borrow_mut().drawing = Some(Mark { kind: tool, rgba, width: width * scale, points: vec![(x, y), (x, y)], text: String::new() });
+            let filled = (tool == 3 || tool == 6) && v.get_fill_shape();
+            app.view.borrow_mut().drawing = Some(Mark {
+                kind: tool,
+                rgba,
+                width: width * scale,
+                points: vec![(x, y), (x, y)],
+                text: String::new(),
+                filled,
+                image: None,
+            });
             refresh_marks(app);
         }
     }
@@ -466,6 +633,27 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
 
 fn mark_move(app: &Rc<App>, x: f32, y: f32) {
     let mut s = app.view.borrow_mut();
+    if let Some(g) = s.grab.clone() {
+        let (dx, dy) = (x - g.start.0, y - g.start.1);
+        if let Some(m) = s.marks.get_mut(g.index) {
+            if g.corner {
+                if let (Some(last), Some(o)) = (m.points.last_mut(), g.origin.points.last()) {
+                    *last = (o.0 + dx, o.1 + dy);
+                }
+            } else {
+                m.points = g.origin.points.iter().map(|(px, py)| (px + dx, py + dy)).collect();
+            }
+        }
+        drop(s);
+        refresh_marks(app);
+        return;
+    }
+    if let Some(start) = s.selecting {
+        s.sel = Some(rect_of(start, (x, y)));
+        drop(s);
+        refresh_marks(app);
+        return;
+    }
     let Some(m) = s.drawing.as_mut() else { return };
     if m.kind == 0 || m.kind == 1 {
         let last = *m.points.last().unwrap_or(&(x, y));
@@ -482,10 +670,23 @@ fn mark_move(app: &Rc<App>, x: f32, y: f32) {
 
 fn mark_end(app: &Rc<App>) {
     let mut s = app.view.borrow_mut();
+    if s.grab.take().is_some() {
+        drop(s);
+        refresh_marks(app);
+        return;
+    }
+    if s.selecting.take().is_some() {
+        if s.sel.is_some_and(|(_, _, w, h)| w < 2.0 && h < 2.0) {
+            s.sel = None;
+        }
+        drop(s);
+        refresh_marks(app);
+        return;
+    }
     if let Some(m) = s.drawing.take() {
         let (a, b) = (m.points[0], *m.points.last().unwrap_or(&m.points[0]));
         let tiny = (a.0 - b.0).hypot(a.1 - b.1) < 3.0;
-        if !(tiny && (m.kind == 2 || m.kind == 3)) {
+        if !(tiny && matches!(m.kind, 2 | 3 | 6 | 7)) {
             s.marks.push(m);
             s.redo.clear();
         }
@@ -508,19 +709,22 @@ pub fn commit_text(app: &Rc<App>) {
         let width = v.get_ink_width() * scale;
         let rgba = ink(app);
         let mut s = app.view.borrow_mut();
-        s.marks.push(Mark { kind: 4, rgba, width, points: vec![pos], text });
+        s.marks.push(Mark { kind: 4, rgba, width, points: vec![pos], text, filled: false, image: None });
         s.redo.clear();
     }
     refresh_marks(app);
 }
 
-/// Undo: the last mark while drawing, otherwise the last edit of the picture.
+/// Undo: the last mark while marking up, otherwise the last edit of the picture (a paint bucket fill is one too).
 fn undo(app: &Rc<App>) {
-    if viewer(app).get_mode() == "markup" {
+    let markup = viewer(app).get_mode() == "markup";
+    if markup && !app.view.borrow().marks.is_empty() {
         let mut s = app.view.borrow_mut();
         if let Some(m) = s.marks.pop() {
             s.redo.push(m);
         }
+        s.selected = None;
+        s.grab = None;
         drop(s);
         refresh_marks(app);
         return;
@@ -551,7 +755,8 @@ fn undo(app: &Rc<App>) {
 }
 
 fn redo(app: &Rc<App>) {
-    if viewer(app).get_mode() == "markup" {
+    let markup = viewer(app).get_mode() == "markup";
+    if markup && !app.view.borrow().redo.is_empty() {
         let mut s = app.view.borrow_mut();
         if let Some(m) = s.redo.pop() {
             s.marks.push(m);
@@ -584,22 +789,27 @@ fn redo(app: &Rc<App>) {
     refresh_undo(app);
 }
 
-/// Undo and Redo follow the marks while drawing, the picture's edits otherwise.
+/// Undo and Redo follow the marks while marking up, and the picture's edits too.
 fn refresh_undo(app: &Rc<App>) {
     let s = app.view.borrow();
     let v = viewer(app);
     if v.get_mode() == "markup" {
-        v.set_can_undo(!s.marks.is_empty());
-        v.set_can_redo(!s.redo.is_empty());
+        v.set_can_undo(!s.marks.is_empty() || !s.history.is_empty());
+        v.set_can_redo(!s.redo.is_empty() || !s.future.is_empty());
     } else {
         v.set_can_undo(!s.history.is_empty());
         v.set_can_redo(!s.future.is_empty());
     }
 }
 
-fn to_ui(m: &Mark) -> ui::Mark {
+fn to_ui(m: &Mark, images: &[(Arc<Picture>, slint::Image)]) -> ui::Mark {
     let [r, g, b, a] = m.rgba;
-    let (x, y) = m.points.first().copied().unwrap_or_default();
+    let (x, y, w, h) = m.bounds();
+    let picture = m
+        .image
+        .as_ref()
+        .and_then(|p| images.iter().find(|(q, _)| Arc::ptr_eq(q, p)).map(|(_, img)| img.clone()))
+        .unwrap_or_default();
     ui::Mark {
         kind: m.kind,
         colour: slint::Color::from_argb_u8(a, r, g, b),
@@ -607,18 +817,63 @@ fn to_ui(m: &Mark) -> ui::Mark {
         commands: m.commands().into(),
         x,
         y,
+        w,
+        h,
         text: m.text.clone().into(),
+        picture,
+        filled: m.filled,
     }
 }
 
 fn refresh_marks(app: &Rc<App>) {
+    {
+        let mut s = app.view.borrow_mut();
+        // The Slint image of each picture mark is made once.
+        let live: Vec<Arc<Picture>> = s.marks.iter().filter_map(|m| m.image.clone()).collect();
+        for pic in &live {
+            if !s.mark_images.iter().any(|(p, _)| Arc::ptr_eq(p, pic)) {
+                let img = picture::to_slint(pic);
+                s.mark_images.push((Arc::clone(pic), img));
+            }
+        }
+        s.mark_images.retain(|(p, _)| live.iter().any(|q| Arc::ptr_eq(p, q)));
+    }
     let s = app.view.borrow();
-    let items: Vec<ui::Mark> = s.marks.iter().chain(s.drawing.iter()).map(to_ui).collect();
+    let items: Vec<ui::Mark> = s.marks.iter().chain(s.drawing.iter()).map(|m| to_ui(m, &s.mark_images)).collect();
     viewer(app).set_marks(ModelRc::new(VecModel::from(items)));
     drop(s);
+    refresh_selection(app);
     refresh_undo(app);
 }
 
+/// The rectangle selection and the picked mark's box, for the outlines on the picture.
+fn refresh_selection(app: &Rc<App>) {
+    let s = app.view.borrow();
+    let v = viewer(app);
+    match s.sel {
+        Some((x, y, w, h)) => {
+            v.set_has_sel(true);
+            v.set_sel_x(x);
+            v.set_sel_y(y);
+            v.set_sel_w(w);
+            v.set_sel_h(h);
+        }
+        None => v.set_has_sel(false),
+    }
+    match s.selected.and_then(|i| s.marks.get(i)) {
+        Some(m) => {
+            let (x, y, w, h) = m.bounds();
+            v.set_has_box(true);
+            v.set_box_x(x);
+            v.set_box_y(y);
+            v.set_box_w(w);
+            v.set_box_h(h);
+        }
+        None => v.set_has_box(false),
+    }
+}
+
+/// The picture as the person sees it: the picture with the marks burned in.
 fn current(app: &Rc<App>) -> Option<Picture> {
     let s = app.view.borrow();
     let pic = s.pic.clone()?;
@@ -629,19 +884,208 @@ fn current(app: &Rc<App>) -> Option<Picture> {
     Some(pic)
 }
 
+/// The marks go into the picture: returns the render with them burned in and clears the markup. The caller makes the
+/// edit (it is kept in Undo as one step).
+fn flatten(app: &Rc<App>) -> Option<Picture> {
+    let flat = current(app)?;
+    clear_markup(&mut app.view.borrow_mut());
+    Some(flat)
+}
+
+/// The selection as whole pixels of `pic`, clamped to it; None when it is outside or empty.
+fn sel_px(pic: &Picture, sel: (f32, f32, f32, f32)) -> Option<(u32, u32, u32, u32)> {
+    let x0 = sel.0.floor().max(0.0) as u32;
+    let y0 = sel.1.floor().max(0.0) as u32;
+    if x0 >= pic.w || y0 >= pic.h {
+        return None;
+    }
+    let x1 = ((sel.0 + sel.2).ceil().max(0.0) as u32).min(pic.w);
+    let y1 = ((sel.1 + sel.3).ceil().max(0.0) as u32).min(pic.h);
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+}
+
+/// The paint bucket: a flood fill of the render, kept as one edit in Undo.
+fn bucket(app: &Rc<App>, x: f32, y: f32) {
+    if x < 0.0 || y < 0.0 {
+        return;
+    }
+    let Some(flat) = flatten(app) else { return };
+    let filled = picture::flood_fill(&flat, x as u32, y as u32, ink(app), FILL_TOLERANCE);
+    edit(app, move |_| filled);
+    refresh_marks(app);
+}
+
+/// The eyedropper: the rendered pixel under the pointer becomes the ink.
+fn eyedrop(app: &Rc<App>, x: f32, y: f32) {
+    if x < 0.0 || y < 0.0 {
+        return;
+    }
+    let Some(flat) = current(app) else { return };
+    let (px, py) = (x as u32, y as u32);
+    if px >= flat.w || py >= flat.h {
+        return;
+    }
+    let i = ((py * flat.w + px) * 4) as usize;
+    pick_colour(app, [flat.rgba[i], flat.rgba[i + 1], flat.rgba[i + 2], 255]);
+}
+
+/// Crop to the rectangle selection.
+fn crop_selection(app: &Rc<App>) {
+    let sel = app.view.borrow().sel;
+    let Some(sel) = sel else { return };
+    let Some(flat) = flatten(app) else { return };
+    let Some((x, y, w, h)) = sel_px(&flat, sel) else { return };
+    let cropped = picture::crop_px(&flat, x, y, w, h);
+    edit(app, move |_| cropped);
+    refresh_marks(app);
+}
+
+/// Cut (copies the selection, then fills it with the background) or Delete (fills it). Without a selection it does nothing.
+fn remove_selection(app: &Rc<App>, cut: bool) {
+    let sel = app.view.borrow().sel;
+    let Some(sel) = sel else { return };
+    let Some(flat) = current(app) else { return };
+    let Some((x, y, w, h)) = sel_px(&flat, sel) else { return };
+    if cut {
+        let part = picture::crop_px(&flat, x, y, w, h);
+        if let Err(e) = picture::copy_to_clipboard(&part) {
+            toast(app, format!("Could not copy: {e}"));
+            return;
+        }
+    }
+    let bg = if app.view.borrow().canvas { app.view.borrow().canvas_bg } else { [255, 255, 255, 255] };
+    let filled = picture::fill_rect(&flat, x, y, w, h, bg);
+    clear_markup(&mut app.view.borrow_mut());
+    edit(app, move |_| filled);
+    refresh_marks(app);
+    if cut {
+        toast(app, "Cut to the clipboard");
+    }
+}
+
+/// Delete with a mark picked: the mark goes (it can be redone, like an eraser stroke).
+fn delete_selected(app: &Rc<App>) {
+    let mut s = app.view.borrow_mut();
+    let Some(i) = s.selected.take() else { return };
+    if i < s.marks.len() {
+        let m = s.marks.remove(i);
+        s.redo.push(m);
+    }
+    s.grab = None;
+    drop(s);
+    refresh_marks(app);
+}
+
+/// Puts an image on the clipboard (None when there is no picture there).
+pub fn clipboard_image() -> Option<Picture> {
+    let mut cb = arboard::Clipboard::new().ok()?;
+    let img = cb.get_image().ok()?;
+    let (w, h) = (img.width as u32, img.height as u32);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some(Picture { w, h, rgba: img.bytes.into_owned() })
+}
+
+/// Ctrl+V on a page that is not the picture page: the picture on the clipboard opens as a new canvas.
+pub fn paste_new(app: &Rc<App>) {
+    match clipboard_image() {
+        Some(pic) => settle_canvas(app, move |a| install_canvas(a, pic, [255, 255, 255, 255])),
+        None => toast(app, "There's no picture on the clipboard."),
+    }
+}
+
+/// Ctrl+V on the picture page: the clipboard picture comes in.
+fn paste_clipboard(app: &Rc<App>) {
+    match clipboard_image() {
+        Some(pic) => place_picture(app, pic),
+        None => toast(app, "There's no picture on the clipboard."),
+    }
+}
+
+/// A picture pasted or dropped: it becomes the canvas when the canvas is still empty, otherwise a picture mark that
+/// can be moved and resized until another tool is picked.
+pub fn place_picture(app: &Rc<App>, pic: Picture) {
+    let empty_canvas = {
+        let s = app.view.borrow();
+        s.canvas && s.marks.is_empty() && s.history.is_empty()
+    };
+    if empty_canvas {
+        {
+            let mut s = app.view.borrow_mut();
+            s.pic = Some(pic.clone());
+            s.original = Some(pic);
+            s.future.clear();
+        }
+        viewer(app).set_dirty(true);
+        show_picture(app, true);
+        refresh_undo(app);
+        return;
+    }
+    if viewer(app).get_mode() != "markup" {
+        set_mode(app, "markup");
+    }
+    let v = viewer(app);
+    let (pw, ph) = (v.get_pic_w() as f32, v.get_pic_h() as f32);
+    let (iw, ih) = (pic.w as f32, pic.h as f32);
+    // Half the picture at most, never bigger than the picture it came from.
+    let f = (pw * 0.5 / iw).min(ph * 0.5 / ih).min(1.0);
+    let (w, h) = (iw * f, ih * f);
+    let (x, y) = ((pw - w) / 2.0, (ph - h) / 2.0);
+    {
+        let mut s = app.view.borrow_mut();
+        s.marks.push(Mark {
+            kind: 5,
+            rgba: [0, 0, 0, 0],
+            width: 1.0,
+            points: vec![(x, y), (x + w, y + h)],
+            text: String::new(),
+            filled: false,
+            image: Some(Arc::new(pic)),
+        });
+        s.redo.clear();
+        s.selected = Some(s.marks.len() - 1);
+        s.grab = None;
+    }
+    refresh_marks(app);
+}
+
+/// A picture dropped on the window while marking up (or on the canvas).
+pub fn drop_picture(app: &Rc<App>, path: &Path) {
+    match picture::load(path) {
+        Ok(pic) => place_picture(app, pic),
+        Err(e) => toast(app, format!("That picture can't be used: {e}")),
+    }
+}
+
+/// True while the picture page is marking up (or drawing on the canvas).
+pub fn in_markup(app: &Rc<App>) -> bool {
+    viewer(app).get_mode() == "markup"
+}
+
 fn save(app: &Rc<App>) {
     let path = app.view.borrow().path.clone();
+    let canvas = app.view.borrow().canvas;
     match path {
         Some(p) if picture::can_save(&p) => write_to(app, &p),
-        _ => save_as(app),
+        Some(_) => save_as(app),
+        None if canvas => {
+            // An unsaved canvas goes to the canvas folder as a PNG, named by the time.
+            let dir = app.prefs.borrow().canvas_dir.clone();
+            let out = files::free_path(&dir, &files::stamp("Canvas"), "png");
+            write_to(app, &out);
+        }
+        None => save_as(app),
     }
 }
 
 fn save_as(app: &Rc<App>) {
+    let canvas = app.view.borrow().canvas;
     let (dir, stem) = {
         let s = app.view.borrow();
         match &s.path {
             Some(p) => (p.parent().map(Path::to_path_buf), p.file_stem().and_then(|s| s.to_str()).unwrap_or("Picture").to_string()),
+            None if s.canvas => (Some(app.prefs.borrow().canvas_dir.clone()), files::stamp("Canvas")),
             None => (Some(app.prefs.borrow().screenshot_dir.clone()), files::stamp("Screenshot")),
         }
     };
@@ -650,9 +1094,11 @@ fn save_as(app: &Rc<App>) {
         .set_title("Save as")
         .set_file_name(format!("{stem}.{ext}"))
         .add_filter("PNG", &["png"])
-        .add_filter("JPEG", &["jpg", "jpeg"])
-        .add_filter("WebP (lossless)", &["webp"])
-        .add_filter("BMP", &["bmp"]);
+        .add_filter("JPEG", &["jpg", "jpeg"]);
+    if !canvas {
+        dialog = dialog.add_filter("WebP (lossless)", &["webp"]);
+    }
+    dialog = dialog.add_filter("BMP", &["bmp"]);
     if let Some(d) = dir {
         dialog = dialog.set_directory(d);
     }
@@ -670,7 +1116,8 @@ fn write_to(app: &Rc<App>, path: &Path) {
         Ok(()) => {
             {
                 let mut s = app.view.borrow_mut();
-                s.marks.clear();
+                clear_markup(&mut s);
+                s.canvas = false;
                 s.original = Some(pic.clone());
                 s.pic = Some(pic);
                 s.path = Some(path.to_path_buf());
@@ -679,6 +1126,7 @@ fn write_to(app: &Rc<App>, path: &Path) {
                 s.index = s.folder.iter().position(|p| p == path).unwrap_or(0);
             }
             let v = viewer(app);
+            v.set_canvas(false);
             v.set_dirty(false);
             v.set_info_name(files::file_name(path).into());
             set_mode(app, "");
@@ -691,8 +1139,14 @@ fn write_to(app: &Rc<App>, path: &Path) {
     }
 }
 
+/// Copies the rectangle selection, or the whole picture (marks included) when nothing is selected.
 fn copy(app: &Rc<App>) {
     let Some(pic) = current(app) else { return };
+    let sel = app.view.borrow().sel;
+    let pic = match sel.and_then(|s| sel_px(&pic, s)) {
+        Some((x, y, w, h)) => picture::crop_px(&pic, x, y, w, h),
+        None => pic,
+    };
     match picture::copy_to_clipboard(&pic) {
         Ok(()) => toast(app, "Copied to the clipboard"),
         Err(e) => toast(app, format!("Could not copy: {e}")),
@@ -739,8 +1193,11 @@ pub fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool) -> bool {
         }
     }
     if ctrl {
+        let typing = app.view.borrow().text_at.is_some();
         match text.to_ascii_lowercase().as_str() {
             "c" => copy(app),
+            // While a text box is open, Ctrl+V pastes text into it.
+            "v" if !typing => paste_clipboard(app),
             "s" if shift => save_as(app),
             "s" => save(app),
             "z" => undo(app),
@@ -757,6 +1214,14 @@ pub fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool) -> bool {
                 "markup" => v.invoke_apply_marks(),
                 "resize" => v.invoke_apply_resize(),
                 _ => {}
+            }
+            return true;
+        }
+        if k(Key::Delete) && mode == "markup" && app.view.borrow().text_at.is_none() {
+            if app.view.borrow().sel.is_some() {
+                remove_selection(app, false);
+            } else {
+                delete_selected(app);
             }
             return true;
         }
@@ -927,8 +1392,9 @@ fn save_frame(app: &Rc<App>) {
         Err(e) => toast(app, format!("Could not save the frame: {e}")),
     }
 }
-/// Delete: a file goes to the Recycle Bin and the next picture in the folder opens; a snip that was never saved is
-/// discarded.
+
+/// Delete: a file goes to the Recycle Bin and the next picture in the folder opens; a snip (or canvas) that was never
+/// saved is discarded.
 fn delete_current(app: &Rc<App>) {
     let (path, next) = {
         let s = app.view.borrow();
@@ -955,10 +1421,10 @@ fn delete_current(app: &Rc<App>) {
                 None => close(app),
             }
         }
-        None => {
-            toast(app, "Snip discarded");
-            close(app);
-        }
+        None => settle_canvas(app, |a| {
+            toast(a, "Snip discarded");
+            close(a);
+        }),
     }
 }
 
@@ -972,13 +1438,15 @@ pub fn close(app: &Rc<App>) {
         s.pic = None;
         s.original = None;
         s.folder.clear();
-        s.marks.clear();
-        s.redo.clear();
+        clear_markup(&mut s);
         s.history.clear();
         s.future.clear();
         s.picked.clear();
+        s.canvas = false;
+        s.pending = None;
     }
     viewer(app).set_comparing(false);
+    viewer(app).set_canvas(false);
     viewer(app).set_file_type(SharedString::new());
     viewer(app).set_facts_text(SharedString::new());
     viewer(app).set_dims_text(SharedString::new());
@@ -1003,12 +1471,25 @@ pub fn close(app: &Rc<App>) {
         s.thumbs_dir = None;
         s.thumbs_gen += 1;
     }
+    refresh_marks(app);
     crate::app::update_title(app);
 }
 
+/// The X in the top bar on the picture page: an unsaved canvas asks first (in the app), a picture asks as before.
+pub fn close_tab(app: &Rc<App>) {
+    if canvas_unsaved(app) {
+        settle_canvas(app, close);
+        return;
+    }
+    if confirm_discard(app) {
+        close(app);
+    }
+}
+
 /// Before the picture goes away: true when there's nothing unsaved, or the person saved it or chose to discard it.
+/// (A canvas is asked about in the app instead: see settle_canvas.)
 pub fn confirm_discard(app: &Rc<App>) -> bool {
-    if !viewer(app).get_dirty() {
+    if !viewer(app).get_dirty() || app.view.borrow().canvas {
         return true;
     }
     let name = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "this snip".into());
@@ -1032,6 +1513,108 @@ pub fn confirm_discard(app: &Rc<App>) -> bool {
         _ => false,
     }
 }
+
+/// Runs `then` now when the canvas has nothing unsaved; otherwise shows the in-app "Save changes?" question and runs it
+/// once the answer is in (see answer).
+pub fn settle_canvas(app: &Rc<App>, then: impl FnOnce(&Rc<App>) + 'static) {
+    if !canvas_unsaved(app) {
+        then(app);
+        return;
+    }
+    app.view.borrow_mut().pending = Some(Box::new(then) as Then);
+    let shell = app.ui.global::<ui::Shell>();
+    shell.set_confirm_name("Untitled canvas".into());
+    shell.set_confirm_open(true);
+}
+
+/// True while the in-app question is about the picture page (the text tab's question is the other one).
+pub fn has_pending(app: &Rc<App>) -> bool {
+    app.view.borrow().pending.is_some()
+}
+
+/// The answer to the question: 0 Save (then the action, if the save worked), 1 Don't save (the action, dropping the
+/// canvas), 2 Cancel (nothing).
+pub fn answer(app: &Rc<App>, choice: i32) {
+    app.ui.global::<ui::Shell>().set_confirm_open(false);
+    let then = app.view.borrow_mut().pending.take();
+    let Some(then) = then else { return };
+    match choice {
+        0 => {
+            save(app);
+            if !viewer(app).get_dirty() {
+                then(app);
+            }
+        }
+        1 => {
+            viewer(app).set_dirty(false);
+            app.view.borrow_mut().canvas = false;
+            then(app);
+        }
+        _ => {}
+    }
+}
+
+/// Ctrl+N and the top bar's Canvas button ask for the size with the "New canvas" popup; this makes the canvas.
+fn new_canvas(app: &Rc<App>, preset: i32, w: &str, h: &str, transparent: bool) {
+    let Some((w, h)) = canvas_size(app, preset, w, h) else {
+        toast(app, "Type a width and a height from 1 to 10000 pixels.");
+        return;
+    };
+    app.ui.global::<ui::Shell>().set_canvas_popup_open(false);
+    let bg = if transparent { [0, 0, 0, 0] } else { [255, 255, 255, 255] };
+    let pic = Picture { w, h, rgba: bg.repeat(w as usize * h as usize) };
+    settle_canvas(app, move |a| install_canvas(a, pic, bg));
+}
+
+fn canvas_size(app: &Rc<App>, preset: i32, w: &str, h: &str) -> Option<(u32, u32)> {
+    let (w, h) = match preset {
+        0 => {
+            let size = app.ui.window().size();
+            (size.width, size.height)
+        }
+        1 => (1920, 1080),
+        2 => (1240, 1754),
+        _ => (w.trim().parse().ok()?, h.trim().parse().ok()?),
+    };
+    (w > 0 && h > 0 && w <= 10_000 && h <= 10_000).then_some((w, h))
+}
+
+/// Makes `pic` the canvas: no file, markup mode on, no undo history.
+fn install_canvas(app: &Rc<App>, pic: Picture, bg: [u8; 4]) {
+    {
+        let mut s = app.view.borrow_mut();
+        stop_anim(&mut s);
+        s.generation += 1;
+        s.canvas = true;
+        s.canvas_bg = bg;
+        s.path = None;
+        s.folder.clear();
+        s.index = 0;
+        s.file_size = 0;
+        s.original = Some(pic.clone());
+        s.pic = Some(pic);
+        s.history.clear();
+        s.future.clear();
+        clear_markup(&mut s);
+    }
+    let v = viewer(app);
+    v.set_animated(false);
+    v.set_loading(false);
+    v.set_error(SharedString::new());
+    v.set_comparing(false);
+    v.set_dirty(false);
+    v.set_fit(true);
+    v.set_pan_x(0.0);
+    v.set_pan_y(0.0);
+    v.set_canvas(true);
+    v.set_info_name("Untitled canvas".into());
+    v.set_mode(SharedString::new());
+    update_position(app);
+    show_picture(app, true);
+    go(app, "image");
+    set_mode(app, "markup");
+}
+
 fn print(app: &Rc<App>) {
     let Some(pic) = current(app) else { return };
     let title = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_else(|| "Picture".into());
@@ -1198,6 +1781,7 @@ pub fn close_compare(app: &Rc<App>) {
     viewer(app).set_comparing(false);
     sync_thumbs(app);
 }
+
 /// The open picture was renamed on disk: the folder list and the title follow the new name.
 pub fn renamed(app: &Rc<App>, new: &Path) {
     {

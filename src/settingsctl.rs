@@ -33,6 +33,19 @@ pub fn wire(app: &Rc<App>) {
     });
     s.on_open_default_settings(install::open_default_apps_settings);
     s.on_open_printscreen_settings(install::open_printscreen_settings);
+    s.on_pick_canvas_folder(|| {
+        with_app(|a| {
+            let current = a.prefs.borrow().canvas_dir.clone();
+            if let Some(dir) = rfd::FileDialog::new().set_directory(current).pick_folder() {
+                {
+                    let mut p = a.prefs.borrow_mut();
+                    p.canvas_dir = dir;
+                    p.save();
+                }
+                refresh(a);
+            }
+        })
+    });
     s.on_pick_folder(|screenshots| {
         with_app(move |a| {
             let current = if screenshots { a.prefs.borrow().screenshot_dir.clone() } else { a.prefs.borrow().recording_dir.clone() };
@@ -68,6 +81,7 @@ pub fn refresh(app: &Rc<App>) {
     s.set_rec_fps(p.rec_fps);
     s.set_screenshot_folder(p.screenshot_dir.display().to_string().into());
     s.set_recording_folder(p.recording_dir.display().to_string().into());
+    s.set_canvas_folder(p.canvas_dir.display().to_string().into());
     drop(p);
     let version = crate::update::installed_version();
     s.set_installed(version.is_some());

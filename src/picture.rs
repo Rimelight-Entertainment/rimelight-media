@@ -219,15 +219,35 @@ pub fn resize(pic: &Picture, w: u32, h: u32) -> Picture {
 /// One markup mark in picture pixels.
 #[derive(Clone, Debug)]
 pub struct Mark {
-    /// 0 pen, 1 highlighter, 2 arrow, 3 box, 4 text.
+    /// 0 pen, 1 highlighter, 2 arrow, 3 box, 4 text, 5 picture, 6 ellipse, 7 line.
     pub kind: i32,
     pub rgba: [u8; 4],
     pub width: f32,
     pub points: Vec<(f32, f32)>,
     pub text: String,
+    /// A box or an ellipse filled with its colour.
+    pub filled: bool,
+    /// A picture mark: its pixels, drawn into the rectangle from points[0] to points[1].
+    pub image: Option<Arc<Picture>>,
 }
 
 impl Mark {
+    /// The box round the mark: x, y, width, height (picture pixels).
+    pub fn bounds(&self) -> (f32, f32, f32, f32) {
+        let Some(&(x0, y0)) = self.points.first() else { return (0.0, 0.0, 0.0, 0.0) };
+        if self.kind == 4 {
+            return (x0, y0, self.font_size() * 0.6 * self.text.chars().count().max(1) as f32, self.font_size() * 1.3);
+        }
+        let (mut x1, mut y1, mut x2, mut y2) = (x0, y0, x0, y0);
+        for &(x, y) in &self.points {
+            x1 = x1.min(x);
+            y1 = y1.min(y);
+            x2 = x2.max(x);
+            y2 = y2.max(y);
+        }
+        (x1, y1, x2 - x1, y2 - y1)
+    }
+
     /// The path the mark draws, in the SVG path syntax Slint's Path also reads.
     pub fn commands(&self) -> String {
         let p = &self.points;
@@ -237,6 +257,39 @@ impl Mark {
         let (x0, y0) = p[0];
         let (x1, y1) = *p.last().unwrap_or(&p[0]);
         match self.kind {
+            5 => String::new(),
+            7 => format!("M {x0:.1} {y0:.1} L {x1:.1} {y1:.1}"),
+            6 => {
+                // An ellipse in four cubic curves inside the box from (x0, y0) to (x1, y1).
+                const K: f32 = 0.5523;
+                let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+                let (rx, ry) = ((x1 - x0).abs() / 2.0, (y1 - y0).abs() / 2.0);
+                let (kx, ky) = (rx * K, ry * K);
+                format!(
+                    "M {cx:.1} {:.1} C {:.1} {:.1} {:.1} {:.1} {:.1} {cy:.1} C {:.1} {:.1} {:.1} {:.1} {cx:.1} {:.1} C {:.1} {:.1} {:.1} {:.1} {:.1} {cy:.1} C {:.1} {:.1} {:.1} {:.1} {cx:.1} {:.1} Z",
+                    cy - ry,
+                    cx + kx,
+                    cy - ry,
+                    cx + rx,
+                    cy - ky,
+                    cx + rx,
+                    cx + rx,
+                    cy + ky,
+                    cx + kx,
+                    cy + ry,
+                    cy + ry,
+                    cx - kx,
+                    cy + ry,
+                    cx - rx,
+                    cy + ky,
+                    cx - rx,
+                    cx - rx,
+                    cy - ky,
+                    cx - kx,
+                    cy - ry,
+                    cy - ry,
+                )
+            }
             2 => {
                 let ang = (y1 - y0).atan2(x1 - x0);
                 let head = (self.width * 4.0).max(14.0);
@@ -274,17 +327,18 @@ impl Mark {
         (self.width * 4.0).max(12.0)
     }
 
-    /// Rough distance from (x, y) to the mark, for the eraser.
+    /// Rough distance from (x, y) to the mark, for the eraser, the move tool and the picture marks (0 inside those).
     pub fn distance(&self, x: f32, y: f32) -> f32 {
-        if self.kind == 4 {
-            let (tx, ty) = self.points[0];
-            let w = self.font_size() * 0.6 * self.text.chars().count().max(1) as f32;
-            let h = self.font_size() * 1.3;
+        if self.points.is_empty() {
+            return f32::MAX;
+        }
+        if self.kind == 4 || self.kind == 5 {
+            let (tx, ty, w, h) = self.bounds();
             let dx = (tx - x).max(x - (tx + w)).max(0.0);
             let dy = (ty - y).max(y - (ty + h)).max(0.0);
             return dx.hypot(dy);
         }
-        let pts: Vec<(f32, f32)> = if self.kind == 3 && self.points.len() >= 2 {
+        let pts: Vec<(f32, f32)> = if (self.kind == 3 || self.kind == 6) && self.points.len() >= 2 {
             let (x0, y0) = self.points[0];
             let (x1, y1) = *self.points.last().unwrap_or(&self.points[0]);
             vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
@@ -313,8 +367,27 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// Draws the marks into the picture.
+/// Draws the marks into the picture, in order: vector marks through SVG, picture marks composited in place.
 pub fn burn_marks(pic: &Picture, marks: &[Mark]) -> Result<Picture, String> {
+    if marks.is_empty() {
+        return Ok(pic.clone());
+    }
+    let mut out = pic.clone();
+    let mut run: Vec<&Mark> = Vec::new();
+    for m in marks {
+        if m.kind == 5 {
+            out = burn_run(&out, &run)?;
+            run.clear();
+            composite(&mut out, m);
+        } else {
+            run.push(m);
+        }
+    }
+    burn_run(&out, &run)
+}
+
+/// The vector marks (no picture marks) drawn into the picture.
+fn burn_run(pic: &Picture, marks: &[&Mark]) -> Result<Picture, String> {
     if marks.is_empty() {
         return Ok(pic.clone());
     }
@@ -335,8 +408,9 @@ pub fn burn_marks(pic: &Picture, marks: &[Mark]) -> Result<Picture, String> {
                 xml_escape(&m.text)
             ));
         } else {
+            let fill = if m.filled { format!("#{r:02x}{g:02x}{b:02x}\" fill-opacity=\"{opacity}") } else { "none".to_string() };
             svg.push_str(&format!(
-                "<path d=\"{}\" fill=\"none\" stroke=\"#{r:02x}{g:02x}{b:02x}\" stroke-opacity=\"{opacity}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+                "<path d=\"{}\" fill=\"{fill}\" stroke=\"#{r:02x}{g:02x}{b:02x}\" stroke-opacity=\"{opacity}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
                 m.commands(),
                 m.stroke_width()
             ));
@@ -347,6 +421,113 @@ pub fn burn_marks(pic: &Picture, marks: &[Mark]) -> Result<Picture, String> {
     let mut pixmap = to_pixmap(pic).ok_or("the picture is empty")?;
     resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
     Ok(from_pixmap(&pixmap))
+}
+
+/// Puts a picture mark's pixels over the picture, scaled to its rectangle (alpha blended, straight alpha).
+fn composite(out: &mut Picture, m: &Mark) {
+    let Some(src) = m.image.as_deref() else { return };
+    if m.points.len() < 2 {
+        return;
+    }
+    let (x0, y0) = m.points[0];
+    let (x1, y1) = m.points[m.points.len() - 1];
+    let (left, top) = (x0.min(x1).round() as i64, y0.min(y1).round() as i64);
+    let w = ((x1 - x0).abs().round() as u32).max(1);
+    let h = ((y1 - y0).abs().round() as u32).max(1);
+    let scaled = if w == src.w && h == src.h { src.clone() } else { resize(src, w, h) };
+    for sy in 0..h {
+        let dy = top + i64::from(sy);
+        if dy < 0 || dy >= i64::from(out.h) {
+            continue;
+        }
+        for sx in 0..w {
+            let dx = left + i64::from(sx);
+            if dx < 0 || dx >= i64::from(out.w) {
+                continue;
+            }
+            let si = ((sy * w + sx) * 4) as usize;
+            let di = ((dy as u32 * out.w + dx as u32) * 4) as usize;
+            let a = u32::from(scaled.rgba[si + 3]);
+            if a == 0 {
+                continue;
+            }
+            let inv = 255 - a;
+            for c in 0..3 {
+                out.rgba[di + c] = ((u32::from(scaled.rgba[si + c]) * a + u32::from(out.rgba[di + c]) * inv + 127) / 255) as u8;
+            }
+            out.rgba[di + 3] = (a + u32::from(out.rgba[di + 3]) * inv / 255).min(255) as u8;
+        }
+    }
+}
+
+/// The picture with a rectangle (picture pixels) filled with one colour.
+pub fn fill_rect(pic: &Picture, x: u32, y: u32, w: u32, h: u32, rgba: [u8; 4]) -> Picture {
+    let mut out = pic.clone();
+    for row in y..(y + h).min(pic.h) {
+        for col in x..(x + w).min(pic.w) {
+            let i = ((row * pic.w + col) * 4) as usize;
+            out.rgba[i..i + 4].copy_from_slice(&rgba);
+        }
+    }
+    out
+}
+
+/// Paint bucket: fills the area around (x, y) whose colours are within `tolerance` of the seed pixel (scanline fill).
+/// A translucent fill colour is blended over the pixels.
+pub fn flood_fill(pic: &Picture, x: u32, y: u32, fill: [u8; 4], tolerance: u8) -> Picture {
+    let mut out = pic.clone();
+    if x >= pic.w || y >= pic.h {
+        return out;
+    }
+    let (w, h) = (pic.w as usize, pic.h as usize);
+    let at = |px: usize, py: usize| (py * w + px) * 4;
+    let seed = at(x as usize, y as usize);
+    let target = [pic.rgba[seed], pic.rgba[seed + 1], pic.rgba[seed + 2], pic.rgba[seed + 3]];
+    let tol = i32::from(tolerance);
+    let similar = |i: usize| (0..4).all(|c| (i32::from(pic.rgba[i + c]) - i32::from(target[c])).abs() <= tol);
+    let mut done = vec![false; w * h];
+    let mut stack = vec![(x as usize, y as usize)];
+    let a = u32::from(fill[3]);
+    while let Some((sx, sy)) = stack.pop() {
+        if done[sy * w + sx] || !similar(at(sx, sy)) {
+            continue;
+        }
+        // Widen the run to the left and right of the seed.
+        let mut l = sx;
+        while l > 0 && !done[sy * w + l - 1] && similar(at(l - 1, sy)) {
+            l -= 1;
+        }
+        let mut r = sx;
+        while r + 1 < w && !done[sy * w + r + 1] && similar(at(r + 1, sy)) {
+            r += 1;
+        }
+        for cx in l..=r {
+            done[sy * w + cx] = true;
+            let i = at(cx, sy);
+            for c in 0..3 {
+                out.rgba[i + c] = ((u32::from(fill[c]) * a + u32::from(pic.rgba[i + c]) * (255 - a) + 127) / 255) as u8;
+            }
+            out.rgba[i + 3] = pic.rgba[i + 3].max(fill[3]);
+        }
+        // Seeds on the rows above and below: one per run of matching pixels.
+        for ny in [sy.wrapping_sub(1), sy + 1] {
+            if ny >= h {
+                continue;
+            }
+            let mut cx = l;
+            while cx <= r {
+                if !done[ny * w + cx] && similar(at(cx, ny)) {
+                    stack.push((cx, ny));
+                    while cx <= r && !done[ny * w + cx] && similar(at(cx, ny)) {
+                        cx += 1;
+                    }
+                } else {
+                    cx += 1;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Can this extension be written back?
@@ -439,7 +620,7 @@ mod tests {
     #[test]
     fn marks_burn_in() {
         let p = Picture { w: 40, h: 40, rgba: vec![255; 40 * 40 * 4] };
-        let m = Mark { kind: 3, rgba: [255, 0, 0, 255], width: 4.0, points: vec![(5.0, 5.0), (35.0, 35.0)], text: String::new() };
+        let m = Mark { kind: 3, rgba: [255, 0, 0, 255], width: 4.0, points: vec![(5.0, 5.0), (35.0, 35.0)], text: String::new(), filled: false, image: None };
         let out = burn_marks(&p, &[m]).unwrap();
         let px = &out.rgba[((5 * 40 + 20) * 4) as usize..][..4];
         assert!(px[0] > 200 && px[1] < 80, "the box edge is red: {px:?}");

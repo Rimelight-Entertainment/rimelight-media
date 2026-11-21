@@ -157,6 +157,16 @@ fn wire_shell(app: &Rc<App>) {
             if !viewer::confirm_discard(a) {
                 return;
             }
+            // An unsaved canvas asks in the window first; the close then goes on from the answer.
+            if viewer::canvas_unsaved(a) {
+                viewer::settle_canvas(a, |a| {
+                    // Unsaved text asks in the window; the close then goes on from the answer (finish_close).
+                    if textctl::settle(a, textctl::Pending::Quit) {
+                        finish_close(a);
+                    }
+                });
+                return;
+            }
             // Unsaved text asks in the window; the close then goes on from the answer (finish_close).
             if !textctl::settle(a, textctl::Pending::Quit) {
                 return;
@@ -177,7 +187,13 @@ fn wire_shell(app: &Rc<App>) {
                 let path = path.clone();
                 with_app(move |a| {
                     a.ui.global::<ui::Shell>().set_drop_hover(false);
-                    open_path(a, &path);
+                    // An image dropped while marking up (or on a canvas) comes in as a picture mark, or the canvas.
+                    let markup = a.ui.global::<ui::Shell>().get_page() == "image" && viewer::in_markup(a);
+                    if markup && files::kind_of(&path) == Some(Kind::Image) {
+                        viewer::drop_picture(a, &path);
+                    } else {
+                        open_path(a, &path);
+                    }
                 });
             }
             _ => {}
@@ -212,6 +228,7 @@ pub fn update_title(app: &Rc<App>) {
     let shell = app.ui.global::<ui::Shell>();
     // The file's name alone (what the title shows and the rename box edits), then the title with the app name.
     let (title, name) = match shell.get_page().as_str() {
+        "image" if app.view.borrow().canvas => ("Canvas".to_string(), String::new()),
         "image" => {
             let name = app.view.borrow().path.as_deref().map(files::file_name).unwrap_or_default();
             (if name.is_empty() { "Picture".to_string() } else { name.clone() }, name)
@@ -400,6 +417,16 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
         open_dialog(app);
         return true;
     }
+    // Ctrl+N: the "New canvas" question. Ctrl+V on the home page: the clipboard picture opens as a canvas (the other
+    // pages keep their own paste, in the text editor and the picture page).
+    if ctrl && (text == "n" || text == "N") {
+        app.ui.global::<ui::Shell>().set_canvas_popup_open(true);
+        return true;
+    }
+    if ctrl && (text == "v" || text == "V") && page == "home" {
+        viewer::paste_new(app);
+        return true;
+    }
     if k(Key::F11) {
         toggle_full_screen(app);
         return true;
@@ -489,11 +516,7 @@ pub fn main_hwnd(app: &Rc<App>) -> isize {
 /// The X in the top bar: back to the empty version of this tab (asking first about unsaved changes).
 pub fn close_tab(app: &Rc<App>) {
     match app.ui.global::<ui::Shell>().get_page().as_str() {
-        "image" => {
-            if viewer::confirm_discard(app) {
-                viewer::close(app);
-            }
-        }
+        "image" => viewer::close_tab(app),
         "audio" | "video" => mediactl::close(app),
         "text" => textctl::close(app),
         _ => {}

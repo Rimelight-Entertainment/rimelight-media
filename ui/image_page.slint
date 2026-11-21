@@ -29,7 +29,7 @@ component Swatch inherits Rectangle {
     }
     TouchArea {
         mouse-cursor: pointer;
-        clicked => { Viewer.ink = root.colour; }
+        clicked => { Viewer.pick-colour(root.colour); }
     }
 }
 
@@ -56,6 +56,8 @@ component Handle inherits Rectangle {
 
 export component ImagePage inherits Rectangle {
     background: Tokens.stage;
+    // The custom colour box's text.
+    property <string> hex-text;
 
     // The scale showing now, and zooming around the middle of the stage.
     property <float> cur-scale: Viewer.fit ? Viewer.fit-scale : Viewer.scale;
@@ -79,7 +81,7 @@ export component ImagePage inherits Rectangle {
                 padding-top: 6px;
                 padding-bottom: 6px;
                 spacing: Tokens.space-1;
-                IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: Viewer.dirty; clicked => { Viewer.save(); } }
+                IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: Viewer.dirty || Viewer.canvas; clicked => { Viewer.save(); } }
                 IconButton { icon: Icons.save; label: "Save as (Ctrl+Shift+S)"; clicked => { Viewer.save-as(); } }
                 IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; clicked => { Viewer.copy(); } }
                 IconButton { icon: Icons.printer; label: "Print (Ctrl+P)"; clicked => { Viewer.print(); } }
@@ -104,7 +106,8 @@ export component ImagePage inherits Rectangle {
 
         // Second bar: the edit in progress (crop, draw, resize), under the main one.
         if Viewer.mode != "" && !Shell.full-screen: Rectangle {
-            height: Tokens.bar-height;
+            // Markup takes two rows: the tools, then the colours and the selection actions.
+            height: Viewer.mode == "markup" ? Tokens.bar-height * 2 : Tokens.bar-height;
             background: Tokens.surface-base;
             HorizontalLayout {
                 padding-left: Tokens.space-2;
@@ -135,40 +138,66 @@ export component ImagePage inherits Rectangle {
                     Button { text: "Apply crop"; kind: ButtonKind.primary; clicked => { Viewer.apply-crop(); } }
                 }
 
-                if Viewer.mode == "markup": HorizontalLayout {
+                if Viewer.mode == "markup": VerticalLayout {
                     spacing: Tokens.space-1;
-                    IconButton { icon: Icons.pen; label: "Pen"; active: Viewer.tool == 0; clicked => { Viewer.tool = 0; } }
-                    IconButton { icon: Icons.highlighter; label: "Highlighter"; active: Viewer.tool == 1; clicked => { Viewer.tool = 1; } }
-                    IconButton { icon: Icons.arrow; label: "Arrow"; active: Viewer.tool == 2; clicked => { Viewer.tool = 2; } }
-                    IconButton { icon: Icons.square; label: "Box"; active: Viewer.tool == 3; clicked => { Viewer.tool = 3; } }
-                    IconButton { icon: Icons.text; label: "Text"; active: Viewer.tool == 4; clicked => { Viewer.tool = 4; } }
-                    IconButton { icon: Icons.eraser; label: "Eraser (click a mark)"; active: Viewer.tool == 5; clicked => { Viewer.tool = 5; } }
-                    Divider { }
+                    alignment: center;
                     HorizontalLayout {
                         spacing: Tokens.space-1;
-                        alignment: center;
-                        Swatch { colour: #E5484D; }
-                        Swatch { colour: #FFC14D; }
-                        Swatch { colour: #3FD6B8; }
-                        Swatch { colour: #0D7FFF; }
-                        Swatch { colour: #101014; }
-                        Swatch { colour: #FFFFFF; }
+                        IconButton { icon: Icons.pen; label: "Pen"; active: Viewer.tool == 0; clicked => { Viewer.set-tool(0); } }
+                        IconButton { icon: Icons.highlighter; label: "Highlighter"; active: Viewer.tool == 1; clicked => { Viewer.set-tool(1); } }
+                        IconButton { icon: Icons.arrow; label: "Arrow"; active: Viewer.tool == 2; clicked => { Viewer.set-tool(2); } }
+                        IconButton { icon: Icons.square; label: "Box"; active: Viewer.tool == 3; clicked => { Viewer.set-tool(3); } }
+                        IconButton { icon: Icons.circle; label: "Ellipse"; active: Viewer.tool == 6; clicked => { Viewer.set-tool(6); } }
+                        IconButton { icon: Icons.line; label: "Line"; active: Viewer.tool == 7; clicked => { Viewer.set-tool(7); } }
+                        IconButton { icon: Icons.text; label: "Text"; active: Viewer.tool == 4; clicked => { Viewer.set-tool(4); } }
+                        IconButton { icon: Icons.eraser; label: "Eraser (click a mark)"; active: Viewer.tool == 5; clicked => { Viewer.set-tool(5); } }
+                        Divider { }
+                        IconButton { icon: Icons.brush; label: "Fill the box or ellipse with the colour"; active: Viewer.fill-shape; enabled: Viewer.tool == 3 || Viewer.tool == 6; clicked => { Viewer.fill-shape = !Viewer.fill-shape; } }
+                        Divider { }
+                        IconButton { icon: Icons.pipette; label: "Eyedropper (take a colour from the picture)"; active: Viewer.tool == 8; clicked => { Viewer.set-tool(8); } }
+                        IconButton { icon: Icons.paint-bucket; label: "Paint bucket (fill an area)"; active: Viewer.tool == 9; clicked => { Viewer.set-tool(9); } }
+                        IconButton { icon: Icons.select-rect; label: "Rectangle select"; active: Viewer.tool == 10; clicked => { Viewer.set-tool(10); } }
+                        IconButton { icon: Icons.move; label: "Move (click a mark, then drag it)"; active: Viewer.tool == 11; clicked => { Viewer.set-tool(11); } }
+                        Divider { }
+                        // Thickness, 1 to 40 px.
+                        Slider {
+                            width: 120px;
+                            on-stage: false;
+                            value: (Viewer.ink-width - 1) / 39;
+                            changed(v) => { Viewer.ink-width = 1 + v * 39; }
+                            released(v) => { Viewer.ink-width = 1 + v * 39; }
+                        }
+                        Text { text: round(Viewer.ink-width) + " px"; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; width: 40px; }
+                        Divider { }
+                        IconButton { icon: Icons.trash; label: "Clear all marks"; enabled: Viewer.marks.length > 0; clicked => { Viewer.clear-marks(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button { text: "Cancel"; clicked => { Viewer.set-mode(""); } }
+                        Button { text: "Done"; kind: ButtonKind.primary; clicked => { Viewer.apply-marks(); } }
                     }
-                    Divider { }
-                    // Thickness, 1 to 40 px.
-                    Slider {
-                        width: 120px;
-                        on-stage: false;
-                        value: (Viewer.ink-width - 1) / 39;
-                        changed(v) => { Viewer.ink-width = 1 + v * 39; }
-                        released(v) => { Viewer.ink-width = 1 + v * 39; }
+                    HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        // Twelve colours, the six most recent, and a hex box for any other.
+                        for c in [#101014, #FFFFFF, #8A8A93, #E5484D, #F76B15, #FFC14D, #30A46C, #3FD6B8, #0D7FFF, #8E4EC6, #E93D82, #7C4A2D]: Swatch { colour: c; }
+                        Divider { }
+                        for c in Viewer.recent-colours: Swatch { colour: c; }
+                        Divider { }
+                        LineEdit {
+                            width: 110px;
+                            placeholder-text: "#RRGGBB";
+                            text <=> root.hex-text;
+                            accepted => { Viewer.pick-hex(root.hex-text); }
+                        }
+                        Button { text: "Use"; clicked => { Viewer.pick-hex(root.hex-text); } }
+                        Divider { }
+                        if Viewer.has-sel: HorizontalLayout {
+                            spacing: Tokens.space-1;
+                            Button { text: "Copy"; clicked => { Viewer.copy(); } }
+                            Button { text: "Cut"; clicked => { Viewer.cut-selection(); } }
+                            Button { text: "Crop to selection"; clicked => { Viewer.crop-selection(); } }
+                            Button { text: "Delete"; clicked => { Viewer.delete-selection(); } }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
                     }
-                    Text { text: round(Viewer.ink-width) + " px"; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; width: 40px; }
-                    Divider { }
-                    IconButton { icon: Icons.trash; label: "Clear all marks"; enabled: Viewer.marks.length > 0; clicked => { Viewer.clear-marks(); } }
-                    Rectangle { width: Tokens.space-2; }
-                    Button { text: "Cancel"; clicked => { Viewer.set-mode(""); } }
-                    Button { text: "Done"; kind: ButtonKind.primary; clicked => { Viewer.apply-marks(); } }
                 }
 
                 if Viewer.mode == "resize": HorizontalLayout {
@@ -285,7 +314,7 @@ export component ImagePage inherits Rectangle {
                     height: stage.ph;
                     clip: true;
                     for m in Viewer.marks: Rectangle {
-                        if m.kind != 4: Path {
+                        if m.kind != 4 && m.kind != 5: Path {
                             width: stage.pw;
                             height: stage.ph;
                             viewbox-x: 0;
@@ -296,7 +325,7 @@ export component ImagePage inherits Rectangle {
                             stroke: m.colour;
                             stroke-width: m.width * stage.s * 1px;
                             stroke-line-cap: round;
-                            fill: transparent;
+                            fill: m.filled ? m.colour : transparent;
                         }
                         if m.kind == 4: Text {
                             x: m.x * stage.s * 1px;
@@ -306,6 +335,50 @@ export component ImagePage inherits Rectangle {
                             font-size: max(1px, m.width * stage.s * 1px);
                             font-weight: 600;
                         }
+                        // A picture mark: its pixels in its rectangle.
+                        if m.kind == 5: Image {
+                            x: m.x * stage.s * 1px;
+                            y: m.y * stage.s * 1px;
+                            width: m.w * stage.s * 1px;
+                            height: m.h * stage.s * 1px;
+                            source: m.picture;
+                            image-fit: fill;
+                        }
+                    }
+                }
+
+                // The rectangle selection, and the box of the picked mark (its corner handle resizes a picture or a shape).
+                if Viewer.has-sel: Rectangle {
+                    x: stage.px + Viewer.sel-x * stage.s * 1px;
+                    y: stage.py + Viewer.sel-y * stage.s * 1px;
+                    width: max(1px, Viewer.sel-w * stage.s * 1px);
+                    height: max(1px, Viewer.sel-h * stage.s * 1px);
+                    border-width: 1px;
+                    border-color: #000000;
+                    Rectangle {
+                        x: -1px;
+                        y: -1px;
+                        width: parent.width + 2px;
+                        height: parent.height + 2px;
+                        border-width: 1px;
+                        border-color: #FFFFFFC0;
+                    }
+                }
+                if Viewer.has-box: Rectangle {
+                    x: stage.px + Viewer.box-x * stage.s * 1px;
+                    y: stage.py + Viewer.box-y * stage.s * 1px;
+                    width: max(2px, Viewer.box-w * stage.s * 1px);
+                    height: max(2px, Viewer.box-h * stage.s * 1px);
+                    border-width: 1px;
+                    border-color: Tokens.accent-default;
+                    Rectangle {
+                        x: parent.width - 4px;
+                        y: parent.height - 4px;
+                        width: 8px;
+                        height: 8px;
+                        background: #FFFFFF;
+                        border-width: 1px;
+                        border-color: Tokens.accent-default;
                     }
                 }
 
