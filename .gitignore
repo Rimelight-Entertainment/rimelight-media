@@ -1,7 +1,7 @@
-ffmpeg/
-shots/
-target/
-publish/
-releases/
-dist/
-ffmpeg-work/
+/ffmpeg/
+/shots/
+/target/
+/publish/
+/releases/
+/dist/
+/ffmpeg-work/
