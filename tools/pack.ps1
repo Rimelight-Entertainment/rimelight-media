@@ -43,7 +43,7 @@ try {
     Start-Process -FilePath (Join-Path $publish 'rimelight-media.exe') -ArgumentList '--write-icon', "`"$icon`"" -Wait -NoNewWindow
 
     # The Velopack CLI, pinned here and in .github/workflows/release.yml (VPK_VERSION).
-    $vpkVersion = '1.3.39'
+    $vpkVersion = '1.2.161'
     dotnet tool update --global vpk --version $vpkVersion | Out-Null
     $out = Join-Path $root 'releases'
     vpk pack --packId RimelightMedia --packVersion $Version --packDir $publish --mainExe rimelight-media.exe `

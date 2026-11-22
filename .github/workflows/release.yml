@@ -21,7 +21,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # The Velopack CLI version. Keep in step with tools/pack.ps1 ($vpkVersion).
-  VPK_VERSION: "1.3.39"
+  VPK_VERSION: "1.2.161"
 
 jobs:
   windows:
