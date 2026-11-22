@@ -42,9 +42,11 @@ try {
     $icon = Join-Path $root 'target\rimelight-media.ico'
     Start-Process -FilePath (Join-Path $publish 'rimelight-media.exe') -ArgumentList '--write-icon', "`"$icon`"" -Wait -NoNewWindow
 
-    dotnet tool restore | Out-Null
+    # The Velopack CLI, pinned here and in .github/workflows/release.yml (VPK_VERSION).
+    $vpkVersion = '1.3.39'
+    dotnet tool update --global vpk --version $vpkVersion | Out-Null
     $out = Join-Path $root 'releases'
-    dotnet vpk pack --packId RimelightMedia --packVersion $Version --packDir $publish --mainExe rimelight-media.exe `
+    vpk pack --packId RimelightMedia --packVersion $Version --packDir $publish --mainExe rimelight-media.exe `
         --packTitle 'Rimelight Media' --packAuthors 'Rimelight Entertainment' --icon $icon --outputDir $out `
         --shortcuts None
     # No installer-made shortcuts: the app makes Start menu > Rimelight > Rimelight Media and the optional Desktop one

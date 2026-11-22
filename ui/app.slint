@@ -2,9 +2,10 @@
 // capture.slint.
 import { Tokens, Type, ThemeChoice } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { IconButton, Button, ButtonKind, Choice, TipBounds, ConfirmDialog, ToolBar, ToolDivider, StatusBar, EmptyState } from "widgets.slint";
+import { IconButton, Button, ButtonKind, Choice, TipBounds, ConfirmDialog, ToolBar, ToolDivider, StatusBar, EmptyState, FileKindTile, ShortcutsCtl } from "widgets.slint";
 import { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, RecentItem, Mark, MdBlock, MdCell, JsonRow, Cast } from "state.slint";
 import { CastPopup } from "cast_popup.slint";
+import { ShortcutsOverlay } from "shortcuts.slint";
 import { HomePage } from "home.slint";
 import { ImagePage } from "image_page.slint";
 import { MediaPage } from "media_page.slint";
@@ -23,6 +24,8 @@ component NavButton inherits Rectangle {
     in property <bool> active;
     // Show the icon in its own colours (the app logo).
     in property <bool> full-colour;
+    // A file kind ("picture", "video", "music" or "text"): shows that kind's Explorer tile instead of `icon`.
+    in property <string> kind;
     callback clicked();
     height: Tokens.control-height;
     width: row.preferred-width + Tokens.space-4;
@@ -33,13 +36,18 @@ component NavButton inherits Rectangle {
     row := HorizontalLayout {
         alignment: center;
         spacing: Tokens.space-2;
-        if !root.full-colour: Rectangle {
+        // Each icon is centred vertically in the row (the row stretches its children to its full height).
+        if root.kind != "": Rectangle {
+            width: 18px;
+            FileKindTile { kind: root.kind; tile-size: 18px; y: (parent.height - self.height) / 2; }
+        }
+        if !root.full-colour && root.kind == "": Rectangle {
             width: Tokens.icon-small;
-            Image { source: root.icon; width: Tokens.icon-small; height: Tokens.icon-small; colorize: root.active ? Tokens.accent-text : Tokens.text-muted; }
+            Image { source: root.icon; width: Tokens.icon-small; height: Tokens.icon-small; y: (parent.height - self.height) / 2; colorize: root.active ? Tokens.accent-text : Tokens.text-muted; }
         }
         if root.full-colour: Rectangle {
             width: 18px;
-            Image { source: root.icon; width: 18px; height: 18px; }
+            Image { source: root.icon; width: 18px; height: 18px; y: (parent.height - self.height) / 2; }
         }
         Text { text: root.label; color: root.active ? Tokens.text-primary : Tokens.text-muted; font-size: Type.body; vertical-alignment: center; }
     }
@@ -55,7 +63,8 @@ component NavButton inherits Rectangle {
 component MediaSlot inherits Rectangle {
     in property <bool> want-video;
     property <bool> loaded: Player.media-title != "" && Player.has-video == root.want-video;
-    background: Tokens.stage;
+    // The empty tab uses the shared page colour; media plays on the dark stage.
+    background: root.loaded ? Tokens.stage : Tokens.surface-base;
 
     VerticalLayout {
         // Left: file actions (Open, Save, Save as, Share), then the trim edits (Undo, Redo, Discard). Right: Trim, and
@@ -66,6 +75,7 @@ component MediaSlot inherits Rectangle {
                 label: root.want-video ? "Open a video (Ctrl+O)" : "Open a song (Ctrl+O)";
                 clicked => { Shell.open-file(); }
             }
+            IconButton { icon: Icons.folder-search; label: "Show in folder"; enabled: root.loaded; clicked => { Player.open-folder(); } }
             ToolDivider { }
             IconButton { icon: Icons.save; label: "Save (replaces the file with the trim)"; enabled: root.loaded && Player.trim-dirty && !Player.exporting; clicked => { Player.save-in-place(); } }
             IconButton { icon: Icons.save-as; label: "Save as (trimmed copy)"; enabled: root.loaded && !Player.exporting; clicked => { Player.trim-save(); } }
@@ -80,7 +90,7 @@ component MediaSlot inherits Rectangle {
             if Shell.recording || (Player.media-title != "" && Player.has-video == root.want-video): ToolDivider { }
             if Shell.recording: IconButton { icon: Icons.stop; label: "Stop recording"; clicked => { Shell.stop-recording(); } }
             // Closes the open file and stops it (shown only while one is loaded on this tab).
-            if Player.media-title != "" && Player.has-video == root.want-video: IconButton { icon: Icons.x; label: "Close and stop"; clicked => { Shell.close-tab(); } }
+            IconButton { icon: Icons.x; label: "Close and stop"; enabled: root.loaded; clicked => { Shell.close-tab(); } }
         }
 
         Rectangle {
@@ -90,8 +100,7 @@ component MediaSlot inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 on-stage: true;
-                icon: root.want-video ? Icons.video : Icons.music;
-                icon-colour: root.want-video ? Tokens.file-video : Tokens.file-music;
+                icon-kind: root.want-video ? "video" : "music";
                 title: root.want-video ? "Open a video" : "Open a song";
                 formats: root.want-video ? ".3gp, .avi, .flv, .m2ts, .m4v, .mkv, .mov, .mp4, .mpeg, .mpg, .mts, .ogv, .webm, .wmv" : ".aac, .aif, .aiff, .flac, .m4a, .mp3, .oga, .ogg, .opus, .wav, .wma";
                 open-text: "Open a file";
@@ -139,6 +148,16 @@ export component AppWindow inherits Window {
     }
     keys := FocusScope {
         key-pressed(e) => {
+            // Ctrl+? (Ctrl+/ too) shows or hides the shortcut list. While it is open, Escape closes it and the other keys
+            // do nothing, so a tab switch or a file action cannot happen behind it.
+            if e.modifiers.control && (e.text == "?" || e.text == "/") {
+                ShortcutsCtl.open = !ShortcutsCtl.open;
+                return accept;
+            }
+            if ShortcutsCtl.open {
+                if e.text == Key.Escape { ShortcutsCtl.open = false; }
+                return accept;
+            }
             if Shell.key(e.text, e.modifiers.control, e.modifiers.shift, e.modifiers.alt) { return accept; }
             reject
         }
@@ -155,11 +174,11 @@ export component AppWindow inherits Window {
                     padding-top: 6px;
                     padding-bottom: 6px;
                     spacing: Tokens.space-1;
-                    NavButton { icon: Icons.logo; full-colour: true; label: "Home"; active: Shell.page == "home"; clicked => { Shell.go("home"); } }
-                    NavButton { icon: Icons.image; label: "Image"; active: Shell.page == "image"; clicked => { Shell.go("image"); } }
-                    NavButton { icon: Icons.music; label: "Audio"; active: Shell.page == "audio"; clicked => { Shell.go("audio"); } }
-                    NavButton { icon: Icons.video; label: "Video"; active: Shell.page == "video"; clicked => { Shell.go("video"); } }
-                    NavButton { icon: Icons.text; label: "Text"; active: Shell.page == "text"; clicked => { Shell.go("text"); } }
+                    NavButton { icon: Icons.app-icon; full-colour: true; label: "Home"; active: Shell.page == "home"; clicked => { Shell.go("home"); } }
+                    NavButton { kind: "picture"; label: "Image"; active: Shell.page == "image"; clicked => { Shell.go("image"); } }
+                    NavButton { kind: "music"; label: "Audio"; active: Shell.page == "audio"; clicked => { Shell.go("audio"); } }
+                    NavButton { kind: "video"; label: "Video"; active: Shell.page == "video"; clicked => { Shell.go("video"); } }
+                    NavButton { kind: "text"; label: "Text"; active: Shell.page == "text"; clicked => { Shell.go("text"); } }
                 }
                 right-group := HorizontalLayout {
                     x: parent.width - self.width - Tokens.space-2;
@@ -294,6 +313,16 @@ export component AppWindow inherits Window {
             primary-text: Shell.confirm-primary;
             secondary-text: Shell.confirm-secondary;
             answer(choice) => { Shell.confirm-answer(choice); }
+        }
+
+        // The Ctrl+? shortcut list for the current tab (ui/shortcuts.slint).
+        if ShortcutsCtl.open: ShortcutsOverlay {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            page: Shell.page;
+            close => { ShortcutsCtl.open = false; }
         }
     }
 }

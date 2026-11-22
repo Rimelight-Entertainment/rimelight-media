@@ -83,6 +83,27 @@ pub fn sibling_pictures(path: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The files of one kind (audio or video) in the same folder, in the same natural order as `sibling_pictures`. The open
+/// file is always in the list, even when its extension is not the kind asked for.
+pub fn sibling_media(path: &Path, want: Kind) -> Vec<PathBuf> {
+    let Some(dir) = path.parent() else {
+        return vec![path.to_path_buf()];
+    };
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && kind_of(p) == Some(want))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !out.iter().any(|p| p == path) {
+        out.push(path.to_path_buf());
+    }
+    out.sort_by(|a, b| natural_key(a).cmp(&natural_key(b)));
+    out
+}
+
 fn natural_key(p: &Path) -> Vec<(u8, u64, String)> {
     let name = p
         .file_name()
@@ -178,13 +199,21 @@ pub fn free_path(dir: &Path, name: &str, ext: &str) -> PathBuf {
 
 /// Opens Explorer with the file selected (or the folder).
 pub fn reveal(path: &Path) {
-    let _ = if path.is_file() {
-        std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path.display()))
-            .spawn()
+    let mut cmd = std::process::Command::new("explorer");
+    if path.is_file() {
+        // Explorer reads `/select,"path"` as one raw argument. Rust's own quoting of `/select,<path>` breaks on a path
+        // with spaces, and Explorer then opens Documents instead.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+        }
+        #[cfg(not(windows))]
+        cmd.arg(format!("/select,{}", path.display()));
     } else {
-        std::process::Command::new("explorer").arg(path).spawn()
-    };
+        cmd.arg(path);
+    }
+    let _ = cmd.spawn();
 }
 
 #[cfg(test)]

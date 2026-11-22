@@ -1,8 +1,8 @@
 [package]
 name = "rimelight-media"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
-license = "LicenseRef-Proprietary"
+license = "MIT"
 publish = false
 description = "Rimelight Media: pictures, video, music, screenshots and screen recording in one small app"
 default-run = "rimelight-media"

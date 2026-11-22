@@ -20,6 +20,8 @@ struct Grab {
     handle: Option<(i8, i8)>,
     start: (f32, f32),
     origin: Mark,
+    /// Shift was held when the handle was pressed: a corner drag keeps the box's proportions.
+    keep_ratio: bool,
 }
 
 /// The handle of a mark's box under (x, y), if any: the 4 corners and the 4 edge middles. An axis the box has no
@@ -50,7 +52,8 @@ fn handle_at(m: &Mark, x: f32, y: f32, reach: f32) -> Option<(i8, i8)> {
 
 /// The mark resized by dragging its handle (hx, hy) by (dx, dy) picture pixels: the opposite side stays put and every
 /// point scales within the box. Strokes and shapes keep their stroke width; text scales its font size instead.
-fn resized(origin: &Mark, hx: i8, hy: i8, dx: f32, dy: f32) -> Mark {
+/// With `keep` (Shift held) a corner drag keeps the box's own proportions: the height follows the width.
+fn resized(origin: &Mark, hx: i8, hy: i8, dx: f32, dy: f32, keep: bool) -> Mark {
     let (x0, y0, w, h) = origin.bounds();
     let (mut nl, mut nr, mut nt, mut nb) = (x0, x0 + w, y0, y0 + h);
     match hx {
@@ -62,6 +65,15 @@ fn resized(origin: &Mark, hx: i8, hy: i8, dx: f32, dy: f32) -> Mark {
         -1 => nt = (nt + dy).min(nb - 1.0),
         1 => nb = (nb + dy).max(nt + 1.0),
         _ => {}
+    }
+    if keep && hx != 0 && hy != 0 && w >= 1.0 && h >= 1.0 {
+        // The opposite corner stays put; the dragged side moves to the height the width gives at the original ratio.
+        let nh = (nr - nl) * h / w;
+        if hy == 1 {
+            nb = nt + nh;
+        } else {
+            nt = nb - nh;
+        }
     }
     let (nw, nh) = (nr - nl, nb - nt);
     let mut m = origin.clone();
@@ -161,7 +173,13 @@ pub struct ViewState {
     mark_images: Vec<(Arc<Picture>, slint::Image)>,
     /// What to do after the in-app question about unsaved canvas changes.
     pending: Option<Then>,
+    /// The slideshow: running (on) and the timer that moves on to the next picture every SLIDESHOW_SECS.
+    slideshow: bool,
+    slideshow_timer: slint::Timer,
 }
+
+/// Seconds each picture stays on screen in the slideshow.
+const SLIDESHOW_SECS: u64 = 4;
 
 /// Picture edits kept for Undo and Redo, capped by their total size (a large photo or canvas is tens of MB per step).
 const HISTORY_BYTES: usize = 256 * 1024 * 1024;
@@ -246,6 +264,7 @@ pub fn wire(app: &Rc<App>) {
     v.on_print(|| with_app(print));
     v.on_share(|| with_app(share));
     v.on_toggle_filmstrip(|| with_app(toggle_filmstrip));
+    v.on_toggle_slideshow(|| with_app(slideshow_toggle));
     v.on_thumb_clicked(|i, add| with_app(move |a| thumb_clicked(a, i as usize, add)));
     v.on_close_compare(|| with_app(close_compare));
     v.on_clear_marks(|| {
@@ -622,15 +641,85 @@ fn edit(app: &Rc<App>, f: impl FnOnce(&Picture) -> Picture) {
         }
     };
     if changed {
+        // A changed picture ends the slideshow (the next picture would drop the edit).
+        slideshow_stop(app);
         viewer(app).set_dirty(true);
         show_picture(app, false);
         refresh_undo(app);
     }
 }
 
+/// Starts the slideshow, or stops it when it runs (the Slideshow button and the S key). It needs a folder of at least
+/// two pictures and no unsaved changes.
+pub fn slideshow_toggle(app: &Rc<App>) {
+    if app.view.borrow().slideshow {
+        slideshow_stop(app);
+        return;
+    }
+    let (canvas, count) = {
+        let s = app.view.borrow();
+        (s.canvas, s.folder.len())
+    };
+    if canvas || count < 2 {
+        toast(app, "The slideshow needs a folder with two or more pictures.");
+        return;
+    }
+    if viewer(app).get_dirty() || !viewer(app).get_mode().is_empty() {
+        toast(app, "Finish or undo the change first, then start the slideshow.");
+        return;
+    }
+    {
+        let mut s = app.view.borrow_mut();
+        s.slideshow = true;
+        s.slideshow_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_secs(SLIDESHOW_SECS),
+            || with_app(slideshow_tick),
+        );
+    }
+    viewer(app).set_slideshow_on(true);
+}
+
+/// Ends the slideshow. Safe to call when it is not running.
+pub fn slideshow_stop(app: &Rc<App>) {
+    {
+        let mut s = app.view.borrow_mut();
+        s.slideshow = false;
+        s.slideshow_timer.stop();
+    }
+    viewer(app).set_slideshow_on(false);
+}
+
+/// One slideshow step: the next picture in the folder, wrapping from the last back to the first. It stops instead when
+/// the Image tab is no longer shown, a canvas or markup/crop/resize is open, or the picture has unsaved changes.
+fn slideshow_tick(app: &Rc<App>) {
+    if !app.view.borrow().slideshow {
+        return;
+    }
+    // The tick also runs on other tabs: it must not open a picture there (open() switches to the Image tab).
+    if app.ui.global::<ui::Shell>().get_page() != "image" {
+        slideshow_stop(app);
+        return;
+    }
+    let next = {
+        let s = app.view.borrow();
+        let n = s.folder.len();
+        (!s.canvas && n >= 2).then(|| s.folder[(s.index + 1) % n].clone())
+    };
+    let v = viewer(app);
+    match next {
+        Some(p) if !v.get_dirty() && v.get_mode().is_empty() => open(app, &p),
+        _ => slideshow_stop(app),
+    }
+}
+
 pub fn set_mode(app: &Rc<App>, mode: &str) {
     // An open text box is committed on a mode switch, so it is a normal mark from then on.
     commit_text(app);
+    if !mode.is_empty() {
+        // Crop, resize and markup stop the slideshow: its next picture would drop the edit in progress.
+        slideshow_stop(app);
+    }
     let v = viewer(app);
     clear_markup(&mut app.view.borrow_mut());
     v.set_text_x(-1.0);
@@ -1052,6 +1141,7 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
             handle,
             start: (x, y),
             origin,
+            keep_ratio: v.get_mark_shift(),
         });
         return;
     }
@@ -1078,6 +1168,7 @@ fn mark_begin(app: &Rc<App>, x: f32, y: f32) {
                         handle: None,
                         start: (x, y),
                         origin: s.marks[i].clone(),
+                        keep_ratio: false,
                     });
                     s.selected = hit;
                 }
@@ -1171,7 +1262,7 @@ fn mark_move(app: &Rc<App>, x: f32, y: f32) {
         let (dx, dy) = (x - g.start.0, y - g.start.1);
         if let Some(m) = s.marks.get_mut(g.index) {
             match g.handle {
-                Some((hx, hy)) => *m = resized(&g.origin, hx, hy, dx, dy),
+                Some((hx, hy)) => *m = resized(&g.origin, hx, hy, dx, dy, g.keep_ratio),
                 None => {
                     m.points = g
                         .origin
@@ -1937,6 +2028,8 @@ pub fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool) -> bool {
         set_mode(app, "markup");
     } else if text == "i" {
         v.set_show_info(!v.get_show_info());
+    } else if text == "s" || text == "S" {
+        slideshow_toggle(app);
     } else {
         return false;
     }
@@ -2140,6 +2233,7 @@ fn delete_current(app: &Rc<App>) {
 
 /// Empties the picture tab and frees the picture, its edits and the filmstrip.
 pub fn close(app: &Rc<App>) {
+    slideshow_stop(app);
     {
         let mut s = app.view.borrow_mut();
         stop_anim(&mut s);
@@ -2271,6 +2365,7 @@ pub fn answer(app: &Rc<App>, choice: i32) {
 
 /// Ctrl+N and the top bar's Canvas button ask for the size with the "New canvas" popup; this makes the canvas.
 fn new_canvas(app: &Rc<App>, preset: i32, w: &str, h: &str, transparent: bool) {
+    slideshow_stop(app);
     let Some((w, h)) = canvas_size(app, preset, w, h) else {
         toast(app, "Type a width and a height from 1 to 10000 pixels.");
         return;

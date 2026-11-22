@@ -14,15 +14,17 @@ component Section inherits VerticalLayout {
     @children
 }
 
+// Description on the left, keys on the right.
 component KeyRow inherits HorizontalLayout {
     in property <string> keys;
     in property <string> action;
     spacing: Tokens.space-3;
     min-height: 28px;
+    Text { text: root.action; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
     Rectangle {
         width: 190px;
         Rectangle {
-            x: 0;
+            x: parent.width - self.width;
             width: k.preferred-width + 16px;
             height: 24px;
             border-radius: Tokens.radius-control;
@@ -32,7 +34,6 @@ component KeyRow inherits HorizontalLayout {
             k := Text { text: root.keys; color: Tokens.text-primary; font-size: Type.caption; }
         }
     }
-    Text { text: root.action; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
 }
 
 component FolderRow inherits HorizontalLayout {
@@ -124,6 +125,7 @@ export component SettingsPage inherits Rectangle {
                 Section {
                     title: "Install, updates and default apps";
                     detail: "The installer puts Rimelight Media in your user folder, the Start menu and Apps > Installed apps (uninstall it there). Installed copies update themselves from the GitHub releases. Then pick Rimelight Media as the default for pictures, video and music.";
+                    // The "Set as default app" button opens Windows' Default apps page for Rimelight Media.
                     Card {
                         VerticalLayout {
                             padding: Tokens.space-4;
@@ -136,17 +138,11 @@ export component SettingsPage inherits Rectangle {
                                 Button { text: "Releases"; has-icon: true; icon: Icons.external; clicked => { Settings.open-releases(); } }
                             }
                             if Settings.update-state != "": Text { text: Settings.update-state; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
-                            if Settings.installed: Toggle {
-                                text: "Create a desktop shortcut";
-                                checked <=> Settings.desktop-shortcut;
-                                toggled => { Settings.changed(); }
-                            }
                             Rectangle { height: 1px; background: Tokens.border-subtle; }
-                            Text { text: Settings.defaults-state; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
                             HorizontalLayout {
                                 spacing: Tokens.space-2;
                                 alignment: start;
-                                Button { text: "Register file types"; clicked => { Settings.register-defaults(); } }
+                                Button { text: "Set as default app"; clicked => { Settings.register-defaults(); } }
                                 Button {
                                     text: "Open Windows default apps";
                                     has-icon: true;
@@ -160,14 +156,21 @@ export component SettingsPage inherits Rectangle {
 
                 Section {
                     title: "Keys and background";
-                    detail: "Rimelight Media listens for these keys while it is open. Turn on \"Keep running\" so they also work after you close the window; Rimelight Media then starts with Windows and waits in the system tray.";
+                    detail: "Rimelight Media listens for these keys while it is open. Turn on \"Close to tray\" so they also work after you close the window; Rimelight Media then waits in the system tray.";
                     Card {
                         VerticalLayout {
                             padding: Tokens.space-4;
                             spacing: Tokens.space-2;
                             Toggle {
-                                text: "Keep running in the tray and start with Windows";
+                                text: "Close to tray";
+                                detail: "Keep running in the system tray when the window is closed.";
                                 checked <=> Settings.background;
+                                toggled => { Settings.changed(); }
+                            }
+                            Toggle {
+                                text: "Start with Windows";
+                                detail: "Launch Rimelight Media in the tray when you sign in.";
+                                checked <=> Settings.start-with-windows;
                                 toggled => { Settings.changed(); }
                             }
                             Toggle {
@@ -182,15 +185,6 @@ export component SettingsPage inherits Rectangle {
                             KeyRow { keys: "Ctrl + Print Screen"; action: "Save the whole screen at once"; }
                             KeyRow { keys: "Shift + Print Screen"; action: "Start or stop a screen recording"; }
                             Text { text: Settings.hotkeys-status; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
-                            HorizontalLayout {
-                                alignment: start;
-                                Button {
-                                    text: "Windows Print Screen setting";
-                                    has-icon: true;
-                                    icon: Icons.external;
-                                    clicked => { Settings.open-printscreen-settings(); }
-                                }
-                            }
                         }
                     }
                 }
@@ -248,21 +242,24 @@ export component SettingsPage inherits Rectangle {
                     // Required by the Slint royalty-free licence (as in rimelight-space's About screen). A small inline badge.
                     HorizontalLayout {
                         alignment: start;
+                        // No fixed height or clip: the badge takes its own size so the logo is never cropped.
                         Rectangle {
-                            width: 150px;
-                            height: 28px;
-                            clip: true;
                             background: #FFFFFF;
                             border-radius: Tokens.radius-r8;
-                            AboutSlint { }
+                            HorizontalLayout {
+                                padding: Tokens.space-2;
+                                AboutSlint { }
+                            }
                         }
                     }
                     // Third-party software. One row per entry: add one by copying a line below.
                     VerticalLayout {
                         spacing: Tokens.space-1;
+                        Text { text: "Built With"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; wrap: word-wrap; }
                         CreditRow { header: true; name: "Component"; role: "What it is used for"; licence: "Licence"; link: "Link"; }
                         Rectangle { height: 1px; background: Tokens.border-subtle; }
                         for credit in [
+                            { name: "Rust", role: "Programming language", licence: "MIT or Apache-2.0", link: "rust-lang.org", url: "https://www.rust-lang.org" },
                             { name: "Slint", role: "User interface toolkit", licence: "Royalty-free", link: "slint.dev", url: "https://slint.dev" },
                             { name: "FFmpeg", role: "Video and sound", licence: "LGPL", link: "ffmpeg.org", url: "https://ffmpeg.org" },
                             { name: "image", role: "Picture decoding and saving", licence: "MIT or Apache-2.0", link: "crates.io", url: "https://crates.io/crates/image" },

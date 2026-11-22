@@ -18,6 +18,29 @@ export struct RecentItem {
     index: int,
 }
 
+// The file-type tile Explorer uses for each kind of file: a rounded gradient square with a white glyph (the same artwork
+// as src/install.rs). kind: "picture", "video", "music" or "text". tile-size: the side of the square.
+export component FileKindTile inherits Rectangle {
+    in property <string> kind;
+    in property <length> tile-size: 18px;
+    property <color> top-colour: root.kind == "picture" ? #7DD3FC : root.kind == "video" ? #C4B5FD : root.kind == "music" ? #FDA4AF : #86EFAC;
+    property <color> bottom-colour: root.kind == "picture" ? #0284C7 : root.kind == "video" ? #7C3AED : root.kind == "music" ? #E11D48 : #16A34A;
+    property <image> glyph: root.kind == "picture" ? Icons.image : root.kind == "video" ? Icons.video : root.kind == "music" ? Icons.music : Icons.text;
+    width: root.tile-size;
+    height: root.tile-size;
+    border-radius: root.tile-size * 0.22;
+    background: @linear-gradient(135deg, root.top-colour 0%, root.bottom-colour 100%);
+    Image {
+        // The glyph covers about 59% of the square, centred (Explorer's artwork: 150 of 256 px, offset 53).
+        x: root.width * 0.207;
+        y: root.height * 0.207;
+        width: root.width * 0.586;
+        height: root.height * 0.586;
+        source: root.glyph;
+        colorize: #FFFFFF;
+    }
+}
+
 // An icon button: a fixed square (`size`), the icon centred in it. `enabled: false` dims it and blocks clicks.
 export component IconButton inherits Rectangle {
     in property <image> icon;
@@ -498,6 +521,11 @@ export component ActionRow inherits Rectangle {
 // The bottom bar of a tab: the same height on every tab, always shown (empty left text when nothing is open).
 // Left: left-text (metadata joined with " | "), elided. Middle: center-text, when set. Right: @children (icon buttons
 // and short controls, vertically centred).
+// The Ctrl+? shortcut list: `open` is true while it is shown. Every status bar sets it; the app window shows the list.
+export global ShortcutsCtl {
+    in-out property <bool> open;
+}
+
 export component StatusBar inherits Rectangle {
     in property <string> left-text;
     in property <string> center-text;
@@ -507,7 +535,8 @@ export component StatusBar inherits Rectangle {
 
     HorizontalLayout {
         padding-left: Tokens.space-2;
-        padding-right: Tokens.space-2;
+        // Room for the shortcuts button at the right edge (see below).
+        padding-right: Tokens.space-2 + 28px + Tokens.space-3;
         padding-top: (Tokens.status-height - 28px) / 2;
         padding-bottom: (Tokens.status-height - 28px) / 2;
         spacing: Tokens.space-3;
@@ -536,6 +565,16 @@ export component StatusBar inherits Rectangle {
             @children
         }
     }
+    // Rightmost on every page: opens the Ctrl+? shortcut list. Placed at the right edge; the row leaves room for it.
+    IconButton {
+        x: root.width - self.width - Tokens.space-2;
+        y: (root.height - self.height) / 2;
+        size: 28px;
+        icon-size: Tokens.icon-small;
+        icon: Icons.keyboard;
+        label: "Keyboard shortcuts (Ctrl+?)";
+        clicked => { ShortcutsCtl.open = true; }
+    }
     Rectangle { y: 0px; height: 1px; background: Tokens.border-subtle; }
 }
 
@@ -556,7 +595,7 @@ export component ToolDivider inherits Rectangle {
 export component RecentRow inherits Rectangle {
     in property <RecentItem> item;
     callback clicked();
-    height: 48px;
+    height: Tokens.row-height;
     border-radius: Tokens.radius-control;
     background: ta.has-hover ? Tokens.surface-hover : transparent;
     HorizontalLayout {
@@ -564,14 +603,13 @@ export component RecentRow inherits Rectangle {
         padding-right: Tokens.space-3;
         spacing: Tokens.space-3;
         alignment: start;
+        // The same Explorer tile as the empty pages, per file kind.
         Rectangle {
             width: Tokens.icon-medium;
-            Image {
-                source: root.item.kind == "image" ? Icons.image : root.item.kind == "video" ? Icons.video : root.item.kind == "text" ? Icons.text : Icons.music;
-                width: Tokens.icon-medium;
-                height: Tokens.icon-medium;
+            FileKindTile {
+                kind: root.item.kind == "image" ? "picture" : root.item.kind == "audio" ? "music" : root.item.kind;
+                tile-size: Tokens.icon-medium;
                 y: (parent.height - self.height) / 2;
-                colorize: root.item.kind == "image" ? Tokens.file-picture : root.item.kind == "video" ? Tokens.file-video : root.item.kind == "text" ? Tokens.file-text : Tokens.file-music;
             }
         }
         VerticalLayout {
@@ -591,12 +629,54 @@ export component RecentRow inherits Rectangle {
 // the supported file types, the Open button and, when new-text is set, the New button beside it. The tab's Recent list
 // (already filtered to its kind by the host) sits under the buttons, with a Clear button that clears that kind.
 // on-stage: the light-on-dark look for the picture and video stage. The host supplies the background.
+// The Recent list, the same on the home page and every empty tab: a header with Clear (only when there are files), then
+// a card that always shows: the rows, or a line saying the list is empty.
+export component RecentBlock inherits VerticalLayout {
+    in property <[RecentItem]> recents;
+    in property <color> ink: Tokens.text-primary;
+    in property <color> muted: Tokens.text-muted;
+    callback open-recent(int);
+    callback clear-recents();
+
+    spacing: Tokens.space-2;
+    // A fixed height: the header is the same whether or not Clear is shown, so only the list below changes.
+    HorizontalLayout {
+        height: Tokens.control-height;
+        Text { text: "Recent"; color: root.ink; font-size: Type.subheading; font-weight: 600; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        if root.recents.length > 0: Button { text: "Clear"; kind: ButtonKind.ghost; clicked => { root.clear-recents(); } }
+    }
+    Card {
+        VerticalLayout {
+            padding: Tokens.space-1;
+            if root.recents.length == 0: Text {
+                text: "Files you open show up here.";
+                color: root.muted;
+                font-size: Type.body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                height: Tokens.row-height;
+            }
+            for r[i] in root.recents: RecentRow {
+                item: r;
+                clicked => { root.open-recent(r.index); }
+            }
+        }
+    }
+}
+
 export component EmptyState inherits Rectangle {
     in property <image> icon;
     in property <color> icon-colour: Tokens.text-muted;
+    // The icon keeps its own colours (the app icon); otherwise it is tinted with icon-colour.
+    in property <bool> icon-full-colour: false;
+    // A file kind ("picture", "video", "music" or "text"): shows that kind's Explorer tile instead of `icon`.
+    in property <string> icon-kind;
     in property <string> title;
-    // The types the open button takes, e.g. ".png, .jpg and more". The words "Supported file types: " go in front.
+    // The types the open button takes, e.g. ".png, .jpg and more". A "Supported file types:" label sits above them.
     in property <string> formats;
+    // A sentence shown in place of the types (the home page). Empty: the types are shown.
+    in property <string> hint;
     in property <string> open-text: "Open a file";
     // Empty: no new-file button (audio, for example).
     in property <string> new-text: "";
@@ -613,72 +693,76 @@ export component EmptyState inherits Rectangle {
 
     ScrollView {
         VerticalLayout {
-            // At least the visible height, so the block sits in the middle (it scrolls when the recent list is long).
-            min-height: root.height;
-            padding-top: Tokens.space-6;
+            // Every empty tab and the home page use this one layout: the top section starts at the same height and has
+            // fixed-height rows, so nothing moves when the text changes. The Recent list starts below it, the same place
+            // everywhere. The list scrolls.
+            padding-top: Tokens.space-8;
             padding-bottom: Tokens.space-6;
             padding-left: Tokens.space-6;
             padding-right: Tokens.space-6;
-            spacing: Tokens.space-4;
-            alignment: center;
+            alignment: start;
             HorizontalLayout {
                 alignment: center;
                 VerticalLayout {
-                    width: min(560px, root.width - 2 * Tokens.space-6);
-                    spacing: Tokens.space-3;
+                    width: min(640px, root.width - 2 * Tokens.space-6);
                     alignment: start;
-                    HorizontalLayout {
-                        alignment: center;
-                        Image { source: root.icon; width: 56px; height: 56px; colorize: root.icon-colour; }
-                    }
-                    Text {
-                        text: root.title;
-                        color: root.ink;
-                        font-size: Type.title;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                    }
-                    Text {
-                        text: "Supported file types: " + root.formats;
-                        color: root.muted;
-                        font-size: Type.body;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: Tokens.space-2;
-                        Button {
-                            text: root.open-text;
-                            kind: ButtonKind.primary;
-                            has-icon: true;
-                            icon: Icons.folder-open;
-                            clicked => { root.open(); }
-                        }
-                        if root.new-text != "": Button {
-                            text: root.new-text;
-                            kind: ButtonKind.secondary;
-                            has-icon: true;
-                            icon: root.new-icon;
-                            clicked => { root.new-file(); }
-                        }
-                    }
-                    if root.recents.length > 0: VerticalLayout {
-                        spacing: Tokens.space-2;
-                        padding-top: Tokens.space-5;
+                    VerticalLayout {
+                        height: Tokens.top-section;
+                        alignment: start;
+                        spacing: Tokens.space-3;
                         HorizontalLayout {
-                            Text { text: "Recent"; color: root.ink; font-size: Type.subheading; font-weight: 600; vertical-alignment: center; }
-                            Rectangle { horizontal-stretch: 1; }
-                            Button { text: "Clear"; kind: ButtonKind.ghost; clicked => { root.clear-recents(); } }
+                            height: 56px;
+                            alignment: center;
+                            if root.icon-kind != "": FileKindTile { kind: root.icon-kind; tile-size: 56px; }
+                            if root.icon-kind == "" && !root.icon-full-colour: Image { source: root.icon; width: 56px; height: 56px; colorize: root.icon-colour; }
+                            if root.icon-kind == "" && root.icon-full-colour: Image { source: root.icon; width: 56px; height: 56px; }
                         }
-                        Card {
-                            VerticalLayout {
-                                padding: Tokens.space-1;
-                                for r[i] in root.recents: RecentRow {
-                                    item: r;
-                                    clicked => { root.open-recent(r.index); }
-                                }
+                        Text {
+                            text: root.title;
+                            color: root.ink;
+                            font-size: Type.title;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            height: 40px;
+                        }
+                        // Three lines for the text, whatever the list holds, so the buttons never move.
+                        VerticalLayout {
+                            height: 88px;
+                            alignment: start;
+                            spacing: Tokens.space-1;
+                            if root.hint == "": Text { text: "Supported file types:"; color: root.muted; font-size: Type.body; horizontal-alignment: center; height: 20px; }
+                            if root.hint == "": Text { text: root.formats; color: root.muted; font-size: Type.body; horizontal-alignment: center; wrap: word-wrap; vertical-alignment: top; }
+                            if root.hint != "": Text { text: root.hint; color: root.muted; font-size: Type.body; horizontal-alignment: center; wrap: word-wrap; vertical-alignment: top; }
+                        }
+                        HorizontalLayout {
+                            height: Tokens.control-height;
+                            alignment: center;
+                            spacing: Tokens.space-2;
+                            Button {
+                                text: root.open-text;
+                                kind: ButtonKind.primary;
+                                has-icon: true;
+                                icon: Icons.folder-open;
+                                clicked => { root.open(); }
                             }
+                            if root.new-text != "": Button {
+                                text: root.new-text;
+                                kind: ButtonKind.secondary;
+                                has-icon: true;
+                                icon: root.new-icon;
+                                clicked => { root.new-file(); }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        padding-top: Tokens.space-5;
+                        RecentBlock {
+                            recents: root.recents;
+                            ink: root.ink;
+                            muted: root.muted;
+                            open-recent(i) => { root.open-recent(i); }
+                            clear-recents => { root.clear-recents(); }
                         }
                     }
                 }

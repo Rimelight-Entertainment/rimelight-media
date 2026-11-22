@@ -6,6 +6,7 @@
 /dist/
 /ffmpeg-work/
 /target-bench
+/target-check
 
 # Samples: one small file per supported type (samples/make-samples.ps1 makes the media). .env and .log are tracked here.
 !samples/

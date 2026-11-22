@@ -6,8 +6,8 @@ import { Icons } from "icons.slint";
 import { Button, ButtonKind, IconButton, ToolBar, ActionRow, StatusBar, ToolDivider, EmptyState } from "widgets.slint";
 import { Shell, TextDoc, MdBlock, MdCell, JsonRow } from "state.slint";
 
-// The editor: a TextInput in a scroll view (wrapping, or scrolling sideways when wrap is off; a code file never wraps).
-// The syntax colours are Text layers under the TextInput, whose own text is transparent (its caret and selection stay).
+// The editor: a TextInput in a scroll view (wrapping, or scrolling sideways when wrap is off). The TextInput draws its own
+// text, caret and selection. Syntax colours are off for now (the colour layers are hidden).
 // It takes the focus when a new document is made (focus-serial changes) and when it is created.
 component Editor inherits ScrollView {
     in property <int> focus-serial;
@@ -49,8 +49,8 @@ component Editor inherits ScrollView {
         opacity: 0;
     }
 
-    // The colour layers (highlight.rs): each kind's characters in its colour, in a monospace copy of the text. Drawn
-    // under the TextInput.
+    // The colour layers (highlight.rs): each kind's characters in its colour, in a monospace copy of the text. Hidden:
+    // they would draw over the TextInput, which shows the text itself. Colour can come back later another way.
     for layer[i] in TextDoc.hl-texts: Text {
         x: Tokens.space-3;
         y: Tokens.space-3;
@@ -59,17 +59,22 @@ component Editor inherits ScrollView {
         font-size: 14px;
         color: TextDoc.hl-colours[i];
         wrap: TextWrap.no-wrap;
-        visible: TextDoc.hl-on;
+        visible: false;
     }
 
     input := TextInput {
+        // Tab and Shift+Tab stay in the text: the editor accepts them, so the app-wide key handler never sees them.
+        changed has-focus => { Shell.field-focus = self.has-focus; }
+        // Tab inserts a tab character (the input would never see the key, since the handler accepts it). Shift+Tab does nothing.
+        // The input fills the whole editor area (like Notepad): a click anywhere in the page puts the caret, and a click
+        // below the last line goes to the end of the text.
         x: Tokens.space-3;
         y: Tokens.space-3;
-        width: root.wrapping ? root.visible-width - 2 * Tokens.space-3 : self.preferred-width;
+        width: root.wrapping ? root.visible-width - 2 * Tokens.space-3 : max(self.preferred-width, root.visible-width - 2 * Tokens.space-3);
+        height: max(self.preferred-height, root.visible-height - 2 * Tokens.space-3);
         font-family: root.face;
         font-size: 14px;
-        // Transparent while the colour layers show the text (the caret and selection still draw).
-        color: TextDoc.hl-on ? transparent : Tokens.text-primary;
+        color: Tokens.text-primary;
         selection-background-color: Tokens.selection;
         wrap: root.wrapping ? TextWrap.word-wrap : TextWrap.no-wrap;
         single-line: false;
@@ -80,6 +85,13 @@ component Editor inherits ScrollView {
         changed cursor-position-byte-offset => { TextDoc.caret-moved(self.cursor-position-byte-offset); }
         edited => { TextDoc.edited(); }
         key-pressed(e) => {
+            if e.text == Key.Tab {
+                TextDoc.insert-tab(self.cursor-position-byte-offset, self.anchor-position-byte-offset);
+                return accept;
+            }
+            if e.text == Key.Backtab {
+                return accept;
+            }
             if e.modifiers.control && e.text == "s" {
                 if e.modifiers.shift { TextDoc.save-as(); } else { TextDoc.save(); }
                 return accept;
@@ -90,6 +102,14 @@ component Editor inherits ScrollView {
             }
             if e.modifiers.control && e.text == "f" {
                 TextDoc.find-open = !TextDoc.find-open;
+                return accept;
+            }
+            if e.modifiers.control && e.text == "z" {
+                if e.modifiers.shift { TextDoc.redo(); } else { TextDoc.undo(); }
+                return accept;
+            }
+            if e.modifiers.control && e.text == "y" {
+                TextDoc.redo();
                 return accept;
             }
             reject
@@ -233,12 +253,16 @@ component TreeRow inherits Rectangle {
         padding-left: Tokens.space-2 + root.item.depth * 16px;
         padding-right: Tokens.space-2;
         spacing: Tokens.space-1;
-        Text {
-            text: root.item.container ? (root.item.open ? "▾" : "▸") : "";
-            color: Tokens.text-muted;
-            font-size: Type.body;
+        // A chevron icon (not a text arrow, which the font can't draw), shown only on containers.
+        Rectangle {
             width: 14px;
-            vertical-alignment: center;
+            if root.item.container: Image {
+                source: root.item.open ? Icons.chevron-down : Icons.chevron-right;
+                width: 14px;
+                height: 14px;
+                y: (parent.height - self.height) / 2;
+                colorize: Tokens.text-muted;
+            }
         }
         Text { text: root.item.label; color: Tokens.accent-text; font-family: "Consolas"; font-size: 13px; vertical-alignment: center; }
         Text { text: root.item.value; color: root.item.container ? Tokens.text-muted : Tokens.text-primary; font-family: "Consolas"; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
@@ -280,11 +304,15 @@ export component TextPage inherits Rectangle {
         // Always shown, as on every tab: with no document the file buttons are disabled.
         ToolBar {
             IconButton { icon: Icons.folder-open; label: "Open a file"; clicked => { Shell.open-file(); } }
+            IconButton { icon: Icons.folder-search; label: "Show in folder"; enabled: TextDoc.has-doc && TextDoc.file-name != ""; clicked => { TextDoc.open-folder(); } }
             ToolDivider { }
             IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: TextDoc.has-doc && (TextDoc.dirty || TextDoc.file-name == ""); clicked => { TextDoc.save(); } }
             IconButton { icon: Icons.save-as; label: "Save as (Ctrl+Shift+S)"; enabled: TextDoc.has-doc; clicked => { TextDoc.save-as(); } }
-            IconButton { icon: Icons.x; label: "Discard changes"; enabled: TextDoc.has-doc && TextDoc.dirty; clicked => { TextDoc.revert(); } }
+            IconButton { icon: Icons.share; label: "Share"; enabled: TextDoc.has-doc && TextDoc.file-name != ""; clicked => { TextDoc.share(); } }
             ToolDivider { }
+            IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: TextDoc.has-doc && TextDoc.can-undo; clicked => { TextDoc.undo(); } }
+            IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: TextDoc.has-doc && TextDoc.can-redo; clicked => { TextDoc.redo(); } }
+            IconButton { icon: Icons.x; label: "Discard changes"; enabled: TextDoc.has-doc && TextDoc.dirty; clicked => { TextDoc.revert(); } }
             Text {
                 text: !TextDoc.has-doc ? "" : TextDoc.file-name == "" ? "Untitled" : TextDoc.file-name;
                 color: Tokens.text-primary;
@@ -328,7 +356,7 @@ export component TextPage inherits Rectangle {
             if Shell.recording || TextDoc.has-doc: ToolDivider { }
             if Shell.recording: IconButton { icon: Icons.stop; label: "Stop recording"; clicked => { Shell.stop-recording(); } }
             // Closes the text back to the empty tab (shown only when a document is open).
-            if TextDoc.has-doc: IconButton { icon: Icons.x; label: "Close the text"; clicked => { Shell.close-tab(); } }
+            IconButton { icon: Icons.x; label: "Close the text"; enabled: TextDoc.has-doc; clicked => { Shell.close-tab(); } }
         }
 
         // JSON tools, as an edit row under the toolbar: icons only, each with a tooltip that says what it does, and the
@@ -386,11 +414,11 @@ export component TextPage inherits Rectangle {
         // The body: the editor, and the preview or tree beside it (or the preview alone).
         Rectangle {
             vertical-stretch: 1;
+            background: Tokens.surface-base;
             if !TextDoc.has-doc: EmptyState {
                 width: parent.width;
                 height: parent.height;
-                icon: Icons.text;
-                icon-colour: Tokens.file-text;
+                icon-kind: "text";
                 title: "Open a text file";
                 formats: ".bat, .cfg, .conf, .css, .csv, .env, .html, .ini, .js, .json, .log, .markdown, .md, .ps1, .rs, .sh, .text, .toml, .ts, .txt, .xml, .yaml, .yml";
                 open-text: "Open a file";
@@ -403,6 +431,21 @@ export component TextPage inherits Rectangle {
                 clear-recents => { Shell.clear-recents("text"); }
             }
             if TextDoc.has-doc: HorizontalLayout {
+                // Details: on the far left of the body (hidden in full screen with the other bars).
+                if TextDoc.show-info && !Shell.full-screen: Rectangle {
+                    width: 280px;
+                    background: Tokens.surface-raised;
+                    border-width: 1px;
+                    border-color: Tokens.border-subtle;
+                    VerticalLayout {
+                        padding: Tokens.space-4;
+                        spacing: Tokens.space-2;
+                        alignment: start;
+                        Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; }
+                        Text { text: TextDoc.info-name; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
+                        Text { text: TextDoc.info-detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                    }
+                }
                 if !(TextDoc.markdown && TextDoc.view == 2): Editor { focus-serial: TextDoc.focus-serial; }
                 if (TextDoc.markdown && TextDoc.view >= 1) || (TextDoc.json && TextDoc.view == 1): Rectangle {
                     width: 1px;
@@ -422,6 +465,12 @@ export component TextPage inherits Rectangle {
           HorizontalLayout {
             spacing: 0;
             horizontal-stretch: 1;
+            // The Details button, bottom left, as on the picture tab (the same size and look).
+            if TextDoc.has-doc: HorizontalLayout {
+                height: 28px;
+                padding-right: 6px;
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details"; active: TextDoc.show-info; clicked => { TextDoc.toggle-info(); } }
+            }
             if TextDoc.has-doc: Rectangle {
                 // As wide as the longest label, so the bar never shifts when the state changes.
                 width: widest.preferred-width;

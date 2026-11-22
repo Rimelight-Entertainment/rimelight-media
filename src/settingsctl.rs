@@ -26,13 +26,12 @@ pub fn wire(app: &Rc<App>) {
     });
     s.on_register_defaults(|| {
         with_app(
-            |a| match install::register_file_types(a.prefs.borrow().file_types) {
+            |a| match install::register_defaults(a.prefs.borrow().file_types) {
                 Ok(()) => {
                     toast(
                         a,
                         "File types registered. Now pick Rimelight Media in Windows' default apps.",
                     );
-                    install::open_default_apps_settings();
                     refresh(a);
                 }
                 Err(e) => toast(a, format!("Could not register the file types: {e}")),
@@ -40,7 +39,6 @@ pub fn wire(app: &Rc<App>) {
         )
     });
     s.on_open_default_settings(install::open_default_apps_settings);
-    s.on_open_printscreen_settings(install::open_printscreen_settings);
     s.on_pick_canvas_folder(|| {
         with_app(|a| {
             let current = a.prefs.borrow().canvas_dir.clone();
@@ -83,7 +81,7 @@ pub fn refresh(app: &Rc<App>) {
     let p = app.prefs.borrow();
     s.set_theme(p.theme);
     s.set_background(p.background);
-    s.set_desktop_shortcut(p.desktop_shortcut);
+    s.set_start_with_windows(start_with_windows_on());
     s.set_printscreen_ours(!install::windows_printscreen_on());
     s.set_snip_copy(p.snip_copy);
     s.set_snip_save(p.snip_save);
@@ -104,17 +102,6 @@ pub fn refresh(app: &Rc<App>) {
         }
         .into(),
     );
-    s.set_defaults_state(
-        if install::file_types_registered() {
-            match install::not_default() {
-                v if v.is_empty() => "Rimelight Media is the default for every file type it opens.".to_string(),
-                v => format!("Still opening with another app: .{}. Windows lets only you change defaults: Open Windows default apps and set these to Rimelight Media.", v.join(", .")),
-            }
-        } else {
-            "Register Rimelight Media's file types first, then pick it as the default in Windows' default apps.".to_string()
-        }
-        .into(),
-    );
     let hk = app
         .hotkeys
         .borrow()
@@ -126,9 +113,24 @@ pub fn refresh(app: &Rc<App>) {
     s.set_about(format!("Rimelight Media {}", env!("CARGO_PKG_VERSION")).into());
 }
 
+/// Whether the start-with-Windows entry (the HKCU Run value that install.rs writes) exists.
+#[cfg(windows)]
+fn start_with_windows_on() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    winreg::RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
+        .and_then(|k| k.get_value::<String, _>(install::APP_NAME))
+        .is_ok()
+}
+
+#[cfg(not(windows))]
+fn start_with_windows_on() -> bool {
+    false
+}
+
 fn save_from_ui(app: &Rc<App>) {
     let s = settings(app);
-    let background_changed = {
+    let tray_changed = {
         let mut p = app.prefs.borrow_mut();
         let before = p.background;
         p.theme = s.get_theme();
@@ -139,14 +141,10 @@ fn save_from_ui(app: &Rc<App>) {
         p.rec_system_audio = s.get_rec_system_audio();
         p.rec_mic = s.get_rec_mic();
         p.rec_fps = s.get_rec_fps();
-        p.desktop_shortcut = s.get_desktop_shortcut();
         p.save();
         before != p.background
     };
     apply_theme(app);
-    if crate::update::installed_version().is_some() {
-        install::set_shortcuts(app.prefs.borrow().desktop_shortcut);
-    }
     let ours = s.get_printscreen_ours();
     if ours == install::windows_printscreen_on() {
         install::set_windows_printscreen(!ours);
@@ -157,18 +155,22 @@ fn save_from_ui(app: &Rc<App>) {
         }
         crate::app::start_hotkeys(app);
     }
-    if background_changed {
+    if tray_changed {
         let on = app.prefs.borrow().background;
-        install::set_run_at_login(on.then(install::launcher_path).as_deref());
         crate::capturectl::ensure_tray(app, on);
         toast(
             app,
             if on {
-                "Rimelight Media now starts with Windows and stays in the tray."
+                "Rimelight Media now stays in the tray when you close the window."
             } else {
-                "Rimelight Media no longer starts with Windows."
+                "Rimelight Media now quits when you close the window."
             },
         );
+    }
+    // Start with Windows is its own switch: it only changes the Run entry, not the tray.
+    let start = s.get_start_with_windows();
+    if start != start_with_windows_on() {
+        install::set_run_at_login(start.then(install::launcher_path).as_deref());
     }
 }
 

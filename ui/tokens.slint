@@ -47,6 +47,11 @@ export global Tokens {
 
     out property <length> radius-control: 5px;
     out property <length> radius-surface: 6px;
+    // The top section of the home page and the empty tabs (the drop zone or the icon, title and buttons). Same height
+    // everywhere, so the Recent list starts at the same place on every page.
+    out property <length> top-section: 300px;
+    // One Recent row. The empty Recent placeholder is the same height, so the list does not change size when files arrive.
+    out property <length> row-height: 48px;
     out property <length> radius-r8: 8px;
     out property <length> radius-pill: 9999px;
 

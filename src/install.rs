@@ -72,80 +72,90 @@ fn is_script(ext: &str) -> bool {
     SCRIPT_EXTS.contains(&ext)
 }
 
-/// What Explorer's Type column shows for an extension ("JSON File", "MP3 Audio").
+/// What Explorer's Type column shows for an extension, one scheme for every format: "<FORMAT> image", "<FORMAT> video",
+/// "<FORMAT> audio" or "<FORMAT> text" ("JPEG image", "MP4 video", "Ogg audio", "JSON text"). The category comes from
+/// the extension lists in files.rs; the format name is the real one from this table. Used for each ProgID's
+/// FriendlyTypeName and description, so Explorer and the app agree.
 pub fn type_name(ext: &str) -> String {
-    let name = match ext {
-        "png" => "PNG Image",
-        "jpg" | "jpeg" | "jfif" => "JPEG Image",
-        "webp" => "WebP Image",
-        "svg" => "SVG Image",
-        "gif" => "GIF Image",
-        "bmp" => "Bitmap Image",
-        "ico" => "Icon File",
-        "avif" => "AVIF Image",
-        "heic" => "HEIC Image",
-        "heif" => "HEIF Image",
-        "hif" => "HEIF Image",
-        "dng" => "Digital Negative Image",
-        "cr2" | "cr3" => "Canon RAW Image",
-        "nef" | "nrw" => "Nikon RAW Image",
-        "arw" | "srf" | "sr2" => "Sony RAW Image",
-        "raf" => "Fujifilm RAW Image",
-        "orf" => "Olympus RAW Image",
-        "rw2" => "Panasonic RAW Image",
-        "rwl" => "Leica RAW Image",
-        "pef" => "Pentax RAW Image",
-        "srw" => "Samsung RAW Image",
-        "3fr" => "Hasselblad RAW Image",
-        "erf" => "Epson RAW Image",
-        "kdc" => "Kodak RAW Image",
-        "mrw" => "Minolta RAW Image",
-        "x3f" => "Sigma RAW Image",
-        "iiq" => "Phase One RAW Image",
-        "mp4" => "MP4 Video",
-        "m4v" => "M4V Video",
-        "mkv" => "Matroska Video",
-        "webm" => "WebM Video",
-        "mov" => "QuickTime Movie",
-        "avi" => "AVI Video",
-        "wmv" => "Windows Media Video",
-        "mpg" | "mpeg" => "MPEG Video",
-        "m2ts" | "mts" => "AVCHD Video",
-        "flv" => "Flash Video",
-        "3gp" => "3GP Video",
-        "ogv" => "Ogg Video",
-        "mp3" => "MP3 Audio",
-        "flac" => "FLAC Audio",
-        "wav" => "WAV Audio",
-        "ogg" | "oga" => "Ogg Audio",
-        "opus" => "Opus Audio",
-        "m4a" => "M4A Audio",
-        "aac" => "AAC Audio",
-        "wma" => "WMA Audio",
-        "aif" | "aiff" => "AIFF Audio",
-        "mka" => "Matroska Audio",
-        "txt" | "text" => "Text File",
-        "md" | "markdown" => "Markdown File",
-        "json" => "JSON File",
-        "toml" => "TOML File",
-        "yaml" | "yml" => "YAML File",
-        "ini" => "INI File",
-        "cfg" | "conf" => "Configuration File",
-        "log" => "Log File",
-        "csv" => "CSV File",
-        "xml" => "XML File",
-        "env" => "Environment File",
-        "rs" => "Rust Source File",
-        "js" => "JavaScript File",
-        "ts" => "TypeScript File",
-        "html" => "HTML File",
-        "css" => "CSS File",
-        "bat" => "Batch File",
-        "ps1" => "PowerShell Script",
-        "sh" => "Shell Script",
-        _ => return format!("{} File", ext.to_ascii_uppercase()),
+    let word = if IMAGE_EXTS.contains(&ext) {
+        "image"
+    } else if VIDEO_EXTS.contains(&ext) {
+        "video"
+    } else if AUDIO_EXTS.contains(&ext) {
+        "audio"
+    } else {
+        "text"
     };
-    name.to_string()
+    let format = match ext {
+        "png" => "PNG",
+        "jpg" | "jpeg" | "jfif" => "JPEG",
+        "webp" => "WebP",
+        "svg" => "SVG",
+        "gif" => "GIF",
+        "bmp" => "BMP",
+        "ico" => "ICO",
+        "avif" => "AVIF",
+        "heic" => "HEIC",
+        "heif" | "hif" => "HEIF",
+        "dng" => "DNG",
+        "cr2" | "cr3" => "Canon RAW",
+        "nef" | "nrw" => "Nikon RAW",
+        "arw" | "srf" | "sr2" => "Sony RAW",
+        "raf" => "Fujifilm RAW",
+        "orf" => "Olympus RAW",
+        "rw2" => "Panasonic RAW",
+        "rwl" => "Leica RAW",
+        "pef" => "Pentax RAW",
+        "srw" => "Samsung RAW",
+        "3fr" => "Hasselblad RAW",
+        "erf" => "Epson RAW",
+        "kdc" => "Kodak RAW",
+        "mrw" => "Minolta RAW",
+        "x3f" => "Sigma RAW",
+        "iiq" => "Phase One RAW",
+        "mp4" => "MP4",
+        "m4v" => "M4V",
+        "mkv" => "Matroska",
+        "webm" => "WebM",
+        "mov" => "QuickTime",
+        "avi" => "AVI",
+        "wmv" => "WMV",
+        "mpg" | "mpeg" => "MPEG",
+        "m2ts" | "mts" => "AVCHD",
+        "flv" => "FLV",
+        "3gp" => "3GP",
+        "ogv" | "oga" | "ogg" => "Ogg",
+        "mp3" => "MP3",
+        "flac" => "FLAC",
+        "wav" => "WAV",
+        "opus" => "Opus",
+        "m4a" => "M4A",
+        "aac" => "AAC",
+        "wma" => "WMA",
+        "aif" | "aiff" => "AIFF",
+        "mka" => "Matroska",
+        "txt" | "text" => "Plain",
+        "md" | "markdown" => "Markdown",
+        "json" => "JSON",
+        "toml" => "TOML",
+        "yaml" | "yml" => "YAML",
+        "ini" => "INI",
+        "cfg" | "conf" => "Config",
+        "log" => "Log",
+        "csv" => "CSV",
+        "xml" => "XML",
+        "env" => "ENV",
+        "rs" => "Rust",
+        "js" => "JavaScript",
+        "ts" => "TypeScript",
+        "html" => "HTML",
+        "css" => "CSS",
+        "bat" => "Batch",
+        "ps1" => "PowerShell",
+        "sh" => "Shell",
+        _ => return format!("{} {word}", ext.to_ascii_uppercase()),
+    };
+    format!("{format} {word}")
 }
 
 /// The SVG drawn at size x size, as PNG bytes.
@@ -363,37 +373,6 @@ mod reg {
         crate::platform::file_types_changed();
     }
 
-    /// The extensions (not the script types) whose Windows default is not Rimelight Media. The default is UserChoiceLatest
-    /// (Windows 11 24H2 and later) when that key has a ProgId, else UserChoice. Either an old per-category ProgID or the
-    /// current per-extension one counts as ours.
-    pub fn not_default() -> Vec<&'static str> {
-        let hk = hkcu();
-        all_exts()
-            .filter(|ext| !is_script(ext))
-            .filter(|ext| {
-                let base =
-                    format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}");
-                let chosen = ["UserChoiceLatest", "UserChoice"].iter().find_map(|k| {
-                    hk.open_subkey(format!(r"{base}\{k}"))
-                        .and_then(|k| k.get_value::<String, _>("ProgId"))
-                        .ok()
-                });
-                let ours =
-                    chosen.is_some_and(|p| p == progid(ext) || OLD_PROGIDS.contains(&p.as_str()));
-                !ours
-            })
-            .collect()
-    }
-
-    pub fn file_types_registered() -> bool {
-        hkcu()
-            .open_subkey(format!(
-                r"Software\Classes\{}\shell\open\command",
-                progid(IMAGE_EXTS[0])
-            ))
-            .is_ok()
-    }
-
     /// Windows' own "Use the Print screen key to open screen capture" (on when the value is missing, Windows 11).
     pub fn windows_printscreen_on() -> bool {
         hkcu()
@@ -454,19 +433,12 @@ mod reg {
         Ok(())
     }
     pub fn unregister_file_types() {}
-    pub fn file_types_registered() -> bool {
-        false
-    }
-    pub fn not_default() -> Vec<&'static str> {
-        Vec::new()
-    }
     pub fn set_run_at_login(_: Option<&Path>) {}
     pub fn set_screenclip(_: Option<&Path>) {}
 }
 
 pub use reg::{
-    file_types_registered, not_default, set_run_at_login, set_screenclip, set_windows_printscreen,
-    windows_printscreen_on,
+    set_run_at_login, set_screenclip, set_windows_printscreen, windows_printscreen_on,
 };
 
 /// Registers the chosen file types (pictures, video, music) for this exe; the others are removed. An installed copy keeps
@@ -606,6 +578,13 @@ pub fn open_default_apps_settings() {
     }
 }
 
-pub fn open_printscreen_settings() {
-    crate::platform::open_uri("ms-settings:easeofaccess-keyboard");
+/// The "Set as default app" button. Windows 10 and 11 don't let an app set its own defaults silently (UserChoice is
+/// protected), so this (re)writes the app's registrations for the chosen file types (ProgIDs, RegisteredApplications and
+/// its Capabilities, which is what Default apps lists) and opens this app's Default apps page for the person to pick.
+/// No message box: the caller's toast says what to do.
+pub fn register_defaults(kinds: [bool; 4]) -> Result<(), String> {
+    register_file_types(kinds)?;
+    open_default_apps_settings();
+    Ok(())
 }
+

@@ -1,8 +1,9 @@
 // The video and music player: the top trim row, the waveform track and seek bar, one control row, and the shared
 // StatusBar at the bottom (file facts on the left, full screen on the right).
+import { ScrollView } from "std-widgets.slint";
 import { Tokens, Type } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { IconButton, Button, ButtonKind, Slider, Choice, ActionRow, StatusBar, ToolDivider } from "widgets.slint";
+import { IconButton, Button, ButtonKind, Slider, Choice, ActionRow, StatusBar, ToolDivider, FileKindTile } from "widgets.slint";
 import { Player, Shell } from "state.slint";
 
 // One row of a track or subtitle list: a check for the chosen one, the name, and an optional detail line.
@@ -200,7 +201,8 @@ component WaveBars inherits Rectangle {
 }
 
 export component MediaPage inherits Rectangle {
-    background: Tokens.stage;
+    // The empty tab uses the shared page colour; media plays on the dark stage.
+    background: Player.media-title == "" ? Tokens.surface-base : Tokens.stage;
 
     // The trim row at the top (hidden in full screen) and the status bar at the bottom; the picture sits between.
     property <length> top-h: (Player.trim-mode && !Shell.full-screen) ? Tokens.action-height : 0px;
@@ -218,6 +220,12 @@ export component MediaPage inherits Rectangle {
     property <length> seek-y: root.wave-h > 0px ? root.wave-h + Tokens.space-2 - 10px : 0px;
 
     property <bool> bars-visible: !Shell.full-screen || (stage-ta.has-hover && stage-ta.mouse-y > self.height - 160px) || !Player.playing;
+    // The Details panel on the left takes 280px of the picture's width (none in full screen, like the bars).
+    property <length> info-w: (Player.show-info && !Shell.full-screen) ? 280px : 0px;
+    // The Playlist panel sits right of the Details panel, also 280px (none in full screen).
+    property <length> playlist-w: (Player.playlist-on && !Shell.full-screen) ? 280px : 0px;
+    // Everything the picture has to clear on the left: both panels.
+    property <length> left-w: root.info-w + root.playlist-w;
 
     // The stage. Only double-click does something here (full screen): clicks never play or pause; the play button and
     // Space do that.
@@ -226,7 +234,8 @@ export component MediaPage inherits Rectangle {
     }
 
     if Player.has-video: Image {
-        width: parent.width;
+        x: root.left-w;
+        width: parent.width - root.left-w;
         height: parent.height - root.top-h - (Shell.full-screen ? 0px : bar.height);
         y: root.top-h;
         source: Player.frame;
@@ -234,8 +243,10 @@ export component MediaPage inherits Rectangle {
     }
 
     if !Player.has-video: VerticalLayout {
+        x: root.left-w;
+        width: parent.width - root.left-w;
         y: root.top-h;
-        height: parent.height - bar.height - root.top-h;
+        height: parent.height - root.top-h;
         alignment: center;
         spacing: Tokens.space-4;
         HorizontalLayout {
@@ -244,13 +255,8 @@ export component MediaPage inherits Rectangle {
                 width: 200px;
                 height: 200px;
                 border-radius: 24px;
-                background: @linear-gradient(135deg, #1659C4 0%, #4DA0FF 100%);
-                Image {
-                    source: Player.playing ? Icons.audio-lines : Icons.music;
-                    width: 88px;
-                    height: 88px;
-                    colorize: #FFFFFF;
-                }
+                // The Explorer music tile (the same as the audio file type everywhere else).
+                FileKindTile { kind: "music"; tile-size: 200px; }
             }
         }
         Text {
@@ -267,6 +273,83 @@ export component MediaPage inherits Rectangle {
             font-size: Type.body;
             horizontal-alignment: center;
             overflow: elide;
+        }
+    }
+
+    // Details: on the left of the picture, the same look as the picture's panel. Hidden in full screen.
+    if Player.show-info && !Shell.full-screen: Rectangle {
+        x: root.playlist-w;
+        y: root.top-h;
+        width: 280px;
+        height: parent.height - root.top-h;
+        clip: true;
+        background: Tokens.surface-raised;
+        border-width: 1px;
+        border-color: Tokens.border-subtle;
+        VerticalLayout {
+            padding: Tokens.space-4;
+            spacing: Tokens.space-2;
+            alignment: start;
+            Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; }
+            Text { text: Player.info-name; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
+            Text { text: Player.info-detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+        }
+    }
+
+    // Playlist: the other files of the same kind in the folder, in order, right of Details. The row of the file playing
+    // is highlighted. Hidden in full screen.
+    if Player.playlist-on && !Shell.full-screen: Rectangle {
+        x: 0;
+        y: root.top-h;
+        width: 280px;
+        height: parent.height - root.top-h;
+        clip: true;
+        background: Tokens.surface-raised;
+        border-width: 1px;
+        border-color: Tokens.border-subtle;
+        // Placed by coordinates, not in a layout, so the list gets exactly the space below the heading.
+        Text {
+            x: Tokens.space-4;
+            y: Tokens.space-4;
+            width: parent.width - 2 * Tokens.space-4;
+            text: "Playlist";
+            color: Tokens.text-primary;
+            font-size: Type.subheading;
+            font-weight: 600;
+        }
+        ScrollView {
+            x: 0;
+            y: Tokens.space-4 + 32px;
+            width: parent.width;
+            height: parent.height - self.y;
+            VerticalLayout {
+                padding-left: Tokens.space-3;
+                padding-right: Tokens.space-3;
+                padding-bottom: Tokens.space-3;
+                alignment: start;
+                for item[i] in Player.playlist: Rectangle {
+                    height: Tokens.row-height;
+                    border-radius: Tokens.radius-control;
+                    background: item.current ? Tokens.surface-pressed : (item-ta.has-hover ? Tokens.surface-hover : transparent);
+                    HorizontalLayout {
+                        padding-left: Tokens.space-2;
+                        padding-right: Tokens.space-2;
+                        Text {
+                            text: item.name;
+                            color: Tokens.text-primary;
+                            font-size: Type.body;
+                            font-weight: item.current ? 600 : 400;
+                            wrap: no-wrap;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+                    item-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Player.play-item(item.index); }
+                    }
+                }
+            }
         }
     }
 
@@ -350,6 +433,9 @@ export component MediaPage inherits Rectangle {
 
     bar := Rectangle {
         y: parent.height - self.height;
+        // Beside the panels on the left, so the side panels run the full height down to the bottom of the page.
+        x: root.left-w;
+        width: parent.width - root.left-w;
         height: layout.preferred-height;
         background: Tokens.stage-bar;
         opacity: root.bars-visible ? 1 : 0;
@@ -488,6 +574,9 @@ export component MediaPage inherits Rectangle {
                     spacing: Tokens.space-2;
                     HorizontalLayout {
                         spacing: Tokens.space-2;
+                        // Previous and Next: the other files in the playlist (disabled at either end).
+                        IconButton { on-stage: true; icon: Icons.chevron-left; label: "Previous file"; enabled: Player.has-prev; clicked => { Player.play-prev(); } }
+                        IconButton { on-stage: true; icon: Icons.chevron-right; label: "Next file"; enabled: Player.has-next; clicked => { Player.play-next(); } }
                         IconButton {
                             on-stage: true;
                             icon: Player.playing ? Icons.pause : Icons.play;
@@ -570,6 +659,14 @@ export component MediaPage inherits Rectangle {
                         }
                         IconButton {
                             on-stage: true;
+                            icon: Icons.skip-forward;
+                            label: "Continue to the next file";
+                            active: Player.auto-next;
+                            enabled: Player.playlist.length > 1;
+                            clicked => { Player.toggle-auto-next(); }
+                        }
+                        IconButton {
+                            on-stage: true;
                             icon: Icons.audio-lines;
                             label: "Show the waveform";
                             active: Player.wave-seek;
@@ -580,9 +677,39 @@ export component MediaPage inherits Rectangle {
                 }
             }
 
-            // The shared bottom bar: file facts on the left, full screen on the right.
+            // The shared bottom bar: the Details button and the file facts on the left, full screen on the right.
             StatusBar {
-                left-text: Player.meta-text;
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 6px;
+                    IconButton {
+                        on-stage: false;
+                        size: 28px;
+                        icon-size: Tokens.icon-small;
+                        icon: Icons.layers;
+                        label: "Playlist";
+                        active: Player.playlist-on;
+                        enabled: Player.playlist.length > 1;
+                        clicked => { Player.toggle-playlist(); }
+                    }
+                    IconButton {
+                        on-stage: false;
+                        size: 28px;
+                        icon-size: Tokens.icon-small;
+                        icon: Icons.info;
+                        label: "Details (I)";
+                        active: Player.show-info;
+                        clicked => { Player.toggle-info(); }
+                    }
+                }
+                Text {
+                    text: Player.meta-text;
+                    color: Tokens.text-muted;
+                    font-size: Type.caption;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
                 IconButton {
                     on-stage: false;
                     size: 28px;

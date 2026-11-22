@@ -178,9 +178,11 @@ fn wire_shell(app: &Rc<App>) {
     app.ui.window().on_winit_window_event(|_w, event| {
         match event {
             winit::event::WindowEvent::HoveredFile(_) => {
+                HOVERED.with(|h| h.set(h.get() + 1));
                 with_app(|a| a.ui.global::<ui::Shell>().set_drop_hover(true))
             }
             winit::event::WindowEvent::HoveredFileCancelled => {
+                HOVERED.with(|h| h.set(0));
                 with_app(|a| a.ui.global::<ui::Shell>().set_drop_hover(false))
             }
             winit::event::WindowEvent::DroppedFile(path) => {
@@ -193,7 +195,7 @@ fn wire_shell(app: &Rc<App>) {
                     if markup && files::kind_of(&path) == Some(Kind::Image) {
                         viewer::drop_picture(a, &path);
                     } else {
-                        open_path(a, &path);
+                        queue_drop(a, path.clone());
                     }
                 });
             }
@@ -206,6 +208,9 @@ fn wire_shell(app: &Rc<App>) {
 pub fn go(app: &Rc<App>, page: &str) {
     let shell = app.ui.global::<ui::Shell>();
     let was = shell.get_page();
+    if was == "image" && page != "image" {
+        viewer::slideshow_stop(app);
+    }
     if matches!(was.as_str(), "audio" | "video") && was != page {
         mediactl::leaving(app);
     }
@@ -421,6 +426,9 @@ pub fn open_many(app: &Rc<App>, paths: &[PathBuf]) {
     if paths.len() > 1 && paths.iter().all(|p| files::kind_of(p) == Some(Kind::Image)) {
         viewer::open_set(app, paths);
         remember(app, first);
+    } else if paths.len() > 1 && matches!(files::kind_of(first), Some(Kind::Audio | Kind::Video)) {
+        mediactl::open_set(app, paths);
+        remember(app, first);
     } else {
         open_path(app, first);
     }
@@ -542,6 +550,25 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
         }
         return false;
     }
+    // Tab and Shift+Tab step through the top-bar tabs, in order, wrapping at the ends. While a text field has the keyboard
+    // the keys belong to it: they do nothing here.
+    if k(Key::Tab) || k(Key::Backtab) {
+        if app.ui.global::<ui::Shell>().get_field_focus() {
+            return true;
+        }
+        const ORDER: [&str; 5] = ["home", "image", "audio", "video", "text"];
+        let back = k(Key::Backtab) || shift;
+        let here = ORDER.iter().position(|p| *p == page.as_str());
+        let next = match (here, back) {
+            (Some(i), true) => (i + ORDER.len() - 1) % ORDER.len(),
+            (Some(i), false) => (i + 1) % ORDER.len(),
+            // Settings, camera and voice are not in the cycle: Tab goes to the first tab, Shift+Tab to the last.
+            (None, true) => ORDER.len() - 1,
+            (None, false) => 0,
+        };
+        go(app, ORDER[next]);
+        return true;
+    }
     let _ = alt;
     match page.as_str() {
         "image" => viewer::on_key(app, text, ctrl, shift),
@@ -552,7 +579,12 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
 
 /// Checks for an update in the background; `manual` reports "up to date" and failures too.
 pub fn check_updates(app: &Rc<App>, manual: bool) {
+    // One check at a time; a finished download stays until it is applied.
+    static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if app.update.borrow().is_some() {
+        return;
+    }
+    if IN_FLIGHT.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
     if manual {
@@ -562,6 +594,7 @@ pub fn check_updates(app: &Rc<App>, manual: bool) {
     }
     std::thread::spawn(move || {
         let outcome = crate::update::check_and_download();
+        IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
         post(move |a| {
             use crate::update::Outcome;
             let text = match outcome {
@@ -660,10 +693,14 @@ fn clear_all(app: &Rc<App>) {
 pub fn handle_request(request: crate::instance::Request) {
     use crate::instance::Request;
     with_app(|a| match request {
-        Request::Show => show_main(a),
+        Request::Show => {
+            show_main(a);
+            check_updates(a, false);
+        }
         Request::Open(p) => {
             show_main(a);
             queue_open(a, PathBuf::from(p));
+            check_updates(a, false);
         }
         Request::Snip(mode) => capturectl::snip(a, &mode),
         Request::Nothing => {}
@@ -789,4 +826,35 @@ pub fn take_ask_answer(app: &Rc<App>, choice: i32) -> bool {
     shell.set_confirm_secondary("Don't save".into());
     then(app, choice);
     true
+}
+
+thread_local! {
+    static DROPPED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    static HOVERED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A file dropped on the window. Winit sends HoveredFile once per file when the drag enters the window, before the drop,
+/// so the number of files in the drop is known: when that many have arrived they open together at once, with no wait.
+/// If the count never matches (no hover events), a zero-length timer opens whatever has arrived.
+pub fn queue_drop(app: &Rc<App>, path: PathBuf) {
+    let expected = HOVERED.with(|h| h.get());
+    let ready = DROPPED.with(|d| {
+        let mut d = d.borrow_mut();
+        d.push(path);
+        expected == 0 || d.len() >= expected
+    });
+    if ready {
+        flush_drop(app);
+        return;
+    }
+    let app = app.clone();
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || flush_drop(&app));
+}
+
+fn flush_drop(app: &Rc<App>) {
+    HOVERED.with(|h| h.set(0));
+    let paths = DROPPED.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    if !paths.is_empty() {
+        open_many(app, &paths);
+    }
 }

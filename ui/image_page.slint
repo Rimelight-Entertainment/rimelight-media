@@ -36,6 +36,8 @@ component Handle inherits Rectangle {
     callback drag(length, length);
     callback start();
     in property <MouseCursor> cursor: move;
+    // Shift was held when the press started (read it in the drag: a corner keeps its proportions).
+    out property <bool> shift-at-press;
     width: 16px;
     height: 16px;
     border-radius: 3px;
@@ -45,7 +47,10 @@ component Handle inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: root.cursor;
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down { root.start(); }
+            if e.kind == PointerEventKind.down {
+                root.shift-at-press = e.modifiers.shift;
+                root.start();
+            }
         }
         moved => {
             if self.pressed { root.drag(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y); }
@@ -105,7 +110,8 @@ component PickerField inherits Rectangle {
 }
 
 export component ImagePage inherits Rectangle {
-    background: Tokens.stage;
+    // The empty tab uses the shared page colour; a picture is shown on the dark stage.
+    background: (Viewer.info-name == "" && !Viewer.canvas) ? Tokens.surface-base : Tokens.stage;
     // The custom colour box's text.
     property <string> hex-text;
     // The colour picker popup, opened from the custom colour swatch on the markup bar.
@@ -145,13 +151,13 @@ export component ImagePage inherits Rectangle {
         // when no picture is open; the buttons that need one are disabled. Hidden in full screen.
         if !Shell.full-screen: ToolBar {
             IconButton { icon: Icons.folder-open; label: "Open a file (Ctrl+O)"; clicked => { Shell.open-file(); } }
+            IconButton { icon: Icons.folder-search; label: "Show in folder"; enabled: Viewer.can-share; clicked => { Viewer.open-folder(); } }
             ToolDivider { }
             IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: root.has-pic && (Viewer.dirty || Viewer.canvas); clicked => { Viewer.save(); } }
             IconButton { icon: Icons.save-as; label: "Save as (Ctrl+Shift+S)"; enabled: root.has-pic; clicked => { Viewer.save-as(); } }
             IconButton { icon: Icons.copy; label: "Copy (Ctrl+C)"; enabled: root.has-pic; clicked => { Viewer.copy(); } }
             IconButton { icon: Icons.printer; label: "Print (Ctrl+P)"; enabled: root.has-pic && !Viewer.canvas; clicked => { Viewer.print(); } }
             IconButton { icon: Icons.share; label: "Share"; enabled: Viewer.can-share; clicked => { Viewer.share(); } }
-            IconButton { icon: Icons.folder-search; label: "Show in folder"; enabled: Viewer.can-share; clicked => { Viewer.open-folder(); } }
             ToolDivider { }
             IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: Viewer.can-undo; clicked => { Viewer.undo(); } }
             IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: Viewer.can-redo; clicked => { Viewer.redo(); } }
@@ -193,7 +199,7 @@ export component ImagePage inherits Rectangle {
             if Shell.recording || Viewer.info-name != "": ToolDivider { }
             if Shell.recording: IconButton { icon: Icons.stop; label: "Stop recording"; clicked => { Shell.stop-recording(); } }
             // Closes the picture back to the empty tab (shown only when one is open).
-            if Viewer.info-name != "": IconButton { icon: Icons.x; label: "Close the picture"; clicked => { Shell.close-tab(); } }
+            IconButton { icon: Icons.x; label: "Close the picture"; enabled: Viewer.info-name != ""; clicked => { Shell.close-tab(); } }
         }
 
         // The edit in progress (crop, draw, resize), under the toolbar. Markup takes two rows: the tools and the
@@ -374,7 +380,7 @@ export component ImagePage inherits Rectangle {
             }
 
             stage := Rectangle {
-                background: Tokens.stage;
+                background: (Viewer.info-name == "" && !Viewer.canvas) ? Tokens.surface-base : Tokens.stage;
                 clip: true;
 
                 property <float> fit-scale: min((self.width - 48px) / 1px / Viewer.pic-w, (self.height - 48px) / 1px / Viewer.pic-h, 1.0);
@@ -579,6 +585,7 @@ export component ImagePage inherits Rectangle {
                                 press-y = self.mouse-y + self.y;
                                 press-pic-x = self.mouse-x / stage.s / 1px;
                                 press-pic-y = self.mouse-y / stage.s / 1px;
+                                Viewer.mark-shift = e.modifiers.shift;
                                 Viewer.mark-begin(press-pic-x, press-pic-y);
                             } else if e.kind == PointerEventKind.up {
                                 Viewer.mark-end();
@@ -744,9 +751,11 @@ export component ImagePage inherits Rectangle {
                     property <float> bw: max(1, Viewer.resize-w.to-float());
                     property <float> bh: max(1, Viewer.resize-h.to-float());
                     // Sets the new size; with the proportions lock the other side follows (from the height when from-height).
-                    function set-size(w: float, h: float, from-height: bool) {
-                        let nw = Viewer.resize-keep && from-height ? h * Viewer.pic-w / Viewer.pic-h : w;
-                        let nh = Viewer.resize-keep && !from-height ? w * Viewer.pic-h / Viewer.pic-w : h;
+                    // `force` locks the proportions for this drag alone (Shift on a corner), as the lock toggle does.
+                    function set-size(w: float, h: float, from-height: bool, force: bool) {
+                        let keep = Viewer.resize-keep || force;
+                        let nw = keep && from-height ? h * Viewer.pic-w / Viewer.pic-h : w;
+                        let nh = keep && !from-height ? w * Viewer.pic-h / Viewer.pic-w : h;
                         Viewer.resize-w = round(clamp(nw, 1, 30000)) + "";
                         Viewer.resize-h = round(clamp(nh, 1, 30000)) + "";
                     }
@@ -757,26 +766,26 @@ export component ImagePage inherits Rectangle {
                         height: rz.bh * rz.height / Viewer.pic-h;
                         border-width: 2px;
                         border-color: #FFFFFF;
-                        Handle {
+                        corner-h := Handle {
                             x: parent.width - 8px;
                             y: parent.height - 8px;
                             cursor: nwse-resize;
                             start => { rz.sw = rz.bw; rz.sh = rz.bh; }
-                            drag(dx, dy) => { rz.set-size(rz.sw + dx / 1px / stage.s, rz.sh + dy / 1px / stage.s, false); }
+                            drag(dx, dy) => { rz.set-size(rz.sw + dx / 1px / stage.s, rz.sh + dy / 1px / stage.s, false, corner-h.shift-at-press); }
                         }
                         Handle {
                             x: parent.width - 8px;
                             y: parent.height / 2 - 8px;
                             cursor: ew-resize;
                             start => { rz.sw = rz.bw; rz.sh = rz.bh; }
-                            drag(dx, dy) => { rz.set-size(rz.sw + dx / 1px / stage.s, rz.sh, false); }
+                            drag(dx, dy) => { rz.set-size(rz.sw + dx / 1px / stage.s, rz.sh, false, false); }
                         }
                         Handle {
                             x: parent.width / 2 - 8px;
                             y: parent.height - 8px;
                             cursor: ns-resize;
                             start => { rz.sw = rz.bw; rz.sh = rz.bh; }
-                            drag(dx, dy) => { rz.set-size(rz.sw, rz.sh + dy / 1px / stage.s, true); }
+                            drag(dx, dy) => { rz.set-size(rz.sw, rz.sh + dy / 1px / stage.s, true, false); }
                         }
                     }
                 }
@@ -832,8 +841,7 @@ export component ImagePage inherits Rectangle {
                     width: parent.width;
                     height: parent.height;
                     on-stage: true;
-                    icon: Icons.image;
-                    icon-colour: Tokens.file-picture;
+                    icon-kind: "picture";
                     title: "Open a picture";
                     formats: ".3fr, .arw, .avif, .bmp, .cr2, .cr3, .dng, .erf, .gif, .heic, .heif, .hif, .ico, .iiq, .jfif, .jpeg, .jpg, .kdc, .mrw, .nef, .nrw, .orf, .pef, .png, .raf, .rw2, .rwl, .sr2, .srf, .srw, .svg, .webp, .x3f";
                     open-text: "Open a file";
@@ -924,6 +932,7 @@ export component ImagePage inherits Rectangle {
                 spacing: 6px;
                 IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details (I)"; active: Viewer.show-info; enabled: !Viewer.canvas; clicked => { Viewer.toggle-info(); } }
                 IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.film; label: "Filmstrip"; active: Viewer.filmstrip; enabled: !Viewer.canvas; clicked => { Viewer.toggle-filmstrip(); } }
+                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Viewer.slideshow-on ? Icons.pause : Icons.play; label: "Slideshow (S)"; active: Viewer.slideshow-on; enabled: root.has-pic && !Viewer.canvas; clicked => { Viewer.toggle-slideshow(); } }
             }
             Text { text: root.has-pic ? Viewer.facts-text : ""; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
             if Viewer.position != "": Text { text: Viewer.position; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }

@@ -1,103 +1,27 @@
-// Home: one centred column (max 640 px): the drop zone, then the recent files under it.
-import { ScrollView } from "std-widgets.slint";
-import { Tokens, Type } from "tokens.slint";
+// Home: the same layout as the empty tabs (toolbar, the shared EmptyState with Open a file and Recent, status bar).
+import { Tokens } from "tokens.slint";
 import { Icons } from "icons.slint";
-import { Button, ButtonKind, Card, RecentRow } from "widgets.slint";
+import { EmptyState, StatusBar, ToolBar } from "widgets.slint";
 import { Shell } from "state.slint";
-
-// The drop zone: drop a file here, or open one.
-component StartPanel inherits VerticalLayout {
-    alignment: start;
-
-    Rectangle {
-        min-height: 168px;
-        preferred-height: 168px;
-        border-radius: Tokens.radius-r8;
-        border-width: 2px;
-        border-color: Shell.drop-hover ? Tokens.accent-default : Tokens.border-subtle;
-        background: Shell.drop-hover ? Tokens.status-info-surface : Tokens.surface-raised;
-        VerticalLayout {
-            alignment: center;
-            spacing: Tokens.space-3;
-            padding: Tokens.space-3;
-            HorizontalLayout {
-                alignment: center;
-                spacing: Tokens.space-2;
-                Image { source: Icons.image; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.file-picture; }
-                Image { source: Icons.video; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.file-video; }
-                Image { source: Icons.music; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.file-music; }
-                Image { source: Icons.text; width: Tokens.icon-large; height: Tokens.icon-large; colorize: Tokens.file-text; }
-            }
-            Text {
-                text: "Drop an image, video, audio or text file here";
-                color: Tokens.text-primary;
-                font-size: Type.heading;
-                font-weight: 600;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-            }
-            HorizontalLayout {
-                alignment: center;
-                Button {
-                    text: "Open a file";
-                    kind: ButtonKind.primary;
-                    has-icon: true;
-                    icon: Icons.folder-open;
-                    clicked => { Shell.open-file(); }
-                }
-            }
-        }
-    }
-}
-
-component RecentPanel inherits VerticalLayout {
-    spacing: Tokens.space-3;
-    HorizontalLayout {
-        Text { text: "Recent"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; vertical-alignment: center; }
-        Rectangle { horizontal-stretch: 1; }
-        if Shell.recents.length > 0: Button {
-            text: "Clear";
-            kind: ButtonKind.ghost;
-            clicked => { Shell.clear-recents(""); }
-        }
-    }
-    if Shell.recents.length == 0: Text {
-        text: "Files you open show up here.";
-        color: Tokens.text-muted;
-        font-size: Type.body;
-        wrap: word-wrap;
-    }
-    if Shell.recents.length > 0: Card {
-        VerticalLayout {
-            padding: Tokens.space-1;
-            for r[i] in Shell.recents: RecentRow {
-                item: r;
-                clicked => { Shell.open-recent(r.index); }
-            }
-        }
-    }
-}
 
 export component HomePage inherits Rectangle {
     background: Tokens.surface-base;
 
-    ScrollView {
-        VerticalLayout {
-            // At least the visible height, so the drop zone and Recent block sit in the middle (scrolls when long).
-            min-height: root.height;
-            padding: Tokens.space-6;
-            spacing: Tokens.space-6;
-            alignment: center;
-            HorizontalLayout {
-                alignment: center;
-                VerticalLayout {
-                    width: min(640px, root.width - 2 * Tokens.space-6);
-                    spacing: Tokens.space-6;
-                    alignment: start;
-                    StartPanel { }
-                    RecentPanel { }
-                }
-            }
+    VerticalLayout {
+        // The second toolbar row every other tab has (empty here), so the Recent list sits at the same height on all pages.
+        ToolBar { }
+        EmptyState {
+            vertical-stretch: 1;
+            icon: Icons.app-icon;
+            icon-full-colour: true;
+            title: "Open a file";
+            hint: "Drag and drop an image, audio, video, or text file to open it, or select below.";
+            recents: Shell.recents;
+            open => { Shell.open-file(); }
+            open-recent(i) => { Shell.open-recent(i); }
+            clear-recents => { Shell.clear-recents(""); }
         }
+        // The same empty bar as the other tabs, so every page ends the same way.
+        StatusBar { }
     }
 }

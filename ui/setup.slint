@@ -56,8 +56,8 @@ export component SetupWindow inherits Window {
         Group {
             title: "SCREENSHOTS AND RECORDING";
             Toggle {
-                text: "Start with Windows (in the tray)";
-                detail: "Keeps Print Screen snipping and recording ready even when no window is open.";
+                text: "Start with Windows";
+                detail: "Launches Rimelight Media in the tray at sign-in, so Print Screen snipping and recording are ready even when no window is open. Close to tray is the matching setting in Settings.";
                 checked <=> root.startup;
             }
             if root.windows-printscreen-on: Toggle {

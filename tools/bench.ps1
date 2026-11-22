@@ -5,8 +5,8 @@
 # The live run opens each app for a moment and closes it again. An app that is already open is skipped, so nothing you
 # have open gets closed. Rimelight Media must be installed (tools/pack.ps1 -Install).
 param(
-    [string]$Video = (Join-Path (Split-Path -Parent $PSScriptRoot) 'shots\sample.mkv'),
-    [string]$Picture = (Join-Path (Split-Path -Parent $PSScriptRoot) 'shots\sample.png'),
+    [string]$Video = (Join-Path (Split-Path -Parent $PSScriptRoot) 'samples\sample.mkv'),
+    [string]$Picture = (Join-Path (Split-Path -Parent $PSScriptRoot) 'samples\sample.png'),
     [int]$Seconds = 15,
     [switch]$SizeOnly
 )

@@ -18,6 +18,14 @@ export struct Mark {
     filled: bool,
 }
 
+// One file in the playlist (the other files of the same kind in its folder): its name, whether it is playing, and its
+// place in the list (play-item takes it).
+export struct PlaylistItem {
+    name: string,
+    current: bool,
+    index: int,
+}
+
 // One picture in the filmstrip.
 export struct Thumb {
     image: image,
@@ -44,6 +52,8 @@ export global Shell {
     in property <bool> recording;
     in property <string> recording-time;
     in property <bool> drop-hover;
+    // True while a text field has keyboard focus: Tab then belongs to the field, not to the tab cycle.
+    in-out property <bool> field-focus;
     // The file name in the title (empty when there is no file): click it to rename.
     in property <string> title-name;
 
@@ -172,6 +182,8 @@ export global Viewer {
     callback crop-preset(float);
     callback apply-resize();
     callback resize-edited(bool); // true: width changed
+    // Shift was held when a mark's press started: its corner handle keeps the box's proportions.
+    in-out property <bool> mark-shift;
     callback mark-begin(float, float);
     callback mark-move(float, float);
     callback mark-end();
@@ -222,6 +234,10 @@ export global Viewer {
     callback thumb-clicked(int, bool);
     callback close-compare();
 
+    // Slideshow: moves through the folder's pictures every few seconds, wrapping at the end.
+    in property <bool> slideshow-on;
+    callback toggle-slideshow();
+
     // Markup tools and colours.
     callback set-tool(int);
     callback pick-colour(color);
@@ -267,6 +283,11 @@ export global Player {
     in property <[Choice]> subtitle-tracks;
     in property <string> media-title;
     in property <string> media-detail;
+    // Details panel (Audio and Video tabs): the file name, then the facts as lines of "Label: value".
+    in property <bool> show-info;
+    in property <string> info-name;
+    in property <string> info-detail;
+    callback toggle-info();
     in property <string> error;
     in property <bool> buffering;
     in-out property <bool> trim-mode;
@@ -305,6 +326,19 @@ export global Player {
     in property <float> sub-w;
     in property <float> sub-h;
 
+    // Playlist panel (Audio and Video tabs): the files opened together, or the folder's files of the same kind.
+    in property <[PlaylistItem]> playlist;
+    in property <bool> playlist-on;
+    in property <bool> has-prev;
+    in property <bool> has-next;
+    callback toggle-playlist();
+    callback play-item(int);
+    callback play-next();
+    callback play-prev();
+    // Continue: the next playlist item plays when one ends.
+    in-out property <bool> auto-next: true;
+    callback toggle-auto-next();
+
     callback toggle-play();
     callback seek(float);
     callback seek-preview(float);
@@ -324,6 +358,7 @@ export global Player {
     callback trim-redo();
     callback trim-discard();
     callback share();
+    callback open-folder();
     callback pick-speed(int);
     callback speed-step(int);
     callback set-speed(float); // 0.25 to 3 (Rust rounds to steps of 0.05)
@@ -474,13 +509,27 @@ export global TextDoc {
     in property <bool> code-file: false;
     // The text up to the caret, with a mark after it: the editor lays it out to scroll the caret into view.
     in property <string> caret-prefix;
+    // The Details panel (the info button): its name and facts, filled in by Rust (textctl.rs).
+    in-out property <bool> show-info;
+    in property <string> info-name;
+    in property <string> info-detail;
+    callback toggle-info();
 
     callback caret-moved(int);
     callback edited();
+    // Tab in the editor: inserts a tab at the caret (or over the selection; the two byte offsets are the caret and the anchor).
+    callback insert-tab(int, int);
     callback save();
     callback save-as();
     callback new-doc();
     callback revert(); // reload the file from disk, dropping the changes
+    // Undo and redo of the text (Rust keeps the history); Share sends the saved file.
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    callback undo();
+    callback redo();
+    callback share();
+    callback open-folder();
     callback format-json(int); // 2 or 4 spaces
     callback minify-json();
     callback validate-json();
@@ -496,8 +545,10 @@ export global TextDoc {
 
 export global Settings {
     in-out property <int> theme: 2; // 0 light, 1 dark, 2 system
+    // Close to tray: the window closes into the tray and the keys keep working.
     in-out property <bool> background: false;
-    in-out property <bool> desktop-shortcut: true;
+    // Start with Windows: launch at sign-in (the Run entry, read and written in settingsctl.rs).
+    in-out property <bool> start-with-windows: false;
     // Print Screen goes to Rimelight Media (Windows' own Print Screen snipping is off).
     in-out property <bool> printscreen-ours: false;
     in-out property <bool> snip-copy: true;
@@ -512,7 +563,6 @@ export global Settings {
     in property <bool> installed;
     in property <string> install-state;
     in property <string> update-state;
-    in property <string> defaults-state;
     in property <string> about;
 
     callback changed();
@@ -520,7 +570,6 @@ export global Settings {
     callback open-releases();
     callback register-defaults();
     callback open-default-settings();
-    callback open-printscreen-settings();
     callback pick-folder(bool); // true: screenshots
     in property <string> canvas-folder;
     callback pick-canvas-folder();

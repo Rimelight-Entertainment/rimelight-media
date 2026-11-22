@@ -154,6 +154,10 @@ pub struct MediaInfo {
     pub audio_codec: String,
     pub sample_rate: u32,
     pub channels: u16,
+    /// The container's short name from FFmpeg (for example "mp3" or "matroska").
+    pub container: String,
+    /// The file's tags that are set: (label, value), for the Details panel.
+    pub tags: Vec<(String, String)>,
 }
 
 fn language_name(code: &str) -> String {
@@ -296,7 +300,30 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
         }
     }
     info.bitrate = ictx.bit_rate().max(0) as u64;
+    info.container = ictx
+        .format()
+        .name()
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .to_string();
     let meta = ictx.metadata();
+    // The tags for the Details panel: only the ones the file sets.
+    let year = meta.get("date").or_else(|| meta.get("year"));
+    for (key, label) in [
+        ("title", "Title"),
+        ("artist", "Artist"),
+        ("album", "Album"),
+        ("track", "Track"),
+        ("genre", "Genre"),
+    ] {
+        if let Some(v) = meta.get(key).map(str::trim).filter(|v| !v.is_empty()) {
+            info.tags.push((label.to_string(), v.to_string()));
+        }
+    }
+    if let Some(v) = year.map(str::trim).filter(|v| !v.is_empty()) {
+        info.tags.push(("Year".to_string(), v.to_string()));
+    }
     info.title = meta
         .get("title")
         .filter(|t| !t.trim().is_empty())

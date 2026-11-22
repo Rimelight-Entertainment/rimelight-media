@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize as _;
@@ -62,7 +62,18 @@ pub struct TextState {
     pending: Option<Pending>,
     /// Bumped on each edit: a highlight scheduled earlier does nothing when a later edit has come.
     hl_gen: u32,
+    /// Undo and redo: `last` is the text as of the last edit (or load); `undo` holds the text before each step.
+    last: String,
+    undo: Vec<String>,
+    redo: Vec<String>,
+    /// When the last edit came: edits within UNDO_BURST of it are one undo step.
+    last_edit: Option<Instant>,
 }
+
+/// Undo steps kept (each one a copy of the text).
+const UNDO_MAX: usize = 200;
+/// Edits closer together than this are one undo step (typing a word is one Undo, not one per letter).
+const UNDO_BURST: Duration = Duration::from_millis(800);
 
 /// What to do once the unsaved-changes question is answered (Save, or Don't save; Cancel does nothing).
 pub enum Pending {
@@ -91,6 +102,7 @@ pub fn wire(app: &Rc<App>) {
         })
     });
     d.on_edited(|| with_app(edited));
+    d.on_insert_tab(|at, anchor| with_app(move |a| insert_tab(a, at, anchor)));
     d.on_save(|| {
         with_app(|a| {
             save(a, false);
@@ -120,7 +132,19 @@ pub fn wire(app: &Rc<App>) {
         with_app(|a| replace_all(a, &needle, &repl))
     });
     d.on_revert(|| with_app(revert));
+    d.on_undo(|| with_app(undo));
+    d.on_redo(|| with_app(redo));
+    d.on_share(|| with_app(share));
+    d.on_open_folder(|| {
+        with_app(|a| {
+            let path = a.text.borrow().path.clone();
+            if let Some(path) = path {
+                files::reveal(&path);
+            }
+        })
+    });
     d.set_text_font(app.prefs.borrow().text_font);
+    d.on_toggle_info(|| with_app(toggle_info));
     d.on_set_text_font(|i| with_app(|a| set_font(a, i)));
     app.ui
         .global::<ui::Shell>()
@@ -177,12 +201,16 @@ fn load(app: &Rc<App>, path: &Path) {
     }
     set_meta(app, path);
     let d = doc(app);
-    d.set_text(text.replace("\r\n", "\n").into());
+    let text = text.replace("\r\n", "\n");
+    app.text.borrow_mut().last = text.clone();
+    d.set_text(text.into());
+    history_flags(app);
     d.set_dirty(false);
     d.set_view(if d.get_markdown() { 1 } else { 0 });
     app::go(app, "text");
     refresh(app);
     update_status(app);
+    refresh_info(app);
     app::update_title(app);
     highlight_now(app);
 }
@@ -221,6 +249,9 @@ pub fn clear(app: &Rc<App>) {
     d.set_has_doc(false);
     d.set_dirty(false);
     d.set_file_name("".into());
+    d.set_show_info(false);
+    d.set_info_name("".into());
+    d.set_info_detail("".into());
     d.set_markdown(false);
     d.set_json(false);
     d.set_kind(KIND_PLAIN);
@@ -235,6 +266,7 @@ pub fn clear(app: &Rc<App>) {
     d.set_md_blocks(ModelRc::default());
     d.set_json_rows(ModelRc::default());
     drop_layers(app);
+    history_flags(app);
 }
 
 /// Frees the colour layers (one copy of the text per colour) once they no longer show.
@@ -321,8 +353,16 @@ pub fn revert(app: &Rc<App>) {
         None => {
             doc(app).set_text("".into());
             doc(app).set_dirty(false);
+            {
+                let mut st = app.text.borrow_mut();
+                st.last.clear();
+                st.undo.clear();
+                st.redo.clear();
+            }
+            history_flags(app);
             refresh(app);
             update_status(app);
+            refresh_info(app);
         }
     }
 }
@@ -376,6 +416,7 @@ pub fn save(app: &Rc<App>, as_new: bool) -> bool {
     app::remember(app, &path);
     app::update_title(app);
     update_status(app);
+    refresh_info(app);
     toast(app, format!("Saved {}", files::file_name(&path)));
     true
 }
@@ -441,16 +482,129 @@ fn apply_kind(app: &Rc<App>, k: i32) {
     }
     refresh(app);
     update_status(app);
+    refresh_info(app);
     highlight_now(app);
 }
 
 fn edited(app: &Rc<App>) {
+    record(app);
     app.text.borrow_mut().selection = None;
     doc(app).set_dirty(true);
     update_status(app);
     refresh(app);
     app::update_title(app);
     schedule_highlight(app);
+}
+
+/// Tab in the editor: a tab character replaces the selection (from `anchor` to the caret `at`, byte offsets), and the
+/// caret goes after it. The editor's own text input never sees the Tab key, so the insert is done here.
+fn insert_tab(app: &Rc<App>, at: i32, anchor: i32) {
+    let text = text_of(app);
+    let from = (at.min(anchor).max(0) as usize).min(text.len());
+    let to = (at.max(anchor).max(0) as usize).min(text.len());
+    if !text.is_char_boundary(from) || !text.is_char_boundary(to) {
+        return;
+    }
+    // Spaces up to the next 4-column tab stop: the editor font has no glyph for a tab character (it shows as a box).
+    let line_start = text[..from].rfind('\n').map_or(0, |i| i + 1);
+    let column = text[line_start..from].chars().count();
+    let spaces = 4 - column % 4;
+    let pad = " ".repeat(spaces);
+    let new = format!("{}{}{}", &text[..from], pad, &text[to..]);
+    let d = doc(app);
+    d.set_text(new.into());
+    app.text.borrow_mut().selection = None;
+    d.set_sel_start((from + spaces) as i32);
+    d.set_sel_end((from + spaces) as i32);
+    d.set_sel_serial(d.get_sel_serial() + 1);
+    edited(app);
+}
+
+/// Keeps the text before this edit for Undo. Edits in a burst (UNDO_BURST apart) share one step.
+fn record(app: &Rc<App>) {
+    let now = text_of(app);
+    {
+        let mut st = app.text.borrow_mut();
+        if now == st.last {
+            return;
+        }
+        let before = std::mem::replace(&mut st.last, now);
+        let burst = st.last_edit.is_some_and(|t| t.elapsed() < UNDO_BURST);
+        st.last_edit = Some(Instant::now());
+        st.redo.clear();
+        if !burst {
+            st.undo.push(before);
+            if st.undo.len() > UNDO_MAX {
+                st.undo.remove(0);
+            }
+        }
+    }
+    history_flags(app);
+}
+
+/// Undo (back) or redo: swaps the editor's text for the step's text.
+fn step(app: &Rc<App>, back: bool) {
+    let text = {
+        let mut guard = app.text.borrow_mut();
+        let st = &mut *guard;
+        let (from, to) = if back {
+            (&mut st.undo, &mut st.redo)
+        } else {
+            (&mut st.redo, &mut st.undo)
+        };
+        let Some(prev) = from.pop() else {
+            return;
+        };
+        to.push(std::mem::replace(&mut st.last, prev.clone()));
+        st.last_edit = None;
+        prev
+    };
+    let d = doc(app);
+    d.set_text(text.into());
+    d.set_dirty(true);
+    refresh(app);
+    update_status(app);
+    app::update_title(app);
+    schedule_highlight(app);
+    history_flags(app);
+}
+
+fn undo(app: &Rc<App>) {
+    step(app, true);
+}
+
+fn redo(app: &Rc<App>) {
+    step(app, false);
+}
+
+/// Sets the Undo and Redo buttons' enabled state from the history.
+fn history_flags(app: &Rc<App>) {
+    let (has_undo, has_redo) = {
+        let st = app.text.borrow();
+        (!st.undo.is_empty(), !st.redo.is_empty())
+    };
+    let d = doc(app);
+    d.set_can_undo(has_undo);
+    d.set_can_redo(has_redo);
+}
+
+/// Share (as the picture and video tabs): the saved file. Changes not saved yet are not in it.
+fn share(app: &Rc<App>) {
+    let Some(path) = app.text.borrow().path.clone().filter(|p| p.exists()) else {
+        toast(app, "Save the text first, then share it.");
+        return;
+    };
+    if is_dirty(app) {
+        toast(
+            app,
+            "Sharing the saved file: changes not saved yet aren't included.",
+        );
+    }
+    if let Err(e) =
+        crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
+    {
+        toast(app, format!("Could not share: {e}"));
+    }
 }
 
 /// Highlights the editor's text for its file type now (the overlay layers under the editor; see highlight.rs). Turns the
@@ -533,6 +687,8 @@ fn schedule_highlight(app: &Rc<App>) {
         with_app(|a| {
             if a.text.borrow().hl_gen == hl_ticket {
                 highlight_now(a);
+                // The Details facts follow the text after the pause too (only while the panel is open).
+                refresh_info(a);
             }
         })
     });
@@ -561,6 +717,77 @@ fn update_status(app: &Rc<App>) {
         )
     };
     doc(app).set_status(status.into());
+}
+
+/// The Details info button: opens or closes the panel, and fills it when it opens.
+fn toggle_info(app: &Rc<App>) {
+    let show = !doc(app).get_show_info();
+    doc(app).set_show_info(show);
+    if show {
+        update_info(app);
+    }
+}
+
+/// Fills the Details panel again, but only while it is open: the facts cost a copy of the text, so they are not kept
+/// up to date while the panel is closed (toggle_info fills it when it opens). Called after a load, a save, a change of
+/// file type, and each pause in typing (schedule_highlight), never on each key.
+fn refresh_info(app: &Rc<App>) {
+    if doc(app).get_show_info() {
+        update_info(app);
+    }
+}
+
+/// The Details panel's name and lines: the file type, size on disk (the text as save would write it), encoding, line
+/// ends, lines, words and characters, then for a saved file its folder and when it changed (or "Not saved yet").
+fn update_info(app: &Rc<App>) {
+    let text = text_of(app);
+    let (path, enc, crlf) = {
+        let st = app.text.borrow();
+        (st.path.clone(), st.enc, st.crlf)
+    };
+    let d = doc(app);
+    let kind = KINDS[d.get_kind().clamp(0, KINDS.len() as i32 - 1) as usize].0;
+    let body = if crlf {
+        text.replace('\n', "\r\n")
+    } else {
+        text.clone()
+    };
+    let size = encode(enc, &body).len() as u64;
+    let lines = text.matches('\n').count() + 1;
+    let words = text.split_whitespace().count();
+    let mut detail = vec![
+        kind.to_string(),
+        files::human_size(size),
+        enc.label().to_string(),
+        if crlf { "CRLF" } else { "LF" }.to_string(),
+        format!(
+            "{lines} lines, {words} words, {} characters",
+            text.chars().count()
+        ),
+    ];
+    let name = match path.as_deref() {
+        Some(p) => {
+            if let Ok(modified) = std::fs::metadata(p).and_then(|m| m.modified())
+                && let Ok(age) = modified.elapsed()
+            {
+                let days = age.as_secs() / 86_400;
+                detail.push(match days {
+                    0 => "Changed today".to_string(),
+                    1 => "Changed yesterday".to_string(),
+                    n => format!("Changed {n} days ago"),
+                });
+            }
+            detail.push(String::new());
+            detail.push(files::folder_name(p));
+            files::file_name(p)
+        }
+        None => {
+            detail.push("Not saved yet".to_string());
+            "Untitled".to_string()
+        }
+    };
+    d.set_info_name(name.into());
+    d.set_info_detail(detail.join("\n").into());
 }
 
 /// Rebuilds the preview (Markdown) or the tree (JSON) after a change.

@@ -58,6 +58,14 @@ pub struct MediaState {
     /// Background threads that open the file (probe, waveform): each with its cancel flag. Cancelled when the player
     /// is taken, so no file stays open.
     tasks: Vec<(Arc<AtomicBool>, JoinHandle<()>)>,
+    /// The playlist: the files opened together (mediactl::open_set), or the audio or video files in a single opened
+    /// file's folder (files::sibling_media), and the open file's place in it. Cleared on close.
+    playlist: Vec<PathBuf>,
+    playlist_index: usize,
+    /// Whether the playlist panel is shown. Kept across files; off on close.
+    playlist_on: bool,
+    /// Whether the next item plays when one ends (the Continue button). Kept across files and on close.
+    auto_next: bool,
 }
 
 /// Keeps a background thread so take_player can cancel and join it; finished ones are forgotten.
@@ -108,6 +116,10 @@ impl Default for MediaState {
             sub_before_off: None,
             markers: Vec::new(),
             tasks: Vec::new(),
+            playlist: Vec::new(),
+            playlist_index: 0,
+            playlist_on: false,
+            auto_next: true,
         }
     }
 }
@@ -167,6 +179,7 @@ pub fn wire(app: &Rc<App>) {
         })
     });
     p.on_toggle_mute(|| with_app(toggle_mute));
+    p.on_toggle_info(|| with_app(toggle_info));
     p.on_toggle_loop(|| with_app(cycle_loop));
     p.on_pick_audio(|i| with_app(move |a| pick_audio(a, i as usize)));
     p.on_pick_subtitle(|i| with_app(move |a| pick_subtitle(a, i as usize)));
@@ -179,6 +192,20 @@ pub fn wire(app: &Rc<App>) {
     p.on_trim_redo(|| with_app(|a| trim_step(a, false)));
     p.on_trim_discard(|| with_app(trim_discard));
     p.on_share(|| with_app(share));
+    p.on_toggle_playlist(|| with_app(toggle_playlist));
+    p.on_play_item(|i| with_app(move |a| play_item(a, i.max(0) as usize)));
+    p.on_play_next(|| with_app(|a| play_step(a, 1)));
+    p.on_play_prev(|| with_app(|a| play_step(a, -1)));
+    p.set_auto_next(app.media.borrow().auto_next);
+    p.on_toggle_auto_next(|| with_app(toggle_auto_next));
+    p.on_open_folder(|| {
+        with_app(|a| {
+            let path = a.media.borrow().path.clone();
+            if let Some(path) = path {
+                files::reveal(&path);
+            }
+        })
+    });
     p.on_pick_speed(|i| {
         with_app(move |a| set_speed(a, SPEEDS.get(i as usize).copied().unwrap_or(1.0)))
     });
@@ -201,7 +228,37 @@ pub fn wire(app: &Rc<App>) {
         });
 }
 
+/// Opens one file on its own. The playlist becomes the folder's files of the same kind (files::sibling_media), so
+/// Next and Previous walk the folder.
 pub fn open(app: &Rc<App>, path: &Path) {
+    {
+        let mut m = app.media.borrow_mut();
+        m.playlist = match files::kind_of(path) {
+            Some(kind @ (files::Kind::Audio | files::Kind::Video)) => files::sibling_media(path, kind),
+            _ => vec![path.to_path_buf()],
+        };
+    }
+    load(app, path);
+}
+
+/// Opens several audio or video files picked or dropped together. The playlist is exactly these files, of the first
+/// file's kind (others are ignored), in the order given.
+pub fn open_set(app: &Rc<App>, paths: &[PathBuf]) {
+    let Some(first) = paths.first() else { return };
+    let Some(kind) = files::kind_of(first) else { return };
+    let mut list: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        if files::kind_of(p) == Some(kind) && !list.contains(p) {
+            list.push(p.clone());
+        }
+    }
+    app.media.borrow_mut().playlist = list;
+    load(app, first);
+}
+
+/// Starts a file that is already in the playlist: sets its place and loads it. Shared by open, open_set, the panel,
+/// Next and Previous, and auto-advance.
+fn load(app: &Rc<App>, path: &Path) {
     // Stop what was playing.
     let generation = {
         let mut m = app.media.borrow_mut();
@@ -209,8 +266,10 @@ pub fn open(app: &Rc<App>, path: &Path) {
         m.generation += 1;
         m.path = Some(path.to_path_buf());
         m.info = None;
+        m.playlist_index = m.playlist.iter().position(|p| p == path).unwrap_or(0);
         m.generation
     };
+    refresh_playlist(app);
     let p = player_ui(app);
     p.set_buffering(true);
     p.set_error(SharedString::new());
@@ -225,6 +284,8 @@ pub fn open(app: &Rc<App>, path: &Path) {
     p.set_frame(slint::Image::default());
     p.set_media_title(files::file_name(path).into());
     p.set_media_detail(SharedString::new());
+    p.set_info_name(files::file_name(path).into());
+    p.set_info_detail(SharedString::new());
     p.set_has_video(files::kind_of(path) == Some(files::Kind::Video));
     go(
         app,
@@ -259,6 +320,75 @@ pub fn open(app: &Rc<App>, path: &Path) {
     track(&mut app.media.borrow_mut(), cancel, handle);
 }
 
+/// Whether the trim range was moved from the whole file (an edit not yet saved or discarded).
+fn trim_dirty(m: &MediaState) -> bool {
+    m.info.as_ref().is_some_and(|i| m.trim != (0, i.duration_ms))
+}
+
+/// Pushes the playlist to the Player page: the items, which one is current, the panel's state and whether Previous
+/// and Next have a target.
+fn refresh_playlist(app: &Rc<App>) {
+    let (items, index, on) = {
+        let m = app.media.borrow();
+        let items: Vec<ui::PlaylistItem> = m
+            .playlist
+            .iter()
+            .enumerate()
+            .map(|(i, p)| ui::PlaylistItem {
+                name: files::file_name(p).into(),
+                current: i == m.playlist_index,
+                index: i as i32,
+            })
+            .collect();
+        (items, m.playlist_index, m.playlist_on)
+    };
+    let len = items.len();
+    let p = player_ui(app);
+    p.set_playlist(ModelRc::new(VecModel::from(items)));
+    p.set_has_prev(index > 0);
+    p.set_has_next(index + 1 < len);
+    p.set_playlist_on(on);
+}
+
+fn toggle_playlist(app: &Rc<App>) {
+    {
+        let mut m = app.media.borrow_mut();
+        m.playlist_on = !m.playlist_on;
+    }
+    refresh_playlist(app);
+}
+
+/// The Continue button: whether the next item plays when one ends.
+fn toggle_auto_next(app: &Rc<App>) {
+    let on = {
+        let mut m = app.media.borrow_mut();
+        m.auto_next = !m.auto_next;
+        m.auto_next
+    };
+    player_ui(app).set_auto_next(on);
+}
+
+/// Opens the playlist item at `i`, if there is one (the panel's rows, Next and Previous).
+fn play_item(app: &Rc<App>, i: usize) {
+    let path = app.media.borrow().playlist.get(i).cloned();
+    if let Some(path) = path {
+        load(app, &path);
+        remember(app, &path);
+    }
+}
+
+/// Next (+1) or Previous (-1). No wrap: at either end nothing happens.
+fn play_step(app: &Rc<App>, delta: isize) {
+    let target = {
+        let m = app.media.borrow();
+        let i = m.playlist_index as isize + delta;
+        (i >= 0 && (i as usize) < m.playlist.len()).then_some(i as usize)
+    };
+    if let Some(i) = target {
+        play_item(app, i);
+    }
+}
+
 fn output_size(app: &Rc<App>) -> (u32, u32) {
     let s = app.ui.window().size();
     (s.width.max(320), s.height.max(240))
@@ -290,6 +420,7 @@ fn start(app: &Rc<App>, path: &Path, info: MediaInfo) {
     p.set_media_detail(detail.into());
     p.set_time_text(format!("{} / {}", files::clock(0), files::clock(info.duration_ms)).into());
     p.set_meta_text(meta_text(path, &info).into());
+    p.set_info_detail(info_detail(path, &info).into());
     // Markers saved beside the file: ticks on the seek bar.
     let markers = read_markers(path, info.duration_ms);
     set_markers(app, &markers, info.duration_ms);
@@ -407,6 +538,12 @@ fn tick(app: &Rc<App>) {
     let ended = pl.ended();
     let (subtitle, sub_picture) = pl.subtitle_now();
     let error = pl.error();
+    // Auto-advance: when the item ends, and nothing repeats it or waits on an unsaved trim, the next item plays.
+    let advance = if ended && m.auto_next && m.loop_mode == 0 && !trim_dirty(&m) {
+        m.playlist.get(m.playlist_index + 1).cloned()
+    } else {
+        None
+    };
     m.last_size = size;
     if replay {
         m.repeated = true;
@@ -454,6 +591,10 @@ fn tick(app: &Rc<App>) {
     } else if p.get_error().starts_with("Sound output") {
         // The output recovered: its error goes away (other errors stay until the next file).
         p.set_error(Default::default());
+    }
+    if let Some(next) = advance {
+        load(app, &next);
+        remember(app, &next);
     }
 }
 
@@ -995,8 +1136,14 @@ pub fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool) -> bool {
         toggle_mute(app);
     } else if text == "f" {
         crate::app::toggle_full_screen(app);
+    } else if text == "i" {
+        toggle_info(app);
     } else if text == "l" {
         player_ui(app).invoke_toggle_loop();
+    } else if text == "n" || text == "N" {
+        play_step(app, 1);
+    } else if text == "p" || text == "P" {
+        play_step(app, -1);
     } else if k(Key::Home) {
         seek_fraction(app, 0.0);
     } else {
@@ -1059,6 +1206,77 @@ fn trim_drag(app: &Rc<App>, start: bool, frac: f32) {
     update_trim_text(app);
 }
 
+/// The speaker layout of a channel count ("stereo", "5.1", or "3 ch").
+fn channel_name(n: u16) -> String {
+    match n {
+        0 => String::new(),
+        1 => "mono".to_string(),
+        2 => "stereo".to_string(),
+        6 => "5.1".to_string(),
+        8 => "7.1".to_string(),
+        n => format!("{n} ch"),
+    }
+}
+
+/// The Details panel text: one "Label: value" line per fact the file has, then the folder and the date changed.
+/// Audio and video files share it; a video file also shows its picture's codec and size.
+fn info_detail(path: &Path, info: &MediaInfo) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if !info.container.is_empty() {
+        lines.push(format!("Format: {}", info.container.to_uppercase()));
+    }
+    if info.video.is_some() {
+        if !info.video_codec.is_empty() {
+            lines.push(format!("Video codec: {}", info.video_codec));
+        }
+        lines.push(format!("Resolution: {} × {}", info.width, info.height));
+        if info.fps > 0.0 {
+            lines.push(format!("Frame rate: {:.2} fps", info.fps));
+        }
+    }
+    lines.push(format!("Duration: {}", files::clock(info.duration_ms)));
+    if info.bitrate > 0 {
+        lines.push(format!("Bitrate: {} kbps", info.bitrate / 1000));
+    }
+    if !info.audio_codec.is_empty() {
+        lines.push(format!("Audio codec: {}", info.audio_codec));
+        if info.sample_rate > 0 {
+            lines.push(format!(
+                "Sample rate: {} kHz",
+                f64::from(info.sample_rate) / 1000.0
+            ));
+        }
+        if info.channels > 0 {
+            lines.push(format!("Channels: {}", channel_name(info.channels)));
+        }
+    }
+    for (label, value) in &info.tags {
+        lines.push(format!("{label}: {value}"));
+    }
+    if let Ok(meta) = std::fs::metadata(path) {
+        lines.push(format!("Size: {}", files::human_size(meta.len())));
+        if let Ok(modified) = meta.modified()
+            && let Ok(age) = modified.elapsed()
+        {
+            let days = age.as_secs() / 86_400;
+            lines.push(match days {
+                0 => "Changed today".to_string(),
+                1 => "Changed yesterday".to_string(),
+                d => format!("Changed {d} days ago"),
+            });
+        }
+    }
+    lines.push(String::new());
+    lines.push(files::folder_name(path));
+    lines.join("\n")
+}
+
+/// Shows or hides the Details panel (the info button, or the I key).
+fn toggle_info(app: &Rc<App>) {
+    let p = player_ui(app);
+    p.set_show_info(!p.get_show_info());
+}
+
 /// The status bar text: codec, bitrate, sample rate and channels (or resolution and fps), duration and size.
 fn meta_text(path: &Path, info: &MediaInfo) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -1074,18 +1292,7 @@ fn meta_text(path: &Path, info: &MediaInfo) -> String {
         if info.sample_rate > 0 {
             parts.push(format!("{} kHz", f64::from(info.sample_rate) / 1000.0));
         }
-        parts.push(
-            match info.channels {
-                0 => String::new(),
-                1 => "mono".to_string(),
-                2 => "stereo".to_string(),
-                6 => "5.1".to_string(),
-                8 => "7.1".to_string(),
-                n => format!("{n} ch"),
-            }
-            .trim()
-            .to_string(),
-        );
+        parts.push(channel_name(info.channels));
     }
     if info.bitrate > 0 {
         parts.push(format!("{} kbps", info.bitrate / 1000));
@@ -1240,7 +1447,11 @@ pub fn close(app: &Rc<App>) {
         m.trim_undo.clear();
         m.trim_redo.clear();
         m.trim_edit_at = None;
+        m.playlist.clear();
+        m.playlist_index = 0;
+        m.playlist_on = false;
     }
+    refresh_playlist(app);
     let p = player_ui(app);
     p.set_frame(slint::Image::default());
     p.set_media_title(SharedString::new());
@@ -1263,5 +1474,8 @@ pub fn close(app: &Rc<App>) {
     p.set_wave_bars(ModelRc::default());
     set_markers(app, &[], 1);
     p.set_meta_text(SharedString::new());
+    p.set_info_name(SharedString::new());
+    p.set_info_detail(SharedString::new());
+    p.set_show_info(false);
     crate::app::update_title(app);
 }

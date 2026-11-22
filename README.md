@@ -23,6 +23,10 @@ comes out. Then open **Settings > Install, updates and default apps > Open Windo
 for pictures, video, music and text (Settings lists any file type that still opens with another app). Uninstall from
 Windows Settings > Apps > Installed apps.
 
+Updates come from this repository's [latest release](https://github.com/Rimelight-Entertainment/rimelight-media/releases/latest).
+Installed copies check a few seconds after they open, download the update in the background and show **Restart to
+update** in the top bar; if you just quit, it's applied on the way out. **Settings > Check for updates** checks on demand.
+
 ## What it does
 
 - **Pictures:** PNG, JPEG, WebP, SVG, GIF, BMP, ICO, HEIC/HEIF, AVIF and camera RAW (DNG, CR2/CR3, NEF, ARW, RAF, ORF,
@@ -67,4 +71,10 @@ powershell -ExecutionPolicy Bypass -File tools/pack.ps1 -Install # release insta
 powershell -ExecutionPolicy Bypass -File tools/bench.ps1         # size, memory and CPU against the apps it replaces
 ```
 
-Releases: see [RELEASING.md](RELEASING.md). Third-party software: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+Releases (maintainers): push a `vX.Y.Z` tag matching `version` in `Cargo.toml`; GitHub Actions builds and publishes the
+installer. Details are in [AGENTS.md](AGENTS.md). Third-party software: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## License
+
+Rimelight Media is MIT licensed; see [LICENSE.md](LICENSE.md). Third-party components keep their own licences, listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
