@@ -1,7 +1,8 @@
-# Downloads the trimmed FFmpeg Rimelight Media links against (built by tools/ffmpeg/build.sh in the FFmpeg workflow and
-# published as a release asset of this repository), checks its SHA-256 and unpacks it to ffmpeg/current. Run once per
-# machine (tools/pack.ps1 runs it too):
+# Downloads the trimmed FFmpeg Rimelight Media links against (built by rimelight-rs tools/ffmpeg/build.sh and published as a
+# release asset of this repository), checks its SHA-256 and unpacks it to ffmpeg/current. Run once per machine
+# (tools/pack.ps1 runs it too):
 #   powershell -ExecutionPolicy Bypass -File tools/get-ffmpeg.ps1
+# The pin below mirrors rimelight-rs tools/ffmpeg/pin.txt (release, asset, sha256). Change both together.
 $ErrorActionPreference = 'Stop'
 $Release = 'ffmpeg-n9.0.2-r1'
 $Asset = 'rimelight-ffmpeg-n9.0.2-r1-win64-lgpl-shared.zip'

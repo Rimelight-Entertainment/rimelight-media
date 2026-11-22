@@ -14,7 +14,7 @@ use ffmpeg_next as ff;
 use super::audio_in::{self, Capture};
 use super::camera;
 
-use crate::platform::{ScreenGrabber, ScreenRect};
+use rimelight_platform::{ScreenGrabber, ScreenRect};
 
 /// A camera as the picture source: its latest frames at this size and frame rate.
 pub struct CameraSource {
@@ -361,7 +361,7 @@ fn run(
     clock_ms: &AtomicU64,
     ready: &mpsc::Sender<Result<Vec<String>, String>>,
 ) -> Result<(), String> {
-    crate::media::player::init()?;
+    rimelight_media::engine::player::init()?;
     if let Some(dir) = opts.path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

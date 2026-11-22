@@ -69,13 +69,13 @@ pub fn start(on_action: impl Fn(Action) + 'static) -> Option<Hotkeys> {
     };
     // Win+Shift+S: the low-level hook swallows it, and Windows' own snipping overlay (if it starts anyway) is caught by a
     // window-event hook. Both set the flag that is read here.
-    crate::platform::start_win_shift_s_hook();
+    rimelight_platform::start_win_shift_s_hook();
     let timer = slint::Timer::default();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(50),
         move || {
-            if crate::platform::take_win_shift_s() {
+            if rimelight_platform::take_win_shift_s() {
                 on_action(Action::SnipRegion);
             }
             while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {

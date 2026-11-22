@@ -1,16 +1,19 @@
 // Settings: default apps, install, background keys, capture folders and sound sources, appearance, about.
 import { ScrollView, AboutSlint } from "std-widgets.slint";
-import { Tokens, Type, ThemeChoice } from "tokens.slint";
-import { Icons } from "icons.slint";
-import { Button, ButtonKind, Card, Toggle } from "widgets.slint";
+import { Tokens } from "@rimelight_design/tokens.slint";
+import { Type } from "@rimelight_ui/typography.slint";
+import { Icons as SharedIcons } from "@rimelight_ui/icons.slint";
+import { Switch } from "@rimelight_ui/components/switch.slint";
+import { Button, ButtonVariant } from "@rimelight_ui/components/button.slint";
+import { Card } from "@rimelight_ui/components/card.slint";
 import { Settings } from "state.slint";
 
 component Section inherits VerticalLayout {
     in property <string> title;
     in property <string> detail;
     spacing: Tokens.space-2;
-    Text { text: root.title; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; wrap: word-wrap; }
-    if root.detail != "": Text { text: root.detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+    Text { text: root.title; color: Tokens.text-primary; font-size: Type.heading.size; font-weight: 600; wrap: word-wrap; }
+    if root.detail != "": Text { text: root.detail; color: Tokens.text-muted; font-size: Type.caption.size; wrap: word-wrap; }
     @children
 }
 
@@ -20,7 +23,7 @@ component KeyRow inherits HorizontalLayout {
     in property <string> action;
     spacing: Tokens.space-3;
     min-height: 28px;
-    Text { text: root.action; color: Tokens.text-muted; font-size: Type.body; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
+    Text { text: root.action; color: Tokens.text-muted; font-size: Type.body.size; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
     Rectangle {
         width: 190px;
         Rectangle {
@@ -31,7 +34,7 @@ component KeyRow inherits HorizontalLayout {
             background: Tokens.surface-sunken;
             border-width: 1px;
             border-color: Tokens.border-subtle;
-            k := Text { text: root.keys; color: Tokens.text-primary; font-size: Type.caption; }
+            k := Text { text: root.keys; color: Tokens.text-primary; font-size: Type.caption.size; }
         }
     }
 }
@@ -44,8 +47,8 @@ component FolderRow inherits HorizontalLayout {
     VerticalLayout {
         alignment: center;
         horizontal-stretch: 1;
-        Text { text: root.label; color: Tokens.text-primary; font-size: Type.body; }
-        Text { text: root.path; color: Tokens.text-muted; font-size: Type.caption; overflow: elide; }
+        Text { text: root.label; color: Tokens.text-primary; font-size: Type.body.size; }
+        Text { text: root.path; color: Tokens.text-muted; font-size: Type.caption.size; overflow: elide; }
     }
     Button { text: "Change"; clicked => { root.change(); } }
 }
@@ -66,7 +69,7 @@ component CreditRow inherits HorizontalLayout {
         vertical-alignment: center;
         text: root.name;
         color: root.header ? Tokens.text-muted : Tokens.text-primary;
-        font-size: Type.caption;
+        font-size: Type.caption.size;
         font-weight: root.header ? 600 : 400;
         overflow: elide;
     }
@@ -75,7 +78,7 @@ component CreditRow inherits HorizontalLayout {
         vertical-alignment: center;
         text: root.role;
         color: Tokens.text-muted;
-        font-size: Type.caption;
+        font-size: Type.caption.size;
         font-weight: root.header ? 600 : 400;
         wrap: word-wrap;
     }
@@ -84,7 +87,7 @@ component CreditRow inherits HorizontalLayout {
         vertical-alignment: center;
         text: root.licence;
         color: Tokens.text-muted;
-        font-size: Type.caption;
+        font-size: Type.caption.size;
         font-weight: root.header ? 600 : 400;
         overflow: elide;
     }
@@ -93,7 +96,7 @@ component CreditRow inherits HorizontalLayout {
         Text {
             text: root.link;
             color: root.header ? Tokens.text-muted : Tokens.accent-fill;
-            font-size: Type.caption;
+            font-size: Type.caption.size;
             font-weight: root.header ? 600 : 400;
             vertical-alignment: center;
             overflow: elide;
@@ -120,7 +123,7 @@ export component SettingsPage inherits Rectangle {
                 spacing: Tokens.space-6;
                 alignment: start;
 
-                Text { text: "Settings"; color: Tokens.text-primary; font-size: Type.title; font-weight: 600; }
+                Text { text: "Settings"; color: Tokens.text-primary; font-size: Type.title.size; font-weight: 600; }
 
                 Section {
                     title: "Install, updates and default apps";
@@ -128,16 +131,15 @@ export component SettingsPage inherits Rectangle {
                     // The "Set as default app" button opens Windows' Default apps page for Rimelight Media.
                     Card {
                         VerticalLayout {
-                            padding: Tokens.space-4;
                             spacing: Tokens.space-3;
-                            Text { text: Settings.install-state; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
+                            Text { text: Settings.install-state; color: Tokens.text-primary; font-size: Type.body.size; wrap: word-wrap; }
                             HorizontalLayout {
                                 spacing: Tokens.space-2;
                                 alignment: start;
-                                if Settings.installed: Button { text: "Check for updates"; kind: ButtonKind.primary; clicked => { Settings.check-updates(); } }
-                                Button { text: "Releases"; has-icon: true; icon: Icons.external; clicked => { Settings.open-releases(); } }
+                                if Settings.installed: Button { text: "Check for updates"; variant: ButtonVariant.primary; clicked => { Settings.check-updates(); } }
+                                Button { text: "Releases"; leading-icon: SharedIcons.external-link; clicked => { Settings.open-releases(); } }
                             }
-                            if Settings.update-state != "": Text { text: Settings.update-state; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                            if Settings.update-state != "": Text { text: Settings.update-state; color: Tokens.text-muted; font-size: Type.caption.size; wrap: word-wrap; }
                             Rectangle { height: 1px; background: Tokens.border-subtle; }
                             HorizontalLayout {
                                 spacing: Tokens.space-2;
@@ -145,8 +147,7 @@ export component SettingsPage inherits Rectangle {
                                 Button { text: "Set as default app"; clicked => { Settings.register-defaults(); } }
                                 Button {
                                     text: "Open Windows default apps";
-                                    has-icon: true;
-                                    icon: Icons.external;
+                                    leading-icon: SharedIcons.external-link;
                                     clicked => { Settings.open-default-settings(); }
                                 }
                             }
@@ -159,32 +160,31 @@ export component SettingsPage inherits Rectangle {
                     detail: "Rimelight Media listens for these keys while it is open. Turn on \"Close to tray\" so they also work after you close the window; Rimelight Media then waits in the system tray.";
                     Card {
                         VerticalLayout {
-                            padding: Tokens.space-4;
                             spacing: Tokens.space-2;
-                            Toggle {
+                            Switch {
                                 text: "Close to tray";
                                 detail: "Keep running in the system tray when the window is closed.";
                                 checked <=> Settings.background;
-                                toggled => { Settings.changed(); }
+                                changed => { Settings.changed(); }
                             }
-                            Toggle {
+                            Switch {
                                 text: "Start with Windows";
                                 detail: "Launch Rimelight Media in the tray when you sign in.";
                                 checked <=> Settings.start-with-windows;
-                                toggled => { Settings.changed(); }
+                                changed => { Settings.changed(); }
                             }
-                            Toggle {
+                            Switch {
                                 text: "Use Print Screen for Rimelight Media";
                                 detail: "Turns off Windows' own Print Screen snipping, which takes the key first. Win+Shift+S comes to Rimelight Media once the Snipping Tool is uninstalled.";
                                 checked <=> Settings.printscreen-ours;
-                                toggled => { Settings.changed(); }
+                                changed => { Settings.changed(); }
                             }
                             Rectangle { height: Tokens.space-1; }
                             KeyRow { keys: "Print Screen"; action: "Snip an area (or a window, or the whole screen)"; }
                             KeyRow { keys: "Alt + Print Screen"; action: "Snip a window"; }
                             KeyRow { keys: "Ctrl + Print Screen"; action: "Save the whole screen at once"; }
                             KeyRow { keys: "Shift + Print Screen"; action: "Start or stop a screen recording"; }
-                            Text { text: Settings.hotkeys-status; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                            Text { text: Settings.hotkeys-status; color: Tokens.text-muted; font-size: Type.caption.size; wrap: word-wrap; }
                         }
                     }
                 }
@@ -193,11 +193,10 @@ export component SettingsPage inherits Rectangle {
                     title: "Screenshots";
                     Card {
                         VerticalLayout {
-                            padding: Tokens.space-4;
                             spacing: Tokens.space-2;
-                            Toggle { text: "Copy each snip to the clipboard"; checked <=> Settings.snip-copy; toggled => { Settings.changed(); } }
-                            Toggle { text: "Save each snip as a PNG"; checked <=> Settings.snip-save; toggled => { Settings.changed(); } }
-                            Toggle { text: "Open each snip for markup"; checked <=> Settings.snip-open; toggled => { Settings.changed(); } }
+                            Switch { text: "Copy each snip to the clipboard"; checked <=> Settings.snip-copy; changed => { Settings.changed(); } }
+                            Switch { text: "Save each snip as a PNG"; checked <=> Settings.snip-save; changed => { Settings.changed(); } }
+                            Switch { text: "Open each snip for markup"; checked <=> Settings.snip-open; changed => { Settings.changed(); } }
                             FolderRow { label: "Screenshots folder"; path: Settings.screenshot-folder; change => { Settings.pick-folder(true); } }
                         }
                     }
@@ -207,16 +206,15 @@ export component SettingsPage inherits Rectangle {
                     title: "Screen recording";
                     Card {
                         VerticalLayout {
-                            padding: Tokens.space-4;
                             spacing: Tokens.space-2;
-                            Toggle { text: "Record the computer's sound"; checked <=> Settings.rec-system-audio; toggled => { Settings.changed(); } }
-                            Toggle { text: "Record the microphone"; checked <=> Settings.rec-mic; toggled => { Settings.changed(); } }
+                            Switch { text: "Record the computer's sound"; checked <=> Settings.rec-system-audio; changed => { Settings.changed(); } }
+                            Switch { text: "Record the microphone"; checked <=> Settings.rec-mic; changed => { Settings.changed(); } }
                             HorizontalLayout {
                                 spacing: Tokens.space-2;
                                 alignment: start;
-                                Text { text: "Frames per second"; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; }
-                                Button { text: "30"; kind: Settings.rec-fps == 30 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.rec-fps = 30; Settings.changed(); } }
-                                Button { text: "60"; kind: Settings.rec-fps == 60 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.rec-fps = 60; Settings.changed(); } }
+                                Text { text: "Frames per second"; color: Tokens.text-primary; font-size: Type.body.size; vertical-alignment: center; }
+                                Button { text: "30"; variant: Settings.rec-fps == 30 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.rec-fps = 30; Settings.changed(); } }
+                                Button { text: "60"; variant: Settings.rec-fps == 60 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.rec-fps = 60; Settings.changed(); } }
                             }
                             FolderRow { label: "Recordings folder"; path: Settings.recording-folder; change => { Settings.pick-folder(false); } }
                             FolderRow { label: "Canvas folder"; path: Settings.canvas-folder; change => { Settings.pick-canvas-folder(); } }
@@ -230,15 +228,15 @@ export component SettingsPage inherits Rectangle {
                         spacing: Tokens.space-2;
                         alignment: start;
                         // Theme values: 0 light, 1 dark, 2 system (stored in the prefs; the order here is the display order).
-                        Button { text: "System"; has-icon: true; icon: Icons.monitor; kind: Settings.theme == 2 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.theme = 2; Settings.changed(); } }
-                        Button { text: "Light"; has-icon: true; icon: Icons.sun; kind: Settings.theme == 0 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.theme = 0; Settings.changed(); } }
-                        Button { text: "Dark"; has-icon: true; icon: Icons.moon; kind: Settings.theme == 1 ? ButtonKind.secondary : ButtonKind.ghost; clicked => { Settings.theme = 1; Settings.changed(); } }
+                        Button { text: "System"; leading-icon: SharedIcons.monitor; variant: Settings.theme == 2 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 2; Settings.changed(); } }
+                        Button { text: "Light"; leading-icon: SharedIcons.sun; variant: Settings.theme == 0 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 0; Settings.changed(); } }
+                        Button { text: "Dark"; leading-icon: SharedIcons.moon; variant: Settings.theme == 1 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 1; Settings.changed(); } }
                     }
                 }
 
                 Section {
                     title: "About";
-                    Text { text: Settings.about; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
+                    Text { text: Settings.about; color: Tokens.text-primary; font-size: Type.body.size; wrap: word-wrap; }
                     // Required by the Slint royalty-free licence (as in rimelight-space's About screen). A small inline badge.
                     HorizontalLayout {
                         alignment: start;
@@ -255,7 +253,7 @@ export component SettingsPage inherits Rectangle {
                     // Third-party software. One row per entry: add one by copying a line below.
                     VerticalLayout {
                         spacing: Tokens.space-1;
-                        Text { text: "Built With"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; wrap: word-wrap; }
+                        Text { text: "Built With"; color: Tokens.text-primary; font-size: Type.heading.size; font-weight: 600; wrap: word-wrap; }
                         CreditRow { header: true; name: "Component"; role: "What it is used for"; licence: "Licence"; link: "Link"; }
                         Rectangle { height: 1px; background: Tokens.border-subtle; }
                         for credit in [

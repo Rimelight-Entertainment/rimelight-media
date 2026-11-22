@@ -1,7 +1,8 @@
 // Keyboard cheat sheet (AGENTS.md "Keyboard cheat sheet"): Ctrl+? opens an overlay that lists the shortcuts for the
 // current tab, after the ones that work everywhere. Escape or a click outside the card closes it.
 import { ScrollView } from "std-widgets.slint";
-import { Tokens, Type } from "tokens.slint";
+import { Tokens } from "@rimelight_design/tokens.slint";
+import { Type } from "@rimelight_ui/typography.slint";
 
 export struct ShortcutLine {
     keys: string,
@@ -30,8 +31,8 @@ component ShortcutRow inherits HorizontalLayout {
                 key-text := Text {
                     text: root.keys;
                     color: Tokens.text-primary;
-                    font-family: Type.family;
-                    font-size: Type.caption;
+                    font-family: Type.body.family;
+                    font-size: Type.caption.size;
                     font-weight: 600;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -46,8 +47,8 @@ component ShortcutRow inherits HorizontalLayout {
         horizontal-stretch: 1;
         text: root.action;
         color: Tokens.text-primary;
-        font-family: Type.family;
-        font-size: Type.body;
+        font-family: Type.body.family;
+        font-size: Type.body.size;
         vertical-alignment: center;
         overflow: elide;
         accessible-role: text;
@@ -58,8 +59,8 @@ component ShortcutRow inherits HorizontalLayout {
 // A group heading: small, muted, with a fixed height so the gap above the first row is always the same.
 component ShortcutHeading inherits Text {
     color: Tokens.text-muted;
-    font-family: Type.family;
-    font-size: Type.caption;
+    font-family: Type.body.family;
+    font-size: Type.caption.size;
     font-weight: 600;
     height: 20px;
     vertical-alignment: bottom;
@@ -158,8 +159,8 @@ export component ShortcutsOverlay inherits Rectangle {
             Text {
                 text: "Keyboard shortcuts";
                 color: Tokens.text-primary;
-                font-family: Type.family;
-                font-size: Type.heading;
+                font-family: Type.body.family;
+                font-size: Type.heading.size;
                 font-weight: 600;
                 height: 28px;
                 vertical-alignment: center;
@@ -186,14 +187,14 @@ export component ShortcutsOverlay inherits Rectangle {
                 alignment: end;
                 Rectangle {
                     width: 96px;
-                    height: Tokens.control-height;
+                    height: Tokens.size-control-md;
                     border-radius: Tokens.radius-control;
                     background: close-touch.has-hover ? Tokens.surface-hover : Tokens.surface-sunken;
                     Text {
                         text: "Close";
                         color: Tokens.text-primary;
-                        font-family: Type.family;
-                        font-size: Type.body;
+                        font-family: Type.body.family;
+                        font-size: Type.body.size;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }

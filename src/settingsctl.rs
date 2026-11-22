@@ -17,12 +17,12 @@ pub fn wire(app: &Rc<App>) {
     s.on_changed(|| with_app(save_from_ui));
     s.on_check_updates(|| with_app(|a| crate::app::check_updates(a, true)));
     s.on_open_releases(|| {
-        if let Some(url) = crate::update::releases_page() {
-            crate::platform::open_uri(&url);
+        if let Some(url) = crate::releases_page() {
+            rimelight_platform::open_uri(&url);
         }
     });
     s.on_open_link(|url| {
-        crate::platform::open_uri(url.as_str());
+        rimelight_platform::open_uri(url.as_str());
     });
     s.on_register_defaults(|| {
         with_app(
@@ -93,7 +93,7 @@ pub fn refresh(app: &Rc<App>) {
     s.set_recording_folder(p.recording_dir.display().to_string().into());
     s.set_canvas_folder(p.canvas_dir.display().to_string().into());
     drop(p);
-    let version = crate::update::installed_version();
+    let version = rimelight_update::installed_version();
     s.set_installed(version.is_some());
     s.set_install_state(
         match &version {
@@ -175,14 +175,14 @@ fn save_from_ui(app: &Rc<App>) {
 }
 
 pub fn apply_theme(app: &Rc<App>) {
-    let theme = match app.prefs.borrow().theme {
-        0 => ui::ThemeChoice::Light,
-        1 => ui::ThemeChoice::Dark,
-        _ => ui::ThemeChoice::System,
+    let mode = match app.prefs.borrow().theme {
+        0 => rimelight_ui_kit::theme::Mode::Light,
+        1 => rimelight_ui_kit::theme::Mode::Dark,
+        _ => rimelight_ui_kit::theme::Mode::System,
     };
-    app.ui.global::<ui::Tokens>().set_theme(theme);
+    ui::theme::set_mode(&app.ui, mode);
     // The tray menu is a Windows menu: it follows the same choice (1 like Windows, 2 dark, 3 light).
-    crate::platform::set_menu_theme(match app.prefs.borrow().theme {
+    rimelight_platform::set_menu_theme(match app.prefs.borrow().theme {
         0 => 3,
         1 => 2,
         _ => 1,

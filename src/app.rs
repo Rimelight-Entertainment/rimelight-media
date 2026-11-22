@@ -25,7 +25,7 @@ pub struct App {
     pub tray: RefCell<Option<ui::Tray>>,
     pub hotkeys: RefCell<Option<crate::hotkeys::Hotkeys>>,
     /// A downloaded update waiting to be applied.
-    pub update: RefCell<Option<Box<velopack::UpdateInfo>>>,
+    pub update: RefCell<Option<Box<rimelight_update::UpdateInfo>>>,
     /// The setup window of the installer's first run, while it is open.
     pub setup: RefCell<Option<ui::SetupWindow>>,
     /// True when started with --background (no window until asked for).
@@ -58,8 +58,8 @@ pub fn shutdown() {
         app.tray.borrow_mut().take();
         app.hotkeys.borrow_mut().take();
         // Quitting with a downloaded update: it is applied on the way out, so the next start is new.
-        if let Some(info) = app.update.borrow_mut().take() {
-            crate::update::apply_on_exit(&info);
+        if let (Some(info), Some(updater)) = (app.update.borrow_mut().take(), crate::updater()) {
+            updater.apply_on_exit(&info);
         }
     }
 }
@@ -132,9 +132,9 @@ fn wire_shell(app: &Rc<App>) {
     shell.on_apply_update(|| {
         with_app(|a| {
             let info = a.update.borrow().clone();
-            if let Some(info) = info {
+            if let (Some(info), Some(updater)) = (info, crate::updater()) {
                 capturectl::stop_all_now(a);
-                if let Err(e) = crate::update::apply_now(&info) {
+                if let Err(e) = updater.apply_now(&info) {
                     toast(a, format!("Could not update: {e}"));
                 }
             }
@@ -154,7 +154,7 @@ fn wire_shell(app: &Rc<App>) {
     cast.on_pick(|i| with_app(|a| crate::cast::pick(a, i as usize)));
     cast.on_pause(crate::cast::toggle_play);
     cast.on_stop(crate::cast::stop);
-    cast.on_system_cast(crate::platform::open_cast_panel);
+    cast.on_system_cast(rimelight_platform::open_cast_panel);
 
     // Closing the window clears every tab (after asking about unsaved changes): it means "I'm done"; minimise keeps
     // things open. Then stay in the tray when "keep running" is on, otherwise quit.
@@ -593,15 +593,17 @@ pub fn check_updates(app: &Rc<App>, manual: bool) {
             .set_update_state("Checking for updates…".into());
     }
     std::thread::spawn(move || {
-        let outcome = crate::update::check_and_download();
+        // None when updates are off (see crate::updater).
+        let outcome = crate::updater()
+            .map(|updater| updater.check_and_download(&|_: rimelight_update::Step| {}));
         IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
         post(move |a| {
-            use crate::update::Outcome;
+            use rimelight_update::Outcome;
             let text = match outcome {
-                Outcome::Off => "Updates are off: this copy isn't installed, or was built without a GitHub repository.".to_string(),
-                Outcome::UpToDate => "Up to date.".to_string(),
-                Outcome::Failed(e) => e,
-                Outcome::Ready(info) => {
+                None => "Updates are off: this copy isn't installed, or was built without a GitHub repository.".to_string(),
+                Some(Outcome::UpToDate) => "Up to date.".to_string(),
+                Some(Outcome::Failed(e)) => e,
+                Some(Outcome::Ready(info)) => {
                     let v = info.TargetFullRelease.Version.clone();
                     *a.update.borrow_mut() = Some(info);
                     a.ui.global::<ui::Shell>().set_update_ready(v.clone().into());
@@ -626,7 +628,7 @@ pub fn start_hotkeys(app: &Rc<App>) {
 /// Centres a window on the monitor the pointer is on (Windows opens new windows at its own default spot).
 pub fn center_window(window: &slint::Window) {
     let size = window.size();
-    if let Some((_, mon)) = crate::platform::cursor_monitor() {
+    if let Some((_, mon)) = rimelight_platform::cursor_monitor() {
         let x = mon.x + (mon.w - size.width as i32).max(0) / 2;
         let y = mon.y + (mon.h - size.height as i32).max(0) / 2;
         window.set_position(slint::PhysicalPosition::new(x, y));
@@ -671,9 +673,9 @@ pub fn finish_close(app: &Rc<App>) {
         && !capturectl::busy(app)
         && spawn_self(&["--background", "--takeover", "--after", me.as_str()])
     {
-        crate::platform::release_start_lock();
+        rimelight_platform::release_start_lock();
         crate::instance::release();
-        crate::platform::exit_now(0);
+        rimelight_platform::exit_now(0);
     }
     let _ = app.ui.window().hide();
 }
@@ -771,9 +773,9 @@ fn handoff(app: &Rc<App>) {
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     if !stay && spawn_self(&refs) {
-        crate::platform::release_start_lock();
+        rimelight_platform::release_start_lock();
         crate::instance::release();
-        crate::platform::exit_now(0);
+        rimelight_platform::exit_now(0);
     }
     app.background_start.set(false);
     show_main(app);

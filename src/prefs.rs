@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::platform::UserFolder;
+use rimelight_platform::UserFolder;
 
 pub const MAX_RECENTS: usize = 12;
 
@@ -42,7 +42,7 @@ fn home() -> PathBuf {
 }
 
 fn user_folder(which: UserFolder, home: &Path, fallback: &str) -> PathBuf {
-    crate::platform::known_folder(which).unwrap_or_else(|| home.join(fallback))
+    rimelight_platform::known_folder(which).unwrap_or_else(|| home.join(fallback))
 }
 
 pub fn data_dir() -> PathBuf {

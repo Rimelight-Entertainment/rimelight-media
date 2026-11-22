@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::media::player::lock;
+use rimelight_media::engine::player::lock;
 
 pub const RATE: u32 = 48_000;
 /// Most sound kept waiting per source (seconds) before the oldest is dropped.

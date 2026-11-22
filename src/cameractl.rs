@@ -401,7 +401,7 @@ fn rgb_bytes(frame: &camera::Frame, mirror: bool) -> Vec<u8> {
 
 /// A new file in the Camera Roll (Pictures\Camera Roll), named like Windows' Camera app: IMG_YYYYMMDD_HHMMSS.
 fn stamped(prefix: &str, ext: &str) -> PathBuf {
-    let [y, mo, d, h, mi, s] = crate::platform::local_time();
+    let [y, mo, d, h, mi, s] = rimelight_platform::local_time();
     files::free_path(
         &camera_roll(),
         &format!("{prefix}_{y:04}{mo:02}{d:02}_{h:02}{mi:02}{s:02}"),

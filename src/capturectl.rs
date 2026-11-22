@@ -9,9 +9,10 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 use crate::app::{App, go, open_path, post, remember, show_main, toast, with_app};
 use crate::capture::{grab, recorder};
 use crate::files;
-use crate::picture::{self, Picture};
-use crate::platform::{self, ScreenRect, TopWindow};
+use crate::picture;
 use crate::ui;
+use rimelight_picture::Picture;
+use rimelight_platform::{ScreenRect, TopWindow};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Purpose {
@@ -155,7 +156,8 @@ fn begin(app: &Rc<App>, mode: &str, purpose: Purpose) {
     let mode = mode.to_string();
     std::thread::spawn(move || {
         let result = grab::screenshot();
-        let windows = platform::top_windows(keep);
+        let windows =
+            rimelight_platform::list_windows(rimelight_platform::WindowList::capturable(keep));
         post(move |a| {
             a.cap.borrow_mut().busy = false;
             match result {
@@ -187,7 +189,7 @@ fn show_overlay(
     main_was_visible: bool,
 ) {
     // Made for each snip and dropped after it (release_overlay), so nothing is kept at rest. It never zooms in: animations
-    // are off for every window of ours from creation (platform::start_no_window_animations).
+    // are off for every window of ours from creation (rimelight_platform::start_no_window_animations).
     let Ok(w) = ui::SnipWindow::new() else { return };
     w.invoke_reset();
     w.set_shot(picture::to_slint(&shot));
@@ -215,7 +217,7 @@ fn show_overlay(
         .collect();
     w.set_windows(ModelRc::new(VecModel::from(boxes.clone())));
     // The mode bar on the pointer's monitor, and the window under the pointer highlighted from the start.
-    if let Some(((cx, cy), mon)) = platform::cursor_monitor() {
+    if let Some(((cx, cy), mon)) = rimelight_platform::cursor_monitor() {
         w.set_mon_x((mon.x - rect.x) as f32 / fw);
         w.set_mon_y((mon.y - rect.y) as f32 / fh);
         w.set_mon_w(mon.w as f32 / fw);
@@ -325,7 +327,7 @@ fn overlay_done(app: &Rc<App>, x: f32, y: f32, w: f32, h: f32) {
     let y1 = (area.y + area.h).clamp(y0 + 1, s.shot.h as i32);
     match s.purpose {
         Purpose::Snip if mode == "text" => {
-            let pic = picture::crop_px(
+            let pic = rimelight_picture::crop_px(
                 &s.shot,
                 x0 as u32,
                 y0 as u32,
@@ -335,7 +337,7 @@ fn overlay_done(app: &Rc<App>, x: f32, y: f32, w: f32, h: f32) {
             copy_text(app, &pic, s.main_was_visible);
         }
         Purpose::Snip => {
-            let pic = picture::crop_px(
+            let pic = rimelight_picture::crop_px(
                 &s.shot,
                 x0 as u32,
                 y0 as u32,
@@ -376,7 +378,7 @@ fn finish_snip(app: &Rc<App>, pic: Picture, main_was_visible: bool) {
     let mut saved: Option<PathBuf> = None;
     if save {
         let path = files::free_path(&dir, &files::stamp("Screenshot"), "png");
-        match picture::save(&pic, &path) {
+        match rimelight_picture::save(&pic, &path) {
             Ok(()) => {
                 notes.push(format!("saved as {}", files::file_name(&path)));
                 saved = Some(path);
@@ -462,7 +464,7 @@ fn show_bar(app: &Rc<App>, rect: ScreenRect) {
             }
         })
     });
-    let vs = platform::virtual_screen();
+    let vs = rimelight_platform::virtual_screen();
     let _ = bar.show();
     let sf = bar.window().scale_factor();
     let bw = (300.0 * sf) as i32;
@@ -482,7 +484,7 @@ fn show_bar(app: &Rc<App>, rect: ScreenRect) {
         if let Ok(h) = w.window_handle()
             && let RawWindowHandle::Win32(h) = h.as_raw()
         {
-            platform::exclude_from_capture(h.hwnd.get());
+            rimelight_platform::exclude_from_capture(h.hwnd.get());
         }
     });
     app.cap.borrow_mut().bar = Some(bar);
@@ -745,9 +747,9 @@ fn delete_take(app: &Rc<App>, index: i32) {
         return;
     };
     let json = p.with_extension("json");
-    let mut gone = crate::platform::recycle(&p) || std::fs::remove_file(&p).is_ok();
+    let mut gone = rimelight_platform::recycle(&p) || std::fs::remove_file(&p).is_ok();
     if json.is_file() {
-        let _ = crate::platform::recycle(&json) || std::fs::remove_file(&json).is_ok();
+        let _ = rimelight_platform::recycle(&json) || std::fs::remove_file(&json).is_ok();
     }
     if gone {
         gone = !p.exists();
@@ -969,7 +971,7 @@ fn free_end(app: &Rc<App>) {
         }
         return;
     }
-    let mut pic = picture::crop_px(&s.shot, x0, y0, x1 - x0, y1 - y0);
+    let mut pic = rimelight_picture::crop_px(&s.shot, x0, y0, x1 - x0, y1 - y0);
     // The mask is the outline filled with anti-aliasing; its coverage becomes the picture's alpha, so the edge blends.
     if let (Some(path), Some(mut mask)) = (
         outline_path(&px, x0 as f32, y0 as f32),
@@ -1051,7 +1053,7 @@ fn color_picked(app: &Rc<App>, x: f32, y: f32) {
 
 /// Text extractor: Windows' text recognition on the area, copied to the clipboard.
 fn copy_text(app: &Rc<App>, pic: &Picture, main_was_visible: bool) {
-    let result = crate::platform::recognise_text(&pic.rgba, pic.w, pic.h);
+    let result = rimelight_platform::recognise_text(&pic.rgba, pic.w, pic.h);
     if main_was_visible {
         show_main(app);
     }

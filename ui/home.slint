@@ -1,7 +1,8 @@
 // Home: the same layout as the empty tabs (toolbar, the shared EmptyState with Open a file and Recent, status bar).
-import { Tokens } from "tokens.slint";
+import { Tokens } from "@rimelight_design/tokens.slint";
 import { Icons } from "icons.slint";
-import { EmptyState, StatusBar, ToolBar } from "widgets.slint";
+import { StatusBar, EmptyState } from "widgets.slint";
+import { ToolbarRow } from "@rimelight_ui/components/toolbar.slint";
 import { Shell } from "state.slint";
 
 export component HomePage inherits Rectangle {
@@ -9,7 +10,7 @@ export component HomePage inherits Rectangle {
 
     VerticalLayout {
         // The second toolbar row every other tab has (empty here), so the Recent list sits at the same height on all pages.
-        ToolBar { }
+        ToolbarRow { }
         EmptyState {
             vertical-stretch: 1;
             icon: Icons.app-icon;

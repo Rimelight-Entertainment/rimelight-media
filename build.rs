@@ -1,7 +1,22 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let config = slint_build::CompilerConfiguration::new().with_style("fluent".into());
+    // The shared markup: @rimelight_design/tokens.slint and @rimelight_ui/... (typography, icons, components). Each library path is the crate's UI_DIR, as in rimelight-space. The fluent style stays for the
+    // std widgets that Media still uses (ComboBox, LineEdit, ScrollView).
+    let libraries = HashMap::from([
+        (
+            "rimelight_design".to_string(),
+            PathBuf::from(rimelight_design::UI_DIR),
+        ),
+        (
+            "rimelight_ui".to_string(),
+            PathBuf::from(rimelight_ui::UI_DIR),
+        ),
+    ]);
+    let config = slint_build::CompilerConfiguration::new()
+        .with_style("fluent".into())
+        .with_library_paths(libraries);
     slint_build::compile_with_config("ui/app.slint", config).expect("the Slint markup compiles");
     copy_ffmpeg_dlls();
     delay_load_ffmpeg();
@@ -45,7 +60,8 @@ pub const SHIPPED: &[&str] = &[
 ];
 
 /// Puts the FFmpeg DLLs the app uses next to rimelight-media.exe (the profile folder), so the built app starts when run
-/// directly and tools/pack.ps1 finds them.
+/// directly and tools/pack.ps1 finds them. (The shared ffmpeg-sys-next build script in rimelight-rs copies the linked DLLs
+/// next to the exe too; the same files, so this copy is harmless.)
 fn copy_ffmpeg_dlls() {
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     let Some(dir) = std::env::var_os("FFMPEG_DIR").map(PathBuf::from) else {

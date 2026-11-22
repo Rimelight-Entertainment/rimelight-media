@@ -9,8 +9,9 @@ use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
 
 use crate::app::{App, go, post, remember, toast, update_title, with_app};
 use crate::files;
-use crate::picture::{self, Mark, Picture};
+use crate::picture;
 use crate::ui;
+use rimelight_picture::{Mark, Picture};
 
 /// A mark being moved, or one of its box handles dragged to resize it.
 #[derive(Clone)]
@@ -143,7 +144,7 @@ pub struct ViewState {
     generation: u64,
     file_size: u64,
     /// Frames of an animated GIF or WebP, their pictures for the screen (made on first show) and the one showing.
-    anim: Option<Rc<picture::Animation>>,
+    anim: Option<Rc<rimelight_picture::Animation>>,
     anim_images: Vec<Option<slint::Image>>,
     anim_frame: usize,
     anim_playing: bool,
@@ -219,8 +220,8 @@ pub fn wire(app: &Rc<App>) {
     let v = viewer(app);
     v.on_prev(|| with_app(|a| step(a, -1)));
     v.on_next(|| with_app(|a| step(a, 1)));
-    v.on_rotate(|| with_app(|a| edit(a, picture::rotate_cw)));
-    v.on_flip(|lr| with_app(move |a| edit(a, move |p| picture::flip(p, lr))));
+    v.on_rotate(|| with_app(|a| edit(a, rimelight_picture::rotate_cw)));
+    v.on_flip(|lr| with_app(move |a| edit(a, move |p| rimelight_picture::flip(p, lr))));
     v.on_set_mode(|m| with_app(|a| set_mode(a, &m)));
     v.on_apply_crop(|| {
         with_app(|a| {
@@ -231,7 +232,7 @@ pub fn wire(app: &Rc<App>) {
                 v.get_crop_w(),
                 v.get_crop_h(),
             );
-            edit(a, move |p| picture::crop(p, x, y, w, h));
+            edit(a, move |p| rimelight_picture::crop(p, x, y, w, h));
             set_mode(a, "");
         })
     });
@@ -251,7 +252,7 @@ pub fn wire(app: &Rc<App>) {
                 toast(a, "Width and height must be between 1 and 30000 pixels.");
                 return;
             }
-            edit(a, move |p| picture::resize(p, w, h));
+            edit(a, move |p| rimelight_picture::resize(p, w, h));
             set_mode(a, "");
         })
     });
@@ -286,7 +287,8 @@ pub fn wire(app: &Rc<App>) {
             if !marks.is_empty() {
                 let on_canvas = a.view.borrow().canvas;
                 edit(a, move |p| {
-                    picture::burn_marks(p, &marks, on_canvas).unwrap_or_else(|_| p.clone())
+                    rimelight_picture::burn_marks(p, &marks, on_canvas)
+                        .unwrap_or_else(|_| p.clone())
                 });
             }
             set_mode(a, "");
@@ -456,10 +458,10 @@ fn open_with(app: &Rc<App>, path: &Path, set: Option<Vec<PathBuf>>) {
     go(app, "image");
     let p = path.to_path_buf();
     std::thread::spawn(move || {
-        let animation = picture::load_animation(&p);
+        let animation = rimelight_picture::load_animation(&p);
         let result = match &animation {
             Some(anim) => Ok(anim.frames[0].0.clone()),
-            None => picture::load(&p),
+            None => rimelight_picture::load(&p),
         };
         post(move |a| {
             if a.view.borrow().generation != generation {
@@ -661,11 +663,17 @@ pub fn slideshow_toggle(app: &Rc<App>) {
         (s.canvas, s.folder.len())
     };
     if canvas || count < 2 {
-        toast(app, "The slideshow needs a folder with two or more pictures.");
+        toast(
+            app,
+            "The slideshow needs a folder with two or more pictures.",
+        );
         return;
     }
     if viewer(app).get_dirty() || !viewer(app).get_mode().is_empty() {
-        toast(app, "Finish or undo the change first, then start the slideshow.");
+        toast(
+            app,
+            "Finish or undo the change first, then start the slideshow.",
+        );
         return;
     }
     {
@@ -1029,7 +1037,7 @@ fn canvas_resize(app: &Rc<App>, w: u32, h: u32, bg: [u8; 4]) {
     }
     app.view.borrow_mut().canvas_bg = bg;
     viewer(app).set_canvas_transparent(bg[3] == 0);
-    edit(app, move |p| picture::canvas_fit(p, w, h, bg));
+    edit(app, move |p| rimelight_picture::canvas_fit(p, w, h, bg));
 }
 
 /// The size fields (typed) and the background of the canvas size flyout.
@@ -1512,7 +1520,7 @@ fn erase_preview(app: &Rc<App>, s: &ViewState) -> bool {
     if print.0 > 0 {
         if !showing || (shown != print && !dragging) {
             if let Some(pic) = s.pic.as_ref() {
-                if let Ok(out) = picture::burn_marks(pic, &s.marks, s.canvas) {
+                if let Ok(out) = rimelight_picture::burn_marks(pic, &s.marks, s.canvas) {
                     viewer(app).set_picture(picture::to_slint(&out));
                 }
             }
@@ -1598,7 +1606,7 @@ fn current(app: &Rc<App>) -> Option<Picture> {
     let pic = s.pic.clone()?;
     // Unapplied marks are part of what the person sees: include them.
     if !s.marks.is_empty() {
-        return picture::burn_marks(&pic, &s.marks, s.canvas).ok();
+        return rimelight_picture::burn_marks(&pic, &s.marks, s.canvas).ok();
     }
     Some(pic)
 }
@@ -1629,7 +1637,7 @@ fn bucket(app: &Rc<App>, x: f32, y: f32) {
         return;
     }
     let Some(flat) = flatten(app) else { return };
-    let filled = picture::flood_fill(&flat, x as u32, y as u32, ink(app), FILL_TOLERANCE);
+    let filled = rimelight_picture::flood_fill(&flat, x as u32, y as u32, ink(app), FILL_TOLERANCE);
     edit(app, move |_| filled);
     refresh_marks(app);
 }
@@ -1656,7 +1664,7 @@ fn crop_selection(app: &Rc<App>) {
     let Some((x, y, w, h)) = sel_px(&flat, sel) else {
         return;
     };
-    let cropped = picture::crop_px(&flat, x, y, w, h);
+    let cropped = rimelight_picture::crop_px(&flat, x, y, w, h);
     edit(app, move |_| cropped);
     refresh_marks(app);
 }
@@ -1670,7 +1678,7 @@ fn remove_selection(app: &Rc<App>, cut: bool) {
         return;
     };
     if cut {
-        let part = picture::crop_px(&flat, x, y, w, h);
+        let part = rimelight_picture::crop_px(&flat, x, y, w, h);
         if let Err(e) = picture::copy_to_clipboard(&part) {
             toast(app, format!("Could not copy: {e}"));
             return;
@@ -1681,7 +1689,7 @@ fn remove_selection(app: &Rc<App>, cut: bool) {
     } else {
         [255, 255, 255, 255]
     };
-    let filled = picture::fill_rect(&flat, x, y, w, h, bg);
+    let filled = rimelight_picture::fill_rect(&flat, x, y, w, h, bg);
     clear_markup(&mut app.view.borrow_mut());
     edit(app, move |_| filled);
     refresh_marks(app);
@@ -1783,7 +1791,7 @@ pub fn place_picture(app: &Rc<App>, pic: Picture) {
 
 /// A picture dropped on the window while marking up (or on the canvas).
 pub fn drop_picture(app: &Rc<App>, path: &Path) {
-    match picture::load(path) {
+    match rimelight_picture::load(path) {
         Ok(pic) => place_picture(app, pic),
         Err(e) => toast(app, format!("That picture can't be used: {e}")),
     }
@@ -1798,7 +1806,7 @@ fn save(app: &Rc<App>) {
     let path = app.view.borrow().path.clone();
     let canvas = app.view.borrow().canvas;
     match path {
-        Some(p) if picture::can_save(&p) => write_to(app, &p),
+        Some(p) if rimelight_picture::can_save(&p) => write_to(app, &p),
         Some(_) => save_as(app),
         None if canvas => {
             // An unsaved canvas goes to the canvas folder as a PNG, named by the time.
@@ -1853,7 +1861,7 @@ fn save_as(app: &Rc<App>) {
         dialog = dialog.set_directory(d);
     }
     if let Some(mut path) = dialog.save_file() {
-        if !picture::can_save(&path) {
+        if !rimelight_picture::can_save(&path) {
             path.set_extension("png");
         }
         write_to(app, &path);
@@ -1862,7 +1870,7 @@ fn save_as(app: &Rc<App>) {
 
 fn write_to(app: &Rc<App>, path: &Path) {
     let Some(pic) = current(app) else { return };
-    match picture::save(&pic, path) {
+    match rimelight_picture::save(&pic, path) {
         Ok(()) => {
             {
                 let mut s = app.view.borrow_mut();
@@ -1896,7 +1904,7 @@ fn copy(app: &Rc<App>) {
     let Some(pic) = current(app) else { return };
     let sel = app.view.borrow().sel;
     let pic = match sel.and_then(|s| sel_px(&pic, s)) {
-        Some((x, y, w, h)) => picture::crop_px(&pic, x, y, w, h),
+        Some((x, y, w, h)) => rimelight_picture::crop_px(&pic, x, y, w, h),
         None => pic,
     };
     match picture::copy_to_clipboard(&pic) {
@@ -2021,7 +2029,7 @@ pub fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool) -> bool {
         v.set_pan_y(0.0);
         v.set_fit(false);
     } else if text == "r" || text == "R" {
-        edit(app, picture::rotate_cw);
+        edit(app, rimelight_picture::rotate_cw);
     } else if text == "c" {
         set_mode(app, "crop");
     } else if text == "m" {
@@ -2044,7 +2052,7 @@ fn stop_anim(s: &mut ViewState) {
     s.anim_playing = false;
 }
 
-fn start_anim(app: &Rc<App>, anim: picture::Animation) {
+fn start_anim(app: &Rc<App>, anim: rimelight_picture::Animation) {
     let n = anim.frames.len();
     let cut = anim.cut;
     {
@@ -2187,7 +2195,7 @@ fn save_frame(app: &Rc<App>) {
         .unwrap_or("Animation")
         .to_string();
     let out = files::free_path(&dir, &format!("{stem} frame {}", frame + 1), "png");
-    match picture::save(&pic, &out) {
+    match rimelight_picture::save(&pic, &out) {
         Ok(()) => toast(app, format!("Frame saved: {}", files::file_name(&out))),
         Err(e) => toast(app, format!("Could not save the frame: {e}")),
     }
@@ -2207,7 +2215,7 @@ fn delete_current(app: &Rc<App>) {
     };
     match path {
         Some(p) => {
-            if !crate::platform::recycle(&p) {
+            if !rimelight_platform::recycle(&p) {
                 toast(app, "Could not delete it (is it open in another app?)");
                 return;
             }
@@ -2443,8 +2451,13 @@ fn print(app: &Rc<App>) {
         .as_deref()
         .map(files::file_name)
         .unwrap_or_else(|| "Picture".into());
-    match crate::platform::print_image(crate::app::main_hwnd(app), &pic.rgba, pic.w, pic.h, &title)
-    {
+    match rimelight_platform::print_image(
+        crate::app::main_hwnd(app),
+        &pic.rgba,
+        pic.w,
+        pic.h,
+        &title,
+    ) {
         Ok(true) => toast(app, "Sent to the printer"),
         Ok(false) => {}
         Err(e) => toast(app, format!("Could not print: {e}")),
@@ -2463,7 +2476,7 @@ fn share(app: &Rc<App>) {
         );
     }
     if let Err(e) =
-        crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
+        rimelight_platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
     {
         toast(app, format!("Could not share: {e}"));
     }
@@ -2518,7 +2531,7 @@ fn sync_thumbs(app: &Rc<App>) {
         viewer(app).set_thumbs(ModelRc::from(model));
         std::thread::spawn(move || {
             for (i, p) in folder.into_iter().enumerate() {
-                let Some(pic) = picture::thumbnail(&p, 240, 176) else {
+                let Some(pic) = rimelight_picture::thumbnail_within(&p, 240, 176) else {
                     continue;
                 };
                 let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
@@ -2610,11 +2623,17 @@ fn thumb_clicked(app: &Rc<App>, i: usize, add: bool) {
     let generation = app.view.borrow().generation;
     for (slot, p) in picked.into_iter().enumerate() {
         std::thread::spawn(move || {
-            let Ok(pic) = picture::load(&p) else { return };
+            let Ok(pic) = rimelight_picture::load(&p) else {
+                return;
+            };
             // Side by side, each needs only a screen's worth of pixels.
             let pic = if pic.w.max(pic.h) > 2560 {
                 let f = 2560.0 / pic.w.max(pic.h) as f32;
-                picture::resize(&pic, (pic.w as f32 * f) as u32, (pic.h as f32 * f) as u32)
+                rimelight_picture::resize(
+                    &pic,
+                    (pic.w as f32 * f) as u32,
+                    (pic.h as f32 * f) as u32,
+                )
             } else {
                 pic
             };

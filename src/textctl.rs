@@ -123,7 +123,7 @@ pub fn wire(app: &Rc<App>) {
     d.on_find_next(|needle: SharedString| with_app(|a| find_next(a, &needle)));
     d.on_find_prev(|needle: SharedString| with_app(|a| find_prev(a, &needle)));
     d.on_open_link(|url: SharedString| {
-        crate::platform::open_uri(&url);
+        rimelight_platform::open_uri(&url);
     });
     d.on_replace_one(|needle: SharedString, repl: SharedString| {
         with_app(|a| replace_one(a, &needle, &repl))
@@ -601,7 +601,7 @@ fn share(app: &Rc<App>) {
         );
     }
     if let Err(e) =
-        crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
+        rimelight_platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
     {
         toast(app, format!("Could not share: {e}"));
     }

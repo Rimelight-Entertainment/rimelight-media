@@ -1,9 +1,18 @@
 // The video and music player: the top trim row, the waveform track and seek bar, one control row, and the shared
 // StatusBar at the bottom (file facts on the left, full screen on the right).
 import { ScrollView } from "std-widgets.slint";
-import { Tokens, Type } from "tokens.slint";
+import { Tokens } from "@rimelight_design/tokens.slint";
+import { Type } from "@rimelight_ui/typography.slint";
+import { Icons as SharedIcons } from "@rimelight_ui/icons.slint";
 import { Icons } from "icons.slint";
-import { IconButton, Button, ButtonKind, Slider, Choice, ActionRow, StatusBar, ToolDivider, FileKindTile } from "widgets.slint";
+import { Choice, StageIconButton, StatusBar } from "widgets.slint";
+import { Slider } from "@rimelight_ui/components/slider.slint";
+import { Button, ButtonSize, ButtonVariant } from "@rimelight_ui/components/button.slint";
+import { IconButton } from "@rimelight_ui/components/icon-button.slint";
+import { TooltipPlacement } from "@rimelight_ui/components/tooltip.slint";
+import { ToolDivider } from "@rimelight_ui/components/toolbar.slint";
+import { ActionRow } from "@rimelight_ui/components/action-row.slint";
+import { FileKindTile } from "@rimelight_ui/components/tile.slint";
 import { Player, Shell } from "state.slint";
 
 // One row of a track or subtitle list: a check for the chosen one, the name, and an optional detail line.
@@ -27,8 +36,8 @@ component TrackRow inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            Text { text: root.label; color: Tokens.text-primary; font-size: Type.body; overflow: elide; }
-            if root.detail != "": Text { text: root.detail; color: Tokens.text-muted; font-size: Type.caption; overflow: elide; }
+            Text { text: root.label; color: Tokens.text-primary; font-size: Type.body.size; overflow: elide; }
+            if root.detail != "": Text { text: root.detail; color: Tokens.text-muted; font-size: Type.caption.size; overflow: elide; }
         }
     }
     row-ta := TouchArea { clicked => { root.clicked(); } }
@@ -54,7 +63,7 @@ component TrackPopup inherits PopupWindow {
             HorizontalLayout {
                 padding-left: Tokens.space-2;
                 height: 26px;
-                Text { text: root.heading; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
+                Text { text: root.heading; color: Tokens.text-muted; font-size: Type.caption.size; vertical-alignment: center; }
             }
             for c[i] in root.choices: TrackRow {
                 label: c.label;
@@ -84,7 +93,7 @@ component SubtitlePopup inherits PopupWindow {
             HorizontalLayout {
                 padding-left: Tokens.space-2;
                 height: 26px;
-                Text { text: "Subtitles"; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; }
+                Text { text: "Subtitles"; color: Tokens.text-muted; font-size: Type.caption.size; vertical-alignment: center; }
             }
             for c[i] in root.choices: TrackRow {
                 label: c.label;
@@ -96,26 +105,26 @@ component SubtitlePopup inherits PopupWindow {
             HorizontalLayout {
                 padding: Tokens.space-2;
                 spacing: Tokens.space-1;
-                Text { text: "Delay"; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; width: 52px; }
+                Text { text: "Delay"; color: Tokens.text-primary; font-size: Type.body.size; vertical-alignment: center; width: 52px; }
                 Button { text: "−"; clicked => { Player.sub-delay(-100); } }
-                Text { text: Player.sub-delay-text; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; horizontal-alignment: center; min-width: 76px; }
+                Text { text: Player.sub-delay-text; color: Tokens.text-primary; font-size: Type.body.size; vertical-alignment: center; horizontal-alignment: center; min-width: 76px; }
                 Button { text: "+"; clicked => { Player.sub-delay(100); } }
-                Button { text: "Reset"; kind: ButtonKind.ghost; clicked => { Player.sub-delay(0); } }
+                Button { text: "Reset"; variant: ButtonVariant.ghost; clicked => { Player.sub-delay(0); } }
             }
             HorizontalLayout {
                 padding: Tokens.space-2;
                 padding-top: 0;
                 spacing: Tokens.space-1;
-                Text { text: "Size"; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; width: 52px; }
+                Text { text: "Size"; color: Tokens.text-primary; font-size: Type.body.size; vertical-alignment: center; width: 52px; }
                 Button { text: "−"; clicked => { Player.sub-size(-1); } }
-                Text { text: round(Player.sub-scale * 100) + "%"; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; horizontal-alignment: center; min-width: 76px; }
+                Text { text: round(Player.sub-scale * 100) + "%"; color: Tokens.text-primary; font-size: Type.body.size; vertical-alignment: center; horizontal-alignment: center; min-width: 76px; }
                 Button { text: "+"; clicked => { Player.sub-size(1); } }
-                Button { text: "Reset"; kind: ButtonKind.ghost; clicked => { Player.sub-size(0); } }
+                Button { text: "Reset"; variant: ButtonVariant.ghost; clicked => { Player.sub-size(0); } }
             }
             HorizontalLayout {
                 padding-left: Tokens.space-2;
                 height: 22px;
-                Text { text: "Keys: G / H delay, Shift+G / Shift+H size, V on/off"; color: Tokens.text-faint; font-size: Type.caption; vertical-alignment: center; }
+                Text { text: "Keys: G / H delay, Shift+G / Shift+H size, V on/off"; color: Tokens.text-faint; font-size: Type.caption.size; vertical-alignment: center; }
             }
         }
     }
@@ -138,12 +147,16 @@ component SpeedPopup inherits PopupWindow {
             padding: Tokens.space-3;
             spacing: Tokens.space-3;
             HorizontalLayout {
-                Text { text: "Playback speed"; color: Tokens.text-muted; font-size: Type.caption; vertical-alignment: center; horizontal-stretch: 1; }
-                Text { text: Player.speed-text; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; vertical-alignment: center; }
+                Text { text: "Playback speed"; color: Tokens.text-muted; font-size: Type.caption.size; vertical-alignment: center; horizontal-stretch: 1; }
+                Text { text: Player.speed-text; color: Tokens.text-primary; font-size: Type.subheading.size; font-weight: 600; vertical-alignment: center; }
             }
             Slider {
-                height: Tokens.control-height;
                 on-stage: false;
+                controlled: true;
+                minimum: 0;
+                maximum: 1;
+                step: 0;
+                height: Tokens.size-control-md;
                 value: (Player.speed-value - 0.25) / 2.75;
                 changed(v) => { Player.set-speed(0.25 + v * 2.75); }
                 released(v) => { Player.set-speed(0.25 + v * 2.75); }
@@ -152,13 +165,13 @@ component SpeedPopup inherits PopupWindow {
                 spacing: Tokens.space-1;
                 for s in [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3]: Rectangle {
                     horizontal-stretch: 1;
-                    height: Tokens.control-height;
+                    height: Tokens.size-control-md;
                     border-radius: Tokens.radius-control;
                     border-width: 1px;
                     border-color: abs(Player.speed-value - s) < 0.001 ? Tokens.accent-default : Tokens.border-subtle;
                     background: abs(Player.speed-value - s) < 0.001 ? Tokens.surface-pressed
                         : chip-ta.has-hover ? Tokens.surface-hover : transparent;
-                    Text { text: s + ""; color: Tokens.text-primary; font-size: Type.caption; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: s + ""; color: Tokens.text-primary; font-size: Type.caption.size; horizontal-alignment: center; vertical-alignment: center; }
                     chip-ta := TouchArea { mouse-cursor: pointer; clicked => { Player.set-speed(s); } }
                 }
             }
@@ -202,10 +215,10 @@ component WaveBars inherits Rectangle {
 
 export component MediaPage inherits Rectangle {
     // The empty tab uses the shared page colour; media plays on the dark stage.
-    background: Player.media-title == "" ? Tokens.surface-base : Tokens.stage;
+    background: Player.media-title == "" ? Tokens.surface-base : Tokens.extension-media-stage;
 
     // The trim row at the top (hidden in full screen) and the status bar at the bottom; the picture sits between.
-    property <length> top-h: (Player.trim-mode && !Shell.full-screen) ? Tokens.action-height : 0px;
+    property <length> top-h: (Player.trim-mode && !Shell.full-screen) ? Tokens.component-action-row-height : 0px;
     property <length> area-h: Shell.full-screen ? root.height : root.height - bar.height - root.top-h;
     property <float> aspect: Player.video-w * 1.0 / max(1, Player.video-h);
     property <length> vw: min(root.width, root.area-h * root.aspect);
@@ -256,13 +269,19 @@ export component MediaPage inherits Rectangle {
                 height: 200px;
                 border-radius: 24px;
                 // The Explorer music tile (the same as the audio file type everywhere else).
-                FileKindTile { kind: "music"; tile-size: 200px; }
+                FileKindTile {
+                    kind: "music";
+                    tile-size: 200px;
+                    top-colour: #FDA4AF;
+                    bottom-colour: #E11D48;
+                    glyph: Icons.music;
+                }
             }
         }
         Text {
             text: Player.media-title;
-            color: Tokens.text-on-stage;
-            font-size: Type.heading;
+            color: Tokens.extension-media-text-on-stage;
+            font-size: Type.heading.size;
             font-weight: 600;
             horizontal-alignment: center;
             overflow: elide;
@@ -270,7 +289,7 @@ export component MediaPage inherits Rectangle {
         Text {
             text: Player.media-detail;
             color: #9AA4B2;
-            font-size: Type.body;
+            font-size: Type.body.size;
             horizontal-alignment: center;
             overflow: elide;
         }
@@ -290,9 +309,9 @@ export component MediaPage inherits Rectangle {
             padding: Tokens.space-4;
             spacing: Tokens.space-2;
             alignment: start;
-            Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; }
-            Text { text: Player.info-name; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
-            Text { text: Player.info-detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+            Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading.size; font-weight: 600; }
+            Text { text: Player.info-name; color: Tokens.text-primary; font-size: Type.body.size; wrap: word-wrap; }
+            Text { text: Player.info-detail; color: Tokens.text-muted; font-size: Type.caption.size; wrap: word-wrap; }
         }
     }
 
@@ -314,7 +333,7 @@ export component MediaPage inherits Rectangle {
             width: parent.width - 2 * Tokens.space-4;
             text: "Playlist";
             color: Tokens.text-primary;
-            font-size: Type.subheading;
+            font-size: Type.subheading.size;
             font-weight: 600;
         }
         ScrollView {
@@ -328,7 +347,7 @@ export component MediaPage inherits Rectangle {
                 padding-bottom: Tokens.space-3;
                 alignment: start;
                 for item[i] in Player.playlist: Rectangle {
-                    height: Tokens.row-height;
+                    height: Tokens.component-recent-list-row-height;
                     border-radius: Tokens.radius-control;
                     background: item.current ? Tokens.surface-pressed : (item-ta.has-hover ? Tokens.surface-hover : transparent);
                     HorizontalLayout {
@@ -337,7 +356,7 @@ export component MediaPage inherits Rectangle {
                         Text {
                             text: item.name;
                             color: Tokens.text-primary;
-                            font-size: Type.body;
+                            font-size: Type.body.size;
                             font-weight: item.current ? 600 : 400;
                             wrap: no-wrap;
                             overflow: elide;
@@ -399,12 +418,12 @@ export component MediaPage inherits Rectangle {
 
     if Player.buffering: Text {
         text: "Opening…";
-        color: Tokens.text-on-stage;
-        font-size: Type.subheading;
+        color: Tokens.extension-media-text-on-stage;
+        font-size: Type.subheading.size;
     }
 
     // The trim row (an edit in progress): the kept range on the left, Cancel and the save on the right. The tab's
-    // ToolBar (MediaSlot) holds the Trim and snapshot buttons. Shown only while trimming; hidden in full screen.
+    // ToolbarRow (MediaSlot) holds the Trim and snapshot buttons. Shown only while trimming; hidden in full screen.
     if Player.trim-mode && !Shell.full-screen: ActionRow {
         y: 0;
         show-confirm: true;
@@ -425,9 +444,9 @@ export component MediaPage inherits Rectangle {
                     colorize: Tokens.text-primary;
                 }
             }
-            Text { text: Player.trim-text; color: Tokens.text-primary; font-size: Type.body; vertical-alignment: center; }
-            Button { text: "Start here"; kind: ButtonKind.secondary; clicked => { Player.trim-set(true); } }
-            Button { text: "End here"; kind: ButtonKind.secondary; clicked => { Player.trim-set(false); } }
+            Text { text: Player.trim-text; color: Tokens.text-primary; font-size: Type.body.size; vertical-alignment: center; }
+            Button { text: "Start here"; variant: ButtonVariant.secondary; clicked => { Player.trim-set(true); } }
+            Button { text: "End here"; variant: ButtonVariant.secondary; clicked => { Player.trim-set(false); } }
         }
     }
 
@@ -437,7 +456,7 @@ export component MediaPage inherits Rectangle {
         x: root.left-w;
         width: parent.width - root.left-w;
         height: layout.preferred-height;
-        background: Tokens.stage-bar;
+        background: Tokens.extension-media-stage-bar;
         opacity: root.bars-visible ? 1 : 0;
         animate opacity { duration: 200ms; }
 
@@ -504,6 +523,12 @@ export component MediaPage inherits Rectangle {
                             }
                         }
                         Slider {
+                            on-stage: true;
+                            controlled: true;
+                            minimum: 0;
+                            maximum: 1;
+                            step: 0;
+                            range-colour: #FFC14D80;
                             y: root.seek-y;
                             width: parent.width;
                             height: 24px;
@@ -550,7 +575,7 @@ export component MediaPage inherits Rectangle {
                                     y: 4px;
                                     text: Player.marker-labels[i];
                                     color: Tokens.text-primary;
-                                    font-size: Type.caption;
+                                    font-size: Type.caption.size;
                                 }
                             }
                         }
@@ -567,28 +592,27 @@ export component MediaPage inherits Rectangle {
                     }
                 }
 
-                // One control row, all controls the same height (Tokens.control-height), so they centre on one line. Left:
+                // One control row, all controls the same height (Tokens.size-control-md), so they centre on one line. Left:
                 // transport and the time. Right: volume, speed, tracks, repeat, waveform. ToolDividers separate the groups.
                 HorizontalLayout {
-                    height: Tokens.control-height;
+                    height: Tokens.size-control-md;
                     spacing: Tokens.space-2;
                     HorizontalLayout {
                         spacing: Tokens.space-2;
                         // Previous and Next: the other files in the playlist (disabled at either end).
-                        IconButton { on-stage: true; icon: Icons.chevron-left; label: "Previous file"; enabled: Player.has-prev; clicked => { Player.play-prev(); } }
-                        IconButton { on-stage: true; icon: Icons.chevron-right; label: "Next file"; enabled: Player.has-next; clicked => { Player.play-next(); } }
-                        IconButton {
-                            on-stage: true;
-                            icon: Player.playing ? Icons.pause : Icons.play;
+                        StageIconButton { icon: SharedIcons.chevron-left; label: "Previous file"; enabled: Player.has-prev; clicked => { Player.play-prev(); } }
+                        StageIconButton { icon: SharedIcons.chevron-right; label: "Next file"; enabled: Player.has-next; clicked => { Player.play-next(); } }
+                        StageIconButton {
+                            icon: Player.playing ? SharedIcons.pause : SharedIcons.play;
                             label: Player.playing ? "Pause (Space)" : "Play (Space)";
                             clicked => { Player.toggle-play(); }
                         }
-                        IconButton { on-stage: true; icon: Icons.undo; label: "Back 10 s (Left)"; clicked => { Player.skip(-10); } }
-                        IconButton { on-stage: true; icon: Icons.redo; label: "Forward 10 s (Right)"; clicked => { Player.skip(10); } }
+                        StageIconButton { icon: SharedIcons.undo-2; label: "Back 10 s (Left)"; clicked => { Player.skip(-10); } }
+                        StageIconButton { icon: SharedIcons.redo-2; label: "Forward 10 s (Right)"; clicked => { Player.skip(10); } }
                         Text {
                             text: Player.time-text;
-                            color: Tokens.text-on-stage;
-                            font-size: Type.body;
+                            color: Tokens.extension-media-text-on-stage;
+                            font-size: Type.body.size;
                             min-width: 72px;
                             vertical-alignment: center;
                         }
@@ -596,15 +620,19 @@ export component MediaPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                     HorizontalLayout {
                         spacing: Tokens.space-2;
-                        IconButton {
-                            on-stage: true;
-                            icon: Player.muted || Player.volume == 0 ? Icons.volume-x : Icons.volume;
+                        StageIconButton {
+                            icon: Player.muted || Player.volume == 0 ? SharedIcons.volume-x : SharedIcons.volume-2;
                             label: "Mute (M)";
                             clicked => { Player.toggle-mute(); }
                         }
                         Slider {
+                            on-stage: true;
+                            controlled: true;
+                            minimum: 0;
+                            maximum: 1;
+                            step: 0;
                             width: 96px;
-                            height: Tokens.control-height;
+                            height: Tokens.size-control-md;
                             value: Player.volume;
                             changed(v) => { Player.set-volume(v); }
                             released(v) => { Player.set-volume(v); }
@@ -613,15 +641,15 @@ export component MediaPage inherits Rectangle {
                         // Speed: the button opens the flyout (slider and presets).
                         speed-btn := Rectangle {
                             width: 64px;
-                            height: Tokens.control-height;
+                            height: Tokens.size-control-md;
                             border-radius: Tokens.radius-control;
-                            background: speed-ta.pressed ? Tokens.stage-control-hover : speed-ta.has-hover ? Tokens.stage-control-hover : transparent;
+                            background: speed-ta.pressed ? Tokens.extension-media-stage-control-hover : speed-ta.has-hover ? Tokens.extension-media-stage-control-hover : transparent;
                             accessible-role: button;
                             accessible-label: "Playback speed";
                             Text {
                                 text: Player.speed-text;
-                                color: Player.speed-text == "1.00×" ? Tokens.text-on-stage : #FFC14D;
-                                font-size: Type.body;
+                                color: Player.speed-text == "1.00×" ? Tokens.extension-media-text-on-stage : #FFC14D;
+                                font-size: Type.body.size;
                                 font-weight: 600;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -629,15 +657,13 @@ export component MediaPage inherits Rectangle {
                             speed-ta := TouchArea { mouse-cursor: pointer; clicked => { speed-popup.show(); } }
                         }
                         ToolDivider { }
-                        audio-btn := IconButton {
-                            on-stage: true;
-                            icon: Icons.languages;
+                        audio-btn := StageIconButton {
+                            icon: SharedIcons.languages;
                             label: "Audio track";
                             enabled: Player.audio-tracks.length > 0;
                             clicked => { audio-popup.show(); }
                         }
-                        sub-btn := IconButton {
-                            on-stage: true;
+                        sub-btn := StageIconButton {
                             icon: Icons.subtitles;
                             label: "Subtitles";
                             enabled: Player.has-video;
@@ -646,27 +672,24 @@ export component MediaPage inherits Rectangle {
                         }
                         ToolDivider { }
                         Rectangle {
-                            width: Tokens.control-height;
-                            height: Tokens.control-height;
-                            IconButton {
-                                on-stage: true;
-                                icon: Icons.repeat;
+                            width: Tokens.size-control-md;
+                            height: Tokens.size-control-md;
+                            StageIconButton {
+                                icon: SharedIcons.repeat;
                                 label: Player.loop-mode == 0 ? "Repeat: off" : Player.loop-mode == 1 ? "Repeat: once" : "Repeat: forever";
                                 active: Player.loop-mode > 0;
                                 clicked => { Player.toggle-loop(); }
                             }
                             if Player.loop-mode == 1: Text { x: 21px; y: 2px; text: "1"; color: Tokens.accent-default; font-size: 10px; font-weight: 700; }
                         }
-                        IconButton {
-                            on-stage: true;
+                        StageIconButton {
                             icon: Icons.skip-forward;
                             label: "Continue to the next file";
                             active: Player.auto-next;
                             enabled: Player.playlist.length > 1;
                             clicked => { Player.toggle-auto-next(); }
                         }
-                        IconButton {
-                            on-stage: true;
+                        StageIconButton {
                             icon: Icons.audio-lines;
                             label: "Show the waveform";
                             active: Player.wave-seek;
@@ -682,41 +705,35 @@ export component MediaPage inherits Rectangle {
                 HorizontalLayout {
                     height: 28px;
                     spacing: 6px;
-                    IconButton {
-                        on-stage: false;
-                        size: 28px;
-                        icon-size: Tokens.icon-small;
-                        icon: Icons.layers;
-                        label: "Playlist";
-                        active: Player.playlist-on;
+                    IconButton { tooltip-placement: TooltipPlacement.bottom;
+                        size: ButtonSize.sm;
+                        icon: SharedIcons.layers;
+                        label: "Playlist"; tooltip: "Playlist";
+                        selected: Player.playlist-on; ghost-toggle: true;
                         enabled: Player.playlist.length > 1;
                         clicked => { Player.toggle-playlist(); }
                     }
-                    IconButton {
-                        on-stage: false;
-                        size: 28px;
-                        icon-size: Tokens.icon-small;
-                        icon: Icons.info;
-                        label: "Details (I)";
-                        active: Player.show-info;
+                    IconButton { tooltip-placement: TooltipPlacement.bottom;
+                        size: ButtonSize.sm;
+                        icon: SharedIcons.info;
+                        label: "Details (I)"; tooltip: "Details (I)";
+                        selected: Player.show-info; ghost-toggle: true;
                         clicked => { Player.toggle-info(); }
                     }
                 }
                 Text {
                     text: Player.meta-text;
                     color: Tokens.text-muted;
-                    font-size: Type.caption;
+                    font-size: Type.caption.size;
                     vertical-alignment: center;
                     overflow: elide;
                     horizontal-stretch: 1;
                 }
-                IconButton {
-                    on-stage: false;
-                    size: 28px;
-                    icon-size: Tokens.icon-small;
-                    icon: Icons.maximize;
-                    label: "Full screen (F)";
-                    active: Shell.full-screen;
+                IconButton { tooltip-placement: TooltipPlacement.bottom;
+                    size: ButtonSize.sm;
+                    icon: SharedIcons.maximize;
+                    label: "Full screen (F)"; tooltip: "Full screen (F)";
+                    selected: Shell.full-screen; ghost-toggle: true;
                     clicked => { Shell.toggle-full-screen(); }
                 }
             }

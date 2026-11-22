@@ -180,7 +180,7 @@ pub fn clock(ms: u64) -> String {
 
 /// "Screenshot 2026-11-20 153012" style names, local time.
 pub fn stamp(prefix: &str) -> String {
-    let [y, mo, d, h, mi, s] = crate::platform::local_time();
+    let [y, mo, d, h, mi, s] = rimelight_platform::local_time();
     format!("{prefix} {y:04}-{mo:02}-{d:02} {h:02}{mi:02}{s:02}")
 }
 

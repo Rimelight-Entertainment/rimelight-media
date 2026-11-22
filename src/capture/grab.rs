@@ -1,7 +1,7 @@
 //! Screen pictures with Windows' own GDI calls (no FFmpeg device library): the whole virtual desktop.
 
-use crate::picture::Picture;
-use crate::platform::{self, ScreenGrabber, ScreenRect};
+use rimelight_picture::Picture;
+use rimelight_platform::{ScreenGrabber, ScreenRect};
 
 /// BGRA rows to RGBA with full alpha (GDI leaves alpha undefined).
 pub fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
@@ -14,7 +14,7 @@ pub fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
 
 /// A picture of every monitor, and the rectangle it covers.
 pub fn screenshot() -> Result<(Picture, ScreenRect), String> {
-    let vs = platform::virtual_screen();
+    let vs = rimelight_platform::virtual_screen();
     let mut grabber = ScreenGrabber::new(vs).ok_or("Could not reach the screen")?;
     let bgra = grabber.grab(false).ok_or("Could not copy the screen")?;
     Ok((

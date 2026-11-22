@@ -45,10 +45,13 @@ repository baked in, so it doesn't check for updates (pass `-Repo owner/name` to
 ### Size
 
 What ships: `rimelight-media.exe` (about 12 MB, the C runtime and the icon inside) plus five FFmpeg libraries, about
-16 MB. FFmpeg is built by the **FFmpeg** workflow (`tools/ffmpeg/build.sh`) with only the formats the app plays, trims
-and records (`tools/ffmpeg/options.txt`), plus dav1d for AV1. To support another format, add it to `options.txt`, bump
-`REVISION` in `build.sh` and push: the workflow publishes `ffmpeg-n9.0.2-rN`; then update the tag and SHA-256 in
-`tools/get-ffmpeg.ps1`. The test files used to check a new build: every format in `samples/codecs` must decode
+16 MB. FFmpeg is built in **rimelight-rs** (`tools/ffmpeg/build.sh`, its FFmpeg workflow) with only the formats the apps
+play, trim and record (`tools/ffmpeg/options.txt`), plus dav1d for AV1. Its pin is `tools/ffmpeg/pin.txt`. To support
+another format, add it to `options.txt` there, bump `REVISION` in `build.sh` and push: the workflow publishes
+`ffmpeg-n9.0.2-rN` (the asset is still on this repository's releases until that workflow publishes one); then update
+the tag and SHA-256 in `tools/get-ffmpeg.ps1` and in `pin.txt` together. `ffmpeg-sys-next` (the bindings this app
+patches in) also comes from rimelight-rs (`vendor/ffmpeg-sys-next`, tag v0.2.0). The video engine (FFmpeg player, subtitles, speed, trimming, poster frames) is the `rimelight_media` crate and picture decoding, thumbnails, edits, markup and saving are the `rimelight_picture` crate, both in rimelight-rs (tag v0.2.0); this app keeps only its UI glue (`src/picture.rs` for Slint images, the clipboard and the icon). The test files used to check a new
+build: every format in `samples/codecs` must decode
 (`RIMELIGHT_MEDIA_SELFTEST=<folder> rimelight-media.exe`).
 
 ## Local checks

@@ -11,9 +11,9 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
 use crate::app::{App, go, post, remember, toast, update_title, with_app};
 use crate::files;
-use crate::media::player::{self, MediaInfo, Player, SUB_EXTERNAL, SUB_OFF};
-use crate::media::{export, subs};
 use crate::ui;
+use rimelight_media::engine::player::{self, MediaInfo, Player, SUB_EXTERNAL, SUB_OFF};
+use rimelight_media::engine::{export, subs};
 
 #[derive(Clone, PartialEq)]
 enum SubChoice {
@@ -234,7 +234,9 @@ pub fn open(app: &Rc<App>, path: &Path) {
     {
         let mut m = app.media.borrow_mut();
         m.playlist = match files::kind_of(path) {
-            Some(kind @ (files::Kind::Audio | files::Kind::Video)) => files::sibling_media(path, kind),
+            Some(kind @ (files::Kind::Audio | files::Kind::Video)) => {
+                files::sibling_media(path, kind)
+            }
             _ => vec![path.to_path_buf()],
         };
     }
@@ -245,7 +247,9 @@ pub fn open(app: &Rc<App>, path: &Path) {
 /// file's kind (others are ignored), in the order given.
 pub fn open_set(app: &Rc<App>, paths: &[PathBuf]) {
     let Some(first) = paths.first() else { return };
-    let Some(kind) = files::kind_of(first) else { return };
+    let Some(kind) = files::kind_of(first) else {
+        return;
+    };
     let mut list: Vec<PathBuf> = Vec::new();
     for p in paths {
         if files::kind_of(p) == Some(kind) && !list.contains(p) {
@@ -322,7 +326,9 @@ fn load(app: &Rc<App>, path: &Path) {
 
 /// Whether the trim range was moved from the whole file (an edit not yet saved or discarded).
 fn trim_dirty(m: &MediaState) -> bool {
-    m.info.as_ref().is_some_and(|i| m.trim != (0, i.duration_ms))
+    m.info
+        .as_ref()
+        .is_some_and(|i| m.trim != (0, i.duration_ms))
 }
 
 /// Pushes the playlist to the Player page: the items, which one is current, the panel's state and whether Previous
@@ -558,7 +564,7 @@ fn tick(app: &Rc<App>) {
 
     let p = player_ui(app);
     if let Some(f) = frame {
-        p.set_frame(slint::Image::from_rgba8(f.rgba));
+        p.set_frame(f.picture.into_slint_image());
     }
     if preview.is_none() {
         // At the end the clock can stop a few ms short of the length; show the whole track as played.
@@ -879,7 +885,12 @@ fn snapshot(app: &Rc<App>) {
                 &format!("{stem} {}", files::clock(pos).replace(':', "-")),
                 "png",
             );
-            crate::picture::save(&pic, &out).map(|()| out)
+            let pic = rimelight_picture::Picture {
+                w: pic.width,
+                h: pic.height,
+                rgba: pic.bytes().to_vec(),
+            };
+            rimelight_picture::save(&pic, &out).map(|()| out)
         });
         post(move |a| match result {
             Ok(out) => toast(a, format!("Frame saved: {}", files::file_name(&out))),
@@ -988,7 +999,7 @@ fn share(app: &Rc<App>) {
         return;
     };
     if let Err(e) =
-        crate::platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
+        rimelight_platform::share_file(crate::app::main_hwnd(app), &path, &files::file_name(&path))
     {
         toast(app, format!("Could not share: {e}"));
     }
@@ -1390,7 +1401,7 @@ fn toggle_subs(app: &Rc<App>) {
 
 fn show_sub_picture(
     app: &Rc<App>,
-    picture: Option<std::sync::Arc<crate::media::bitmap_sub::SubPicture>>,
+    picture: Option<std::sync::Arc<rimelight_media::engine::bitmap_sub::SubPicture>>,
 ) {
     let p = player_ui(app);
     let key = picture

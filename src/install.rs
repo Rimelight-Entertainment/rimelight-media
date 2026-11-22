@@ -1,4 +1,4 @@
-//! Windows integration around the Velopack install (src/update.rs): the shortcuts (Start menu > Rimelight, Desktop),
+//! Windows integration around the Velopack install (its hooks run in main.rs): the shortcuts (Start menu > Rimelight, Desktop),
 //! file types and default-app capabilities, the start-with-Windows entry and Windows' own Print Screen setting. All per
 //! user, no admin. Velopack itself adds the Installed apps entry and removes the program files on uninstall.
 
@@ -29,7 +29,7 @@ static CATEGORIES: [(&str, &[&str]); 4] = [
     ("text", TEXT_EXTS),
 ];
 /// The glyph of each category (the same icons as the home page's file-type tiles, ui/home.slint), its SVG and the two
-/// colours of the tile (ui/tokens.slint: file-picture, file-video, file-music, file-text).
+/// colours of the tile (the shared extension-file-kind-* tokens in rimelight_design: picture, video, music, text).
 const KIND_ICONS: [(&str, &str, &str, &str); 4] = [
     (
         "picture",
@@ -231,7 +231,7 @@ pub fn write_icon(path: &Path) -> bool {
     crate::picture::logo(256).is_some_and(|pic| write_picture_icon(path, pic))
 }
 
-fn write_picture_icon(path: &Path, pic: crate::picture::Picture) -> bool {
+fn write_picture_icon(path: &Path, pic: rimelight_picture::Picture) -> bool {
     let Some(img) = image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba) else {
         return false;
     };
@@ -328,7 +328,7 @@ mod reg {
             "Pictures, video, music, screenshots and screen recording in one small app.",
         )?;
         set(r"Software\RegisteredApplications", APP_NAME, CAPS_KEY)?;
-        crate::platform::file_types_changed();
+        rimelight_platform::file_types_changed();
         Ok(())
     }
 
@@ -370,7 +370,7 @@ mod reg {
         {
             let _ = k.delete_value(APP_NAME);
         }
-        crate::platform::file_types_changed();
+        rimelight_platform::file_types_changed();
     }
 
     /// Windows' own "Use the Print screen key to open screen capture" (on when the value is missing, Windows 11).
@@ -437,9 +437,7 @@ mod reg {
     pub fn set_screenclip(_: Option<&Path>) {}
 }
 
-pub use reg::{
-    set_run_at_login, set_screenclip, set_windows_printscreen, windows_printscreen_on,
-};
+pub use reg::{set_run_at_login, set_screenclip, set_windows_printscreen, windows_printscreen_on};
 
 /// Registers the chosen file types (pictures, video, music) for this exe; the others are removed. An installed copy keeps
 /// the same path across updates.
@@ -571,10 +569,10 @@ pub fn unregister_all() {
 /// Windows Settings > Default apps, on Rimelight Media's page. (Started through the shell: Explorer given an
 /// ms-settings link with an encoded space opened the Documents folder instead.)
 pub fn open_default_apps_settings() {
-    if !crate::platform::open_uri(&format!(
+    if !rimelight_platform::open_uri(&format!(
         "ms-settings:defaultapps?registeredAppUser={APP_NAME}"
     )) {
-        crate::platform::open_uri("ms-settings:defaultapps");
+        rimelight_platform::open_uri("ms-settings:defaultapps");
     }
 }
 
@@ -587,4 +585,3 @@ pub fn register_defaults(kinds: [bool; 4]) -> Result<(), String> {
     open_default_apps_settings();
     Ok(())
 }
-

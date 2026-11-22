@@ -21,27 +21,65 @@ mod highlight;
 mod hotkeys;
 mod install;
 mod instance;
-mod media;
 mod mediactl;
 mod picture;
-mod picture_heif;
-mod picture_raw;
-mod platform;
 mod prefs;
 mod settingsctl;
 mod setupctl;
 mod textctl;
 mod ui;
-mod update;
 mod viewer;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use rimelight_update::{Config, Feed, Updater};
 use slint::ComponentHandle as _;
 
 const TOOL: &str = "rimelight-media";
+
+/// "owner/name" of the GitHub repository whose releases feed updates. The release workflow sets it from
+/// GITHUB_REPOSITORY when it builds; a local build without it doesn't check for updates.
+const REPO: Option<&str> = option_env!("RIMELIGHT_MEDIA_REPO");
+
+/// The window class of every window of ours (set through winit's attributes), so the no-animation hook can tell them
+/// from anyone else's.
+const WINDOW_CLASS: &str = "RimelightMediaWindow";
+
+/// True on the run the installer starts right after installing.
+static FIRST_RUN: AtomicBool = AtomicBool::new(false);
+
+/// This copy's updater, or None when updates are off: a build without a feed, or a copy that isn't installed. The feed is
+/// RIMELIGHT_MEDIA_UPDATE_URL (a folder or web address, for testing a release locally) or else the repository's releases.
+fn updater() -> Option<Arc<Updater>> {
+    static UPDATER: OnceLock<Option<Arc<Updater>>> = OnceLock::new();
+    UPDATER
+        .get_or_init(|| {
+            let feed = match std::env::var("RIMELIGHT_MEDIA_UPDATE_URL") {
+                Ok(location) => Feed::Location { location },
+                Err(_) => Feed::GithubReleases {
+                    repo: REPO?.to_string(),
+                },
+            };
+            Updater::new(Config {
+                feed,
+                minimum_version_channel: None,
+            })
+            .map(Arc::new)
+        })
+        .clone()
+}
+
+/// The releases web page of this build's repository, for the release notes link.
+fn releases_page() -> Option<String> {
+    Feed::GithubReleases {
+        repo: REPO?.to_string(),
+    }
+    .releases_page()
+}
 
 struct Args {
     file: Option<PathBuf>,
@@ -110,8 +148,8 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
     let mut ok = true;
     let trimmed = dir.join("selftest-trim.mkv");
     let _ = std::fs::remove_file(&trimmed);
-    match media::export::trim(&dir.join("sample.mkv"), &trimmed, 1000, 3000) {
-        Ok(()) => match media::player::probe(&trimmed) {
+    match rimelight_media::engine::export::trim(&dir.join("sample.mkv"), &trimmed, 1000, 3000) {
+        Ok(()) => match rimelight_media::engine::player::probe(&trimmed) {
             Ok(i) => println!(
                 "trim: ok, {} ms, {} audio, {} subtitle tracks",
                 i.duration_ms,
@@ -128,8 +166,14 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
             println!("trim: failed: {e}")
         }
     }
-    match media::player::probe(&dir.join("sample.mkv")).and_then(|info| {
-        let p = media::player::Player::open(&dir.join("sample.mkv"), &info, None, 0, (640, 360))?;
+    match rimelight_media::engine::player::probe(&dir.join("sample.mkv")).and_then(|info| {
+        let p = rimelight_media::engine::player::Player::open(
+            &dir.join("sample.mkv"),
+            &info,
+            None,
+            0,
+            (640, 360),
+        )?;
         p.set_speed(2.0);
         p.play();
         let t = std::time::Instant::now();
@@ -159,9 +203,10 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
     codec_files.sort();
     for f in codec_files {
         let name = files::file_name(&f);
-        let result = media::player::probe(&f).and_then(|info| {
+        let result = rimelight_media::engine::player::probe(&f).and_then(|info| {
             if info.video.is_some() {
-                media::player::frame_at(&f, 1000).map(|p| format!("video {}x{}", p.w, p.h))
+                rimelight_media::engine::player::frame_at(&f, 1000)
+                    .map(|p| format!("video {}x{}", p.width, p.height))
             } else {
                 decode_some_audio(&f).map(|n| format!("audio, {n} samples decoded"))
             }
@@ -175,12 +220,12 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         }
     }
     // Text extractor: write text into a white picture, read it back with Windows' text recognition.
-    let blank = picture::Picture {
+    let blank = rimelight_picture::Picture {
         w: 640,
         h: 120,
         rgba: vec![255; 640 * 120 * 4],
     };
-    let mark = picture::Mark {
+    let mark = rimelight_picture::Mark {
         kind: 4,
         rgba: [0, 0, 0, 255],
         width: 10.0,
@@ -189,8 +234,8 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
         filled: false,
         image: None,
     };
-    match picture::burn_marks(&blank, &[mark], false)
-        .and_then(|p| platform::recognise_text(&p.rgba, p.w, p.h))
+    match rimelight_picture::burn_marks(&blank, &[mark], false)
+        .and_then(|p| rimelight_platform::recognise_text(&p.rgba, p.w, p.h))
     {
         Ok(text) if text.contains("Rimelight") => println!("text extractor: ok, read {text:?}"),
         Ok(text) => {
@@ -202,7 +247,7 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
             println!("text extractor: failed: {e}")
         }
     }
-    match picture::load_animation(&dir.join("sample.gif")) {
+    match rimelight_picture::load_animation(&dir.join("sample.gif")) {
         Some(a) => println!(
             "gif: ok, {} frames, first {} ms",
             a.frames.len(),
@@ -225,7 +270,7 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
     }
     let path = dir.join("selftest-recording.mp4");
     let _ = std::fs::remove_file(&path);
-    let rect = platform::ScreenRect {
+    let rect = rimelight_platform::ScreenRect {
         x: 0,
         y: 0,
         w: 640,
@@ -244,7 +289,7 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
             std::thread::sleep(Duration::from_secs(2));
             match rec
                 .finish()
-                .and_then(|p| media::player::probe(&p).map(|i| (p, i)))
+                .and_then(|p| rimelight_media::engine::player::probe(&p).map(|i| (p, i)))
             {
                 Ok((p, i)) => println!(
                     "recording: ok, {} ms, video {:?}, {} audio tracks, {}",
@@ -274,7 +319,7 @@ fn selftest(dir: &std::path::Path) -> ExitCode {
 /// Decodes the start of a file's sound track (self-test).
 fn decode_some_audio(path: &std::path::Path) -> Result<usize, String> {
     use ffmpeg_next as ff;
-    let mut ictx = media::player::open_input(path)?;
+    let mut ictx = rimelight_media::engine::player::open_input(path)?;
     let (idx, ctx) = {
         let st = ictx
             .streams()
@@ -310,7 +355,15 @@ fn decode_some_audio(path: &std::path::Path) -> Result<usize, String> {
 
 fn main() -> ExitCode {
     // First: during install, update and uninstall Velopack runs its hooks here and exits.
-    update::init();
+    rimelight_update::init(|app| {
+        app.on_after_install_fast_callback(|_| install::after_install())
+            .on_after_update_fast_callback(|_| install::after_update())
+            // The installer starts the app once when it finishes: that run shows the setup window instead of the app.
+            .on_first_run(|_| FIRST_RUN.store(true, std::sync::atomic::Ordering::Relaxed))
+            .on_before_uninstall_fast_callback(|_| install::unregister_all())
+    });
+    // The hook log (rimelight_platform::log_line) goes to the data folder from here on.
+    rimelight_platform::set_log_file(prefs::data_dir().join("hook-log.txt"));
     let args = match parse() {
         Ok(a) => a,
         Err(e) => {
@@ -344,7 +397,7 @@ fn main() -> ExitCode {
         };
         // A hand-over names the copy it replaces: that copy has to end before this one takes the start lock.
         if let Some(pid) = args.after {
-            platform::wait_for_exit(pid, 15_000);
+            rimelight_platform::wait_for_exit(pid, 15_000);
         }
         // Explorer starts one copy per file when several are opened together, all at once. Only the copy holding the
         // start lock goes on; the others wait for it to start listening and hand it their file. A copy that still can't
@@ -354,14 +407,16 @@ fn main() -> ExitCode {
             if !args.takeover && instance::forward(&request) {
                 return ExitCode::SUCCESS;
             }
-            if platform::take_start_lock() {
+            if rimelight_platform::take_start_lock("Local\\RimelightMedia.Instance") {
                 break;
             }
             if waited == 100 {
-                platform::log_line("the start lock is still held after 10 s: waiting longer");
+                rimelight_platform::log_line(
+                    "the start lock is still held after 10 s: waiting longer",
+                );
             }
             if waited >= 400 {
-                platform::log_line(
+                rimelight_platform::log_line(
                     "gave up waiting for the start lock after 40 s: this start did nothing",
                 );
                 // The logger thread writes the line in the background: give it a moment before the exit.
@@ -379,11 +434,11 @@ fn main() -> ExitCode {
         selector = selector.renderer_name("software".into());
     }
     selector = selector.with_winit_window_attributes_hook(move |attrs| {
-        // Our own window class: the creation hook (platform::start_no_window_animations) turns animations off for it.
+        // Our own window class: the creation hook (rimelight_platform::start_no_window_animations) turns animations off for it.
         #[cfg(windows)]
         let attrs = {
             use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows as _;
-            attrs.with_class_name(platform::WINDOW_CLASS)
+            attrs.with_class_name(WINDOW_CLASS)
         };
         if !checking {
             return attrs;
@@ -400,7 +455,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     // No window of ours zooms or fades in: animations are turned off as each one is created (on this, the UI thread).
-    platform::start_no_window_animations();
+    rimelight_platform::start_no_window_animations(WINDOW_CLASS);
 
     let app = match app::build(args.background && !checking) {
         Ok(a) => a,
@@ -424,9 +479,8 @@ fn main() -> ExitCode {
         app::queue_open(&app, file.clone());
     }
     // The installer's first run: the setup window instead of the app.
-    let first_run = !checking
-        && update::FIRST_RUN.load(std::sync::atomic::Ordering::Relaxed)
-        && setupctl::show(&app);
+    let first_run =
+        !checking && FIRST_RUN.load(std::sync::atomic::Ordering::Relaxed) && setupctl::show(&app);
     if !(args.background && !checking) && !first_run {
         if let Err(e) = app.ui.show() {
             eprintln!("{TOOL}: {e}");

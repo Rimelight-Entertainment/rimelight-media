@@ -1,12 +1,14 @@
 // Shown once, right after the installer finishes: the install options (the installer itself has no option pages).
-import { Tokens, Type } from "tokens.slint";
+import { Tokens } from "@rimelight_design/tokens.slint";
+import { Type } from "@rimelight_ui/typography.slint";
 import { Icons } from "icons.slint";
-import { Button, ButtonKind, Toggle } from "widgets.slint";
+import { Button, ButtonVariant } from "@rimelight_ui/components/button.slint";
+import { Switch } from "@rimelight_ui/components/switch.slint";
 
 component Group inherits VerticalLayout {
     in property <string> title;
     spacing: Tokens.space-1;
-    Text { text: root.title; color: Tokens.text-muted; font-size: Type.caption; font-weight: 600; }
+    Text { text: root.title; color: Tokens.text-muted; font-size: Type.caption.size; font-weight: 600; }
     @children
 }
 
@@ -28,7 +30,7 @@ export component SetupWindow inherits Window {
     width: 520px;
     height: layout.preferred-height;
     background: Tokens.surface-base;
-    default-font-family: Type.family;
+    default-font-family: Type.body.family;
 
     layout := VerticalLayout {
         padding: Tokens.space-6;
@@ -42,25 +44,25 @@ export component SetupWindow inherits Window {
             }
             VerticalLayout {
                 alignment: center;
-                Text { text: "Rimelight Media is installed"; color: Tokens.text-primary; font-size: Type.heading; font-weight: 600; }
-                Text { text: "Choose how it fits into Windows. You can change these later in Settings."; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                Text { text: "Rimelight Media is installed"; color: Tokens.text-primary; font-size: Type.heading.size; font-weight: 600; }
+                Text { text: "Choose how it fits into Windows. You can change these later in Settings."; color: Tokens.text-muted; font-size: Type.caption.size; wrap: word-wrap; }
             }
         }
 
         Group {
             title: "SHORTCUTS";
-            Text { text: "Start menu: Rimelight > Rimelight Media (always)."; color: Tokens.text-muted; font-size: Type.caption; }
-            Toggle { text: "Desktop shortcut"; checked <=> root.desktop; }
+            Text { text: "Start menu: Rimelight > Rimelight Media (always)."; color: Tokens.text-muted; font-size: Type.caption.size; }
+            Switch { text: "Desktop shortcut"; checked <=> root.desktop; }
         }
 
         Group {
             title: "SCREENSHOTS AND RECORDING";
-            Toggle {
+            Switch {
                 text: "Start with Windows";
                 detail: "Launches Rimelight Media in the tray at sign-in, so Print Screen snipping and recording are ready even when no window is open. Close to tray is the matching setting in Settings.";
                 checked <=> root.startup;
             }
-            if root.windows-printscreen-on: Toggle {
+            if root.windows-printscreen-on: Switch {
                 text: "Use Print Screen for Rimelight Media";
                 detail: "Turns off Windows' own Print Screen snipping, which would take the key first. Uninstalling turns it back on.";
                 checked <=> root.take-printscreen;
@@ -69,14 +71,14 @@ export component SetupWindow inherits Window {
 
         Group {
             title: "DEFAULT APP FOR";
-            Toggle { text: "Pictures"; detail: "PNG, JPEG, WebP, GIF, SVG, BMP, ICO"; checked <=> root.pictures; }
-            Toggle { text: "Video"; detail: "MP4, MKV, WebM, MOV, AVI, MPEG and more"; checked <=> root.video; }
-            Toggle { text: "Music"; detail: "MP3, FLAC, WAV, OGG, M4A and more"; checked <=> root.music; }
-            Toggle { text: "Text"; detail: "TXT, Markdown, JSON, TOML, YAML, CSV, logs and more"; checked <=> root.text; }
+            Switch { text: "Pictures"; detail: "PNG, JPEG, WebP, GIF, SVG, BMP, ICO"; checked <=> root.pictures; }
+            Switch { text: "Video"; detail: "MP4, MKV, WebM, MOV, AVI, MPEG and more"; checked <=> root.video; }
+            Switch { text: "Music"; detail: "MP3, FLAC, WAV, OGG, M4A and more"; checked <=> root.music; }
+            Switch { text: "Text"; detail: "TXT, Markdown, JSON, TOML, YAML, CSV, logs and more"; checked <=> root.text; }
             Text {
                 text: "Windows lets only you set defaults: after Finish, its Default apps page opens on Rimelight Media so you can confirm. Or pick \"Always\" the next time Windows asks how to open a file.";
                 color: Tokens.text-faint;
-                font-size: Type.caption;
+                font-size: Type.caption.size;
                 wrap: word-wrap;
             }
         }
@@ -84,8 +86,8 @@ export component SetupWindow inherits Window {
         Rectangle { height: 1px; background: Tokens.border-subtle; }
         HorizontalLayout {
             spacing: Tokens.space-3;
-            Toggle { text: "Open Rimelight Media now"; checked <=> root.open-now; }
-            Button { text: "Finish"; kind: ButtonKind.primary; clicked => { root.finish(); } }
+            Switch { text: "Open Rimelight Media now"; checked <=> root.open-now; }
+            Button { text: "Finish"; variant: ButtonVariant.primary; clicked => { root.finish(); } }
         }
     }
 }

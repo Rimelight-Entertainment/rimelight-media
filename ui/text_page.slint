@@ -1,9 +1,16 @@
 // Text tab: an editor for plain text (Notepad's job), the Markdown preview beside it or alone, and the JSON tools with a
 // collapsible tree. Rust (src/textctl.rs) fills the status line, the preview blocks and the tree.
 import { ScrollView, LineEdit, ComboBox } from "std-widgets.slint";
-import { Tokens, Type } from "tokens.slint";
+import { Tokens } from "@rimelight_design/tokens.slint";
+import { Type } from "@rimelight_ui/typography.slint";
+import { Icons as SharedIcons } from "@rimelight_ui/icons.slint";
 import { Icons } from "icons.slint";
-import { Button, ButtonKind, IconButton, ToolBar, ActionRow, StatusBar, ToolDivider, EmptyState } from "widgets.slint";
+import { StatusBar, EmptyState } from "widgets.slint";
+import { Button, ButtonSize, ButtonVariant } from "@rimelight_ui/components/button.slint";
+import { IconButton } from "@rimelight_ui/components/icon-button.slint";
+import { TooltipPlacement } from "@rimelight_ui/components/tooltip.slint";
+import { ToolDivider, ToolbarRow } from "@rimelight_ui/components/toolbar.slint";
+import { ActionRow } from "@rimelight_ui/components/action-row.slint";
 import { Shell, TextDoc, MdBlock, MdCell, JsonRow } from "state.slint";
 
 // The editor: a TextInput in a scroll view (wrapping, or scrolling sideways when wrap is off). The TextInput draws its own
@@ -129,7 +136,7 @@ component MdLine inherits VerticalLayout {
         text: root.block.styled;
         default-color: Tokens.text-primary;
         default-font-family: "Segoe UI";
-        default-font-size: root.block.level <= 2 ? Type.heading : Type.subheading;
+        default-font-size: root.block.level <= 2 ? Type.heading.size : Type.subheading.size;
         link-color: Tokens.accent-text;
         horizontal-stretch: 1;
         link-clicked(url) => { TextDoc.open-link(url); }
@@ -138,7 +145,7 @@ component MdLine inherits VerticalLayout {
         text: root.block.styled;
         default-color: Tokens.text-primary;
         default-font-family: "Segoe UI";
-        default-font-size: Type.body;
+        default-font-size: Type.body.size;
         link-color: Tokens.accent-text;
         horizontal-stretch: 1;
         link-clicked(url) => { TextDoc.open-link(url); }
@@ -151,7 +158,7 @@ component MdLine inherits VerticalLayout {
         if root.block.check < 0: Text {
             text: root.block.marker;
             color: Tokens.text-muted;
-            font-size: Type.body;
+            font-size: Type.body.size;
             min-width: 24px;
             vertical-alignment: top;
         }
@@ -163,13 +170,13 @@ component MdLine inherits VerticalLayout {
             border-radius: 3px;
             border-color: Tokens.border-strong;
             background: root.block.check == 1 ? Tokens.accent-fill : transparent;
-            if root.block.check == 1: Image { source: Icons.check; width: 12px; height: 12px; colorize: Tokens.text-on-accent; }
+            if root.block.check == 1: Image { source: SharedIcons.check; width: 12px; height: 12px; colorize: Tokens.text-on-accent; }
         }
         StyledText {
             text: root.block.styled;
             default-color: root.block.check == 1 ? Tokens.text-muted : Tokens.text-primary;
             default-font-family: "Segoe UI";
-            default-font-size: Type.body;
+            default-font-size: Type.body.size;
             link-color: Tokens.accent-text;
             horizontal-stretch: 1;
             link-clicked(url) => { TextDoc.open-link(url); }
@@ -199,7 +206,7 @@ component MdLine inherits VerticalLayout {
             text: root.block.styled;
             default-color: Tokens.text-muted;
             default-font-family: "Segoe UI";
-            default-font-size: Type.body;
+            default-font-size: Type.body.size;
             link-color: Tokens.accent-text;
             horizontal-stretch: 1;
             link-clicked(url) => { TextDoc.open-link(url); }
@@ -220,7 +227,7 @@ component MdLine inherits VerticalLayout {
                     text: c.styled;
                     default-color: Tokens.text-primary;
                     default-font-family: "Segoe UI";
-                    default-font-size: Type.body;
+                    default-font-size: Type.body.size;
                     link-color: Tokens.accent-text;
                     horizontal-stretch: 1;
                     link-clicked(url) => { TextDoc.open-link(url); }
@@ -257,7 +264,7 @@ component TreeRow inherits Rectangle {
         Rectangle {
             width: 14px;
             if root.item.container: Image {
-                source: root.item.open ? Icons.chevron-down : Icons.chevron-right;
+                source: root.item.open ? SharedIcons.chevron-down : SharedIcons.chevron-right;
                 width: 14px;
                 height: 14px;
                 y: (parent.height - self.height) / 2;
@@ -286,7 +293,7 @@ component Tree inherits ScrollView {
         if TextDoc.json-rows.length == 0: Text {
             text: "Not valid JSON yet. Use Validate to find the error.";
             color: Tokens.text-muted;
-            font-size: Type.body;
+            font-size: Type.body.size;
             wrap: word-wrap;
         }
         for r in TextDoc.json-rows: TreeRow { item: r; }
@@ -302,21 +309,21 @@ export component TextPage inherits Rectangle {
         // Main toolbar, as the picture page's: file actions on the left (icons with tooltips), the views and the
         // find and wrap switches on the right, and the file type last.
         // Always shown, as on every tab: with no document the file buttons are disabled.
-        ToolBar {
-            IconButton { icon: Icons.folder-open; label: "Open a file"; clicked => { Shell.open-file(); } }
-            IconButton { icon: Icons.folder-search; label: "Show in folder"; enabled: TextDoc.has-doc && TextDoc.file-name != ""; clicked => { TextDoc.open-folder(); } }
+        ToolbarRow {
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.folder-open; label: "Open a file"; tooltip: "Open a file"; clicked => { Shell.open-file(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.folder-search; label: "Show in folder"; tooltip: "Show in folder"; enabled: TextDoc.has-doc && TextDoc.file-name != ""; clicked => { TextDoc.open-folder(); } }
             ToolDivider { }
-            IconButton { icon: Icons.save; label: "Save (Ctrl+S)"; enabled: TextDoc.has-doc && (TextDoc.dirty || TextDoc.file-name == ""); clicked => { TextDoc.save(); } }
-            IconButton { icon: Icons.save-as; label: "Save as (Ctrl+Shift+S)"; enabled: TextDoc.has-doc; clicked => { TextDoc.save-as(); } }
-            IconButton { icon: Icons.share; label: "Share"; enabled: TextDoc.has-doc && TextDoc.file-name != ""; clicked => { TextDoc.share(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.save; label: "Save (Ctrl+S)"; tooltip: "Save (Ctrl+S)"; enabled: TextDoc.has-doc && (TextDoc.dirty || TextDoc.file-name == ""); clicked => { TextDoc.save(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.save-as; label: "Save as (Ctrl+Shift+S)"; tooltip: "Save as (Ctrl+Shift+S)"; enabled: TextDoc.has-doc; clicked => { TextDoc.save-as(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.share-2; label: "Share"; tooltip: "Share"; enabled: TextDoc.has-doc && TextDoc.file-name != ""; clicked => { TextDoc.share(); } }
             ToolDivider { }
-            IconButton { icon: Icons.undo; label: "Undo (Ctrl+Z)"; enabled: TextDoc.has-doc && TextDoc.can-undo; clicked => { TextDoc.undo(); } }
-            IconButton { icon: Icons.redo; label: "Redo (Ctrl+Y)"; enabled: TextDoc.has-doc && TextDoc.can-redo; clicked => { TextDoc.redo(); } }
-            IconButton { icon: Icons.x; label: "Discard changes"; enabled: TextDoc.has-doc && TextDoc.dirty; clicked => { TextDoc.revert(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.undo-2; label: "Undo (Ctrl+Z)"; tooltip: "Undo (Ctrl+Z)"; enabled: TextDoc.has-doc && TextDoc.can-undo; clicked => { TextDoc.undo(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.redo-2; label: "Redo (Ctrl+Y)"; tooltip: "Redo (Ctrl+Y)"; enabled: TextDoc.has-doc && TextDoc.can-redo; clicked => { TextDoc.redo(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.x; label: "Discard changes"; tooltip: "Discard changes"; enabled: TextDoc.has-doc && TextDoc.dirty; clicked => { TextDoc.revert(); } }
             Text {
                 text: !TextDoc.has-doc ? "" : TextDoc.file-name == "" ? "Untitled" : TextDoc.file-name;
                 color: Tokens.text-primary;
-                font-size: Type.body;
+                font-size: Type.body.size;
                 font-weight: 600;
                 vertical-alignment: center;
                 overflow: elide;
@@ -324,12 +331,12 @@ export component TextPage inherits Rectangle {
             }
             Rectangle { horizontal-stretch: 1; }
             // Markdown views, as JetBrains' editor and preview switch: editor only, split, preview only.
-            if TextDoc.markdown: IconButton { icon: Icons.md-editor; label: "Editor only"; active: TextDoc.view == 0; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 0; } }
-            if TextDoc.markdown: IconButton { icon: Icons.columns; label: "Split: editor and preview"; active: TextDoc.view == 1; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 1; } }
-            if TextDoc.markdown: IconButton { icon: Icons.eye; label: "Preview only"; active: TextDoc.view == 2; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 2; } }
+            if TextDoc.markdown: IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.md-editor; label: "Editor only"; tooltip: "Editor only"; selected: TextDoc.view == 0; ghost-toggle: true; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 0; } }
+            if TextDoc.markdown: IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.columns-2; label: "Split: editor and preview"; tooltip: "Split: editor and preview"; selected: TextDoc.view == 1; ghost-toggle: true; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 1; } }
+            if TextDoc.markdown: IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.eye; label: "Preview only"; tooltip: "Preview only"; selected: TextDoc.view == 2; ghost-toggle: true; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 2; } }
             // JSON views, as the Markdown ones: the text editor, or the collapsible tree.
-            if TextDoc.json: IconButton { icon: Icons.file-code; label: "Editor: edit the JSON text"; active: TextDoc.view == 0; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 0; } }
-            if TextDoc.json: IconButton { icon: Icons.list-tree; label: "Tree: browse the JSON, folding its objects and arrays"; active: TextDoc.view == 1; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 1; } }
+            if TextDoc.json: IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.file-code; label: "Editor: edit the JSON text"; tooltip: "Editor: edit the JSON text"; selected: TextDoc.view == 0; ghost-toggle: true; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 0; } }
+            if TextDoc.json: IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.list-tree; label: "Tree: browse the JSON, folding its objects and arrays"; tooltip: "Tree: browse the JSON, folding its objects and arrays"; selected: TextDoc.view == 1; ghost-toggle: true; enabled: TextDoc.has-doc; clicked => { TextDoc.view = 1; } }
             if TextDoc.markdown || TextDoc.json: ToolDivider { }
             // The font of plain text (hidden for a code file, which is always mono).
             if !TextDoc.code-file: ComboBox {
@@ -337,12 +344,12 @@ export component TextPage inherits Rectangle {
                 current-index <=> TextDoc.text-font;
                 enabled: TextDoc.has-doc;
                 width: 100px;
-                height: Tokens.control-height;
+                height: Tokens.size-control-md;
                 changed current-index => { TextDoc.set-text-font(self.current-index); }
             }
             if !TextDoc.code-file: ToolDivider { }
-            IconButton { icon: Icons.text-wrap; label: "Word wrap"; active: TextDoc.word-wrap; enabled: TextDoc.has-doc; clicked => { TextDoc.word-wrap = !TextDoc.word-wrap; } }
-            IconButton { icon: Icons.search; label: "Find (Ctrl+F)"; active: TextDoc.find-open; enabled: TextDoc.has-doc; clicked => { TextDoc.find-open = !TextDoc.find-open; } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.text-wrap; label: "Word wrap"; tooltip: "Word wrap"; selected: TextDoc.word-wrap; ghost-toggle: true; enabled: TextDoc.has-doc; clicked => { TextDoc.word-wrap = !TextDoc.word-wrap; } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.search; label: "Find (Ctrl+F)"; tooltip: "Find (Ctrl+F)"; selected: TextDoc.find-open; ghost-toggle: true; enabled: TextDoc.has-doc; clicked => { TextDoc.find-open = !TextDoc.find-open; } }
             ToolDivider { }
             // The file type: sets the mode now; Save as uses its extension by default. Changing it never renames a file.
             ComboBox {
@@ -350,28 +357,28 @@ export component TextPage inherits Rectangle {
                 current-index <=> TextDoc.kind;
                 enabled: TextDoc.has-doc;
                 width: 128px;
-                height: Tokens.control-height;
+                height: Tokens.size-control-md;
                 changed current-index => { TextDoc.set-kind(self.current-index); }
             }
             if Shell.recording || TextDoc.has-doc: ToolDivider { }
-            if Shell.recording: IconButton { icon: Icons.stop; label: "Stop recording"; clicked => { Shell.stop-recording(); } }
+            if Shell.recording: IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.stop; label: "Stop recording"; tooltip: "Stop recording"; clicked => { Shell.stop-recording(); } }
             // Closes the text back to the empty tab (shown only when a document is open).
-            IconButton { icon: Icons.x; label: "Close the text"; enabled: TextDoc.has-doc; clicked => { Shell.close-tab(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.x; label: "Close the text"; tooltip: "Close the text"; enabled: TextDoc.has-doc; clicked => { Shell.close-tab(); } }
         }
 
         // JSON tools, as an edit row under the toolbar: icons only, each with a tooltip that says what it does, and the
         // tool's message.
         if TextDoc.has-doc && TextDoc.json: ActionRow {
-            IconButton { icon: Icons.indent-increase; label: "Format with 2-space indent"; clicked => { TextDoc.format-json(2); } }
-            IconButton { icon: Icons.list-indent; label: "Format with 4-space indent"; clicked => { TextDoc.format-json(4); } }
-            IconButton { icon: Icons.minimize; label: "Minify: remove all spaces and line breaks"; clicked => { TextDoc.minify-json(); } }
-            IconButton { icon: Icons.check; label: "Validate: check the JSON and show where it fails"; clicked => { TextDoc.validate-json(); } }
-            IconButton { icon: Icons.sort-az; label: "Sort keys A to Z at every level"; clicked => { TextDoc.sort-json(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.indent-increase; label: "Format with 2-space indent"; tooltip: "Format with 2-space indent"; clicked => { TextDoc.format-json(2); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.list-indent; label: "Format with 4-space indent"; tooltip: "Format with 4-space indent"; clicked => { TextDoc.format-json(4); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.minimize; label: "Minify: remove all spaces and line breaks"; tooltip: "Minify: remove all spaces and line breaks"; clicked => { TextDoc.minify-json(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.check; label: "Validate: check the JSON and show where it fails"; tooltip: "Validate: check the JSON and show where it fails"; clicked => { TextDoc.validate-json(); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.sort-az; label: "Sort keys A to Z at every level"; tooltip: "Sort keys A to Z at every level"; clicked => { TextDoc.sort-json(); } }
             if TextDoc.message != "": ToolDivider { }
             Text {
                 text: TextDoc.message;
                 color: Tokens.text-muted;
-                font-size: Type.caption;
+                font-size: Type.caption.size;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
@@ -384,31 +391,31 @@ export component TextPage inherits Rectangle {
             LineEdit {
                 placeholder-text: "Find";
                 width: 220px;
-                height: Tokens.control-height;
+                height: Tokens.size-control-md;
                 text <=> root.find-text;
                 accepted => { TextDoc.find-next(root.find-text); }
             }
             LineEdit {
                 placeholder-text: "Replace with";
                 width: 220px;
-                height: Tokens.control-height;
+                height: Tokens.size-control-md;
                 text <=> root.repl-text;
             }
             Text {
                 text: TextDoc.find-status;
                 color: Tokens.text-muted;
-                font-size: Type.caption;
+                font-size: Type.caption.size;
                 vertical-alignment: center;
                 horizontal-alignment: center;
                 min-width: 72px;
                 overflow: elide;
             }
-            IconButton { icon: Icons.chevron-up; label: "Previous match"; clicked => { TextDoc.find-prev(root.find-text); } }
-            IconButton { icon: Icons.chevron-down; label: "Next match"; clicked => { TextDoc.find-next(root.find-text); } }
-            Button { text: "Replace"; kind: ButtonKind.secondary; clicked => { TextDoc.replace-one(root.find-text, root.repl-text); } }
-            Button { text: "Replace all"; kind: ButtonKind.secondary; clicked => { TextDoc.replace-all(root.find-text, root.repl-text); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.chevron-up; label: "Previous match"; tooltip: "Previous match"; clicked => { TextDoc.find-prev(root.find-text); } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.chevron-down; label: "Next match"; tooltip: "Next match"; clicked => { TextDoc.find-next(root.find-text); } }
+            Button { text: "Replace"; variant: ButtonVariant.secondary; clicked => { TextDoc.replace-one(root.find-text, root.repl-text); } }
+            Button { text: "Replace all"; variant: ButtonVariant.secondary; clicked => { TextDoc.replace-all(root.find-text, root.repl-text); } }
             Rectangle { horizontal-stretch: 1; }
-            IconButton { icon: Icons.x; label: "Close the find bar"; clicked => { TextDoc.find-open = false; } }
+            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.x; label: "Close the find bar"; tooltip: "Close the find bar"; clicked => { TextDoc.find-open = false; } }
         }
 
         // The body: the editor, and the preview or tree beside it (or the preview alone).
@@ -441,9 +448,9 @@ export component TextPage inherits Rectangle {
                         padding: Tokens.space-4;
                         spacing: Tokens.space-2;
                         alignment: start;
-                        Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading; font-weight: 600; }
-                        Text { text: TextDoc.info-name; color: Tokens.text-primary; font-size: Type.body; wrap: word-wrap; }
-                        Text { text: TextDoc.info-detail; color: Tokens.text-muted; font-size: Type.caption; wrap: word-wrap; }
+                        Text { text: "Details"; color: Tokens.text-primary; font-size: Type.subheading.size; font-weight: 600; }
+                        Text { text: TextDoc.info-name; color: Tokens.text-primary; font-size: Type.body.size; wrap: word-wrap; }
+                        Text { text: TextDoc.info-detail; color: Tokens.text-muted; font-size: Type.caption.size; wrap: word-wrap; }
                     }
                 }
                 if !(TextDoc.markdown && TextDoc.view == 2): Editor { focus-serial: TextDoc.focus-serial; }
@@ -469,17 +476,17 @@ export component TextPage inherits Rectangle {
             if TextDoc.has-doc: HorizontalLayout {
                 height: 28px;
                 padding-right: 6px;
-                IconButton { size: 28px; icon-size: Tokens.icon-small; icon: Icons.info; label: "Details"; active: TextDoc.show-info; clicked => { TextDoc.toggle-info(); } }
+                IconButton { tooltip-placement: TooltipPlacement.bottom; size: ButtonSize.sm; icon: SharedIcons.info; label: "Details"; tooltip: "Details"; selected: TextDoc.show-info; ghost-toggle: true; clicked => { TextDoc.toggle-info(); } }
             }
             if TextDoc.has-doc: Rectangle {
                 // As wide as the longest label, so the bar never shifts when the state changes.
                 width: widest.preferred-width;
-                widest := Text { text: "Unsaved"; font-size: Type.caption; opacity: 0; }
+                widest := Text { text: "Unsaved"; font-size: Type.caption.size; opacity: 0; }
                 saved-state := Text {
                     x: 0; width: parent.width;
                     text: (TextDoc.dirty || TextDoc.file-name == "") ? "Unsaved" : "Saved";
                     color: (TextDoc.dirty || TextDoc.file-name == "") ? Tokens.status-warning : Tokens.text-muted;
-                    font-size: Type.caption;
+                    font-size: Type.caption.size;
                     vertical-alignment: center;
                     horizontal-alignment: center;
                 }
@@ -487,7 +494,7 @@ export component TextPage inherits Rectangle {
             Text {
                 text: TextDoc.has-doc ? " | " + TextDoc.status : TextDoc.status;
                 color: Tokens.text-muted;
-                font-size: Type.caption;
+                font-size: Type.caption.size;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;

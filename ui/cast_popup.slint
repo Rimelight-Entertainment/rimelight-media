@@ -1,7 +1,8 @@
 // The cast popup under the cast button: the devices on the network (src/cast.rs), the cast in progress, and Windows'
 // Cast panel as a fallback when nothing is found.
-import { Tokens, Type } from "tokens.slint";
-import { Button } from "widgets.slint";
+import { Tokens } from "@rimelight_design/tokens.slint";
+import { Type } from "@rimelight_ui/typography.slint";
+import { Button } from "@rimelight_ui/components/button.slint";
 import { Cast } from "state.slint";
 
 export component CastPopup inherits PopupWindow {
@@ -22,7 +23,7 @@ export component CastPopup inherits PopupWindow {
             Text {
                 text: Cast.casting-to != "" ? "Casting to " + Cast.casting-to : "Cast to a TV or speaker";
                 color: Tokens.text-primary;
-                font-size: Type.body;
+                font-size: Type.body.size;
                 font-weight: 600;
                 wrap: word-wrap;
             }
@@ -40,12 +41,12 @@ export component CastPopup inherits PopupWindow {
                 if Cast.searching: Text {
                     text: "Searching…";
                     color: Tokens.text-muted;
-                    font-size: Type.body;
+                    font-size: Type.body.size;
                 }
                 if !Cast.searching && Cast.searched && Cast.devices.length == 0: Text {
                     text: "No TVs or speakers found on this network";
                     color: Tokens.text-muted;
-                    font-size: Type.body;
+                    font-size: Type.body.size;
                     wrap: word-wrap;
                 }
 
@@ -59,7 +60,7 @@ export component CastPopup inherits PopupWindow {
                         Text {
                             text: name;
                             color: Tokens.text-primary;
-                            font-size: Type.body;
+                            font-size: Type.body.size;
                             vertical-alignment: center;
                             overflow: elide;
                         }
