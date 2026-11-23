@@ -4,8 +4,7 @@ import { Tokens, ThemeChoice } from "@rimelight_design/tokens.slint";
 import { Type } from "@rimelight_ui/typography.slint";
 import { Icons as SharedIcons } from "@rimelight_ui/icons.slint";
 import { Icons } from "icons.slint";
-import { Choice, ConfirmDialog, StatusBar, EmptyState, ShortcutsCtl } from "widgets.slint";
-import { IconButton } from "@rimelight_ui/components/icon-button.slint";
+import { Choice, ConfirmDialog, StatusBar, EmptyState, ShortcutsCtl, ToolButton } from "widgets.slint";
 import { TooltipPlacement } from "@rimelight_ui/components/tooltip.slint";
 import { ToolDivider, ToolbarRow } from "@rimelight_ui/components/toolbar.slint";
 import { FileKindTile } from "@rimelight_ui/components/tile.slint";
@@ -83,27 +82,27 @@ component MediaSlot inherits Rectangle {
         // Left: file actions (Open, Save, Save as, Share), then the trim edits (Undo, Redo, Discard). Right: Trim, and
         // the frame snapshot on video only. Buttons that need a file are disabled when nothing is open.
         if !Shell.full-screen: ToolbarRow {
-            IconButton { tooltip-placement: TooltipPlacement.bottom;
+            ToolButton { tooltip-placement: TooltipPlacement.bottom;
                 icon: SharedIcons.folder-open;
                 label: root.want-video ? "Open a video (Ctrl+O)" : "Open a song (Ctrl+O)"; tooltip: root.want-video ? "Open a video (Ctrl+O)" : "Open a song (Ctrl+O)";
                 clicked => { Shell.open-file(); }
             }
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.folder-search; label: "Show in folder"; tooltip: "Show in folder"; enabled: root.loaded; clicked => { Player.open-folder(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.folder-search; label: "Show in folder"; tooltip: "Show in folder"; enabled: root.loaded; clicked => { Player.open-folder(); } }
             ToolDivider { }
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.save; label: "Save (replaces the file with the trim)"; tooltip: "Save (replaces the file with the trim)"; enabled: root.loaded && Player.trim-dirty && !Player.exporting; clicked => { Player.save-in-place(); } }
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.save-as; label: "Save as (trimmed copy)"; tooltip: "Save as (trimmed copy)"; enabled: root.loaded && !Player.exporting; clicked => { Player.trim-save(); } }
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.share-2; label: "Share"; tooltip: "Share"; enabled: root.loaded; clicked => { Player.share(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.save; label: "Save (replaces the file with the trim)"; tooltip: "Save (replaces the file with the trim)"; enabled: root.loaded && Player.trim-dirty && !Player.exporting; clicked => { Player.save-in-place(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.save-as; label: "Save as (trimmed copy)"; tooltip: "Save as (trimmed copy)"; enabled: root.loaded && !Player.exporting; clicked => { Player.trim-save(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.share-2; label: "Share"; tooltip: "Share"; enabled: root.loaded; clicked => { Player.share(); } }
             ToolDivider { }
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.undo-2; label: "Undo trim"; tooltip: "Undo trim"; enabled: root.loaded && Player.can-undo; clicked => { Player.trim-undo(); } }
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.redo-2; label: "Redo trim"; tooltip: "Redo trim"; enabled: root.loaded && Player.can-redo; clicked => { Player.trim-redo(); } }
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.x; label: "Discard trim (whole file)"; tooltip: "Discard trim (whole file)"; enabled: root.loaded && Player.trim-dirty; clicked => { Player.trim-discard(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.undo-2; label: "Undo trim"; tooltip: "Undo trim"; enabled: root.loaded && Player.can-undo; clicked => { Player.trim-undo(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.redo-2; label: "Redo trim"; tooltip: "Redo trim"; enabled: root.loaded && Player.can-redo; clicked => { Player.trim-redo(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.x; label: "Discard trim (whole file)"; tooltip: "Discard trim (whole file)"; enabled: root.loaded && Player.trim-dirty; clicked => { Player.trim-discard(); } }
             Rectangle { horizontal-stretch: 1; }
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.scissors; label: "Trim"; tooltip: "Trim"; enabled: root.loaded; selected: Player.trim-mode; ghost-toggle: true; clicked => { Player.trim-mode = !Player.trim-mode; } }
-            if Player.has-video: IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.camera; label: "Save this frame as a picture"; tooltip: "Save this frame as a picture"; enabled: root.loaded; clicked => { Player.snapshot(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.scissors; label: "Trim"; tooltip: "Trim"; enabled: root.loaded; selected: Player.trim-mode; ghost-toggle: true; clicked => { Player.trim-mode = !Player.trim-mode; } }
+            if Player.has-video: ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.camera; label: "Save this frame as a picture"; tooltip: "Save this frame as a picture"; enabled: root.loaded; clicked => { Player.snapshot(); } }
             if Shell.recording || (Player.media-title != "" && Player.has-video == root.want-video): ToolDivider { }
-            if Shell.recording: IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.stop; label: "Stop recording"; tooltip: "Stop recording"; clicked => { Shell.stop-recording(); } }
+            if Shell.recording: ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.stop; label: "Stop recording"; tooltip: "Stop recording"; clicked => { Shell.stop-recording(); } }
             // Closes the open file and stops it (shown only while one is loaded on this tab).
-            IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.x; label: "Close and stop"; tooltip: "Close and stop"; enabled: root.loaded; clicked => { Shell.close-tab(); } }
+            ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.x; label: "Close and stop"; tooltip: "Close and stop"; enabled: root.loaded; clicked => { Shell.close-tab(); } }
         }
 
         Rectangle {
@@ -203,19 +202,19 @@ export component AppWindow inherits Window {
                         up-text := Text { text: "Restart to update (" + Shell.update-ready + ")"; color: Tokens.text-on-accent; font-size: Type.body.size; font-weight: 600; }
                         up-ta := TouchArea { mouse-cursor: pointer; clicked => { Shell.apply-update(); } }
                     }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.scan; label: "Snip (Print Screen)"; tooltip: "Snip (Print Screen)"; clicked => { Shell.snip("region"); } }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom;
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.scan; label: "Snip (Print Screen)"; tooltip: "Snip (Print Screen)"; clicked => { Shell.snip("region"); } }
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom;
                         icon: Icons.record;
                         label: Shell.recording ? "Stop recording" : "Record the screen"; tooltip: Shell.recording ? "Stop recording" : "Record the screen";
                         clicked => { if Shell.recording { Shell.stop-recording(); } else { Shell.record-screen("region"); } }
                     }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.mic; label: "Voice recorder"; tooltip: "Voice recorder"; selected: Shell.page == "voice"; ghost-toggle: true; clicked => { Shell.go("voice"); } }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.camera; label: "Camera"; tooltip: "Camera"; selected: Shell.page == "camera"; ghost-toggle: true; clicked => { Shell.go("camera"); } }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.brush; label: "Canvas (Ctrl+N): a new 1920 x 1080 white picture to draw on"; tooltip: "Canvas (Ctrl+N): a new 1920 x 1080 white picture to draw on"; clicked => { Shell.new-canvas(1, "", "", false); } }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.file-plus; label: "New text file"; tooltip: "New text file"; clicked => { TextDoc.new-doc(); } }
-                    cast-btn := IconButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.cast; label: "Cast to a TV or speaker"; tooltip: "Cast to a TV or speaker"; clicked => { Shell.cast(); cast-popup.show(); } }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.folder-open; label: "Open (Ctrl+O)"; tooltip: "Open (Ctrl+O)"; clicked => { Shell.open-file(); } }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.settings; label: "Settings"; tooltip: "Settings"; selected: Shell.page == "settings"; ghost-toggle: true; clicked => { Shell.go("settings"); } }
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.mic; label: "Voice recorder"; tooltip: "Voice recorder"; selected: Shell.page == "voice"; ghost-toggle: true; clicked => { Shell.go("voice"); } }
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.camera; label: "Camera"; tooltip: "Camera"; selected: Shell.page == "camera"; ghost-toggle: true; clicked => { Shell.go("camera"); } }
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.brush; label: "Canvas (Ctrl+N): a new 1920 x 1080 white picture to draw on"; tooltip: "Canvas (Ctrl+N): a new 1920 x 1080 white picture to draw on"; clicked => { Shell.new-canvas(1, "", "", false); } }
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.file-plus; label: "New text file"; tooltip: "New text file"; clicked => { TextDoc.new-doc(); } }
+                    cast-btn := ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: Icons.cast; label: "Cast to a TV or speaker"; tooltip: "Cast to a TV or speaker"; clicked => { Shell.cast(); cast-popup.show(); } }
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.folder-open; label: "Open (Ctrl+O)"; tooltip: "Open (Ctrl+O)"; clicked => { Shell.open-file(); } }
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom; icon: SharedIcons.settings; label: "Settings"; tooltip: "Settings"; selected: Shell.page == "settings"; ghost-toggle: true; clicked => { Shell.go("settings"); } }
                 }
                 // Centred on the window; only as wide as the space both groups leave free on each side.
                 // Click the file name to rename it: Enter renames the file, Escape or leaving the box cancels.

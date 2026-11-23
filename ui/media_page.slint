@@ -5,10 +5,9 @@ import { Tokens } from "@rimelight_design/tokens.slint";
 import { Type } from "@rimelight_ui/typography.slint";
 import { Icons as SharedIcons } from "@rimelight_ui/icons.slint";
 import { Icons } from "icons.slint";
-import { Choice, StageIconButton, StatusBar } from "widgets.slint";
+import { Choice, StageIconButton, StatusBar, ToolButton } from "widgets.slint";
 import { Slider } from "@rimelight_ui/components/slider.slint";
 import { Button, ButtonSize, ButtonVariant } from "@rimelight_ui/components/button.slint";
-import { IconButton } from "@rimelight_ui/components/icon-button.slint";
 import { TooltipPlacement } from "@rimelight_ui/components/tooltip.slint";
 import { ToolDivider } from "@rimelight_ui/components/toolbar.slint";
 import { ActionRow } from "@rimelight_ui/components/action-row.slint";
@@ -705,7 +704,7 @@ export component MediaPage inherits Rectangle {
                 HorizontalLayout {
                     height: 28px;
                     spacing: 6px;
-                    IconButton { tooltip-placement: TooltipPlacement.bottom;
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom;
                         size: ButtonSize.sm;
                         icon: SharedIcons.layers;
                         label: "Playlist"; tooltip: "Playlist";
@@ -713,7 +712,7 @@ export component MediaPage inherits Rectangle {
                         enabled: Player.playlist.length > 1;
                         clicked => { Player.toggle-playlist(); }
                     }
-                    IconButton { tooltip-placement: TooltipPlacement.bottom;
+                    ToolButton { tooltip-placement: TooltipPlacement.bottom;
                         size: ButtonSize.sm;
                         icon: SharedIcons.info;
                         label: "Details (I)"; tooltip: "Details (I)";
@@ -729,7 +728,7 @@ export component MediaPage inherits Rectangle {
                     overflow: elide;
                     horizontal-stretch: 1;
                 }
-                IconButton { tooltip-placement: TooltipPlacement.bottom;
+                ToolButton { tooltip-placement: TooltipPlacement.bottom;
                     size: ButtonSize.sm;
                     icon: SharedIcons.maximize;
                     label: "Full screen (F)"; tooltip: "Full screen (F)";

@@ -1547,7 +1547,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg-sys-next"
 version = "9.1.1"
-source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.0#21a19075ce84358fd45c9ec2249fe8c3cc708cd8"
+source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.3#5ed33d95cee5af0f429aa7c0b52c40225421524e"
 dependencies = [
  "libc",
 ]
@@ -4805,7 +4805,7 @@ source = "git+https://github.com/Rimelight-Entertainment/rimelight.git?rev=d4420
 [[package]]
 name = "rimelight_media"
 version = "0.1.0"
-source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.0#21a19075ce84358fd45c9ec2249fe8c3cc708cd8"
+source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.3#5ed33d95cee5af0f429aa7c0b52c40225421524e"
 dependencies = [
  "cpal",
  "ffmpeg-next",
@@ -4815,7 +4815,7 @@ dependencies = [
 [[package]]
 name = "rimelight_picture"
 version = "0.1.0"
-source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.0#21a19075ce84358fd45c9ec2249fe8c3cc708cd8"
+source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.3#5ed33d95cee5af0f429aa7c0b52c40225421524e"
 dependencies = [
  "ffmpeg-next",
  "image",
@@ -4826,7 +4826,7 @@ dependencies = [
 [[package]]
 name = "rimelight_platform"
 version = "0.1.0"
-source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.0#21a19075ce84358fd45c9ec2249fe8c3cc708cd8"
+source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.3#5ed33d95cee5af0f429aa7c0b52c40225421524e"
 dependencies = [
  "jni 0.21.1",
  "rfd",
@@ -4838,12 +4838,12 @@ dependencies = [
 [[package]]
 name = "rimelight_ui"
 version = "0.1.0"
-source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.0#21a19075ce84358fd45c9ec2249fe8c3cc708cd8"
+source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.3#5ed33d95cee5af0f429aa7c0b52c40225421524e"
 
 [[package]]
 name = "rimelight_ui_kit"
 version = "0.1.0"
-source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.0#21a19075ce84358fd45c9ec2249fe8c3cc708cd8"
+source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.3#5ed33d95cee5af0f429aa7c0b52c40225421524e"
 dependencies = [
  "slint",
 ]
@@ -4851,7 +4851,7 @@ dependencies = [
 [[package]]
 name = "rimelight_update"
 version = "0.1.0"
-source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.0#21a19075ce84358fd45c9ec2249fe8c3cc708cd8"
+source = "git+https://github.com/Rimelight-Entertainment/rimelight-rs.git?tag=v0.3.3#5ed33d95cee5af0f429aa7c0b52c40225421524e"
 dependencies = [
  "velopack",
 ]

@@ -3,7 +3,7 @@ import { ScrollView, AboutSlint } from "std-widgets.slint";
 import { Tokens } from "@rimelight_design/tokens.slint";
 import { Type } from "@rimelight_ui/typography.slint";
 import { Icons as SharedIcons } from "@rimelight_ui/icons.slint";
-import { Switch } from "@rimelight_ui/components/switch.slint";
+import { SwitchRow } from "@rimelight_ui/components/switch.slint";
 import { Button, ButtonVariant } from "@rimelight_ui/components/button.slint";
 import { Card } from "@rimelight_ui/components/card.slint";
 import { Settings } from "state.slint";
@@ -144,9 +144,8 @@ export component SettingsPage inherits Rectangle {
                             HorizontalLayout {
                                 spacing: Tokens.space-2;
                                 alignment: start;
-                                Button { text: "Set as default app"; clicked => { Settings.register-defaults(); } }
                                 Button {
-                                    text: "Open Windows default apps";
+                                    text: "Set as default app";
                                     leading-icon: SharedIcons.external-link;
                                     clicked => { Settings.open-default-settings(); }
                                 }
@@ -156,24 +155,36 @@ export component SettingsPage inherits Rectangle {
                 }
 
                 Section {
+                    title: "Appearance";
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        alignment: start;
+                        // Theme values: 0 light, 1 dark, 2 system (stored in the prefs; the order here is the display order).
+                        Button { text: "System"; leading-icon: SharedIcons.monitor; variant: Settings.theme == 2 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 2; Settings.changed(); } }
+                        Button { text: "Light"; leading-icon: SharedIcons.sun; variant: Settings.theme == 0 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 0; Settings.changed(); } }
+                        Button { text: "Dark"; leading-icon: SharedIcons.moon; variant: Settings.theme == 1 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 1; Settings.changed(); } }
+                    }
+                }
+
+                Section {
                     title: "Keys and background";
                     detail: "Rimelight Media listens for these keys while it is open. Turn on \"Close to tray\" so they also work after you close the window; Rimelight Media then waits in the system tray.";
                     Card {
                         VerticalLayout {
                             spacing: Tokens.space-2;
-                            Switch {
+                            SwitchRow {
                                 text: "Close to tray";
                                 detail: "Keep running in the system tray when the window is closed.";
                                 checked <=> Settings.background;
                                 changed => { Settings.changed(); }
                             }
-                            Switch {
+                            SwitchRow {
                                 text: "Start with Windows";
                                 detail: "Launch Rimelight Media in the tray when you sign in.";
                                 checked <=> Settings.start-with-windows;
                                 changed => { Settings.changed(); }
                             }
-                            Switch {
+                            SwitchRow {
                                 text: "Use Print Screen for Rimelight Media";
                                 detail: "Turns off Windows' own Print Screen snipping, which takes the key first. Win+Shift+S comes to Rimelight Media once the Snipping Tool is uninstalled.";
                                 checked <=> Settings.printscreen-ours;
@@ -194,9 +205,9 @@ export component SettingsPage inherits Rectangle {
                     Card {
                         VerticalLayout {
                             spacing: Tokens.space-2;
-                            Switch { text: "Copy each snip to the clipboard"; checked <=> Settings.snip-copy; changed => { Settings.changed(); } }
-                            Switch { text: "Save each snip as a PNG"; checked <=> Settings.snip-save; changed => { Settings.changed(); } }
-                            Switch { text: "Open each snip for markup"; checked <=> Settings.snip-open; changed => { Settings.changed(); } }
+                            SwitchRow { text: "Copy each snip to the clipboard"; checked <=> Settings.snip-copy; changed => { Settings.changed(); } }
+                            SwitchRow { text: "Save each snip as a PNG"; checked <=> Settings.snip-save; changed => { Settings.changed(); } }
+                            SwitchRow { text: "Open each snip for markup"; checked <=> Settings.snip-open; changed => { Settings.changed(); } }
                             FolderRow { label: "Screenshots folder"; path: Settings.screenshot-folder; change => { Settings.pick-folder(true); } }
                         }
                     }
@@ -207,8 +218,8 @@ export component SettingsPage inherits Rectangle {
                     Card {
                         VerticalLayout {
                             spacing: Tokens.space-2;
-                            Switch { text: "Record the computer's sound"; checked <=> Settings.rec-system-audio; changed => { Settings.changed(); } }
-                            Switch { text: "Record the microphone"; checked <=> Settings.rec-mic; changed => { Settings.changed(); } }
+                            SwitchRow { text: "Record the computer's sound"; checked <=> Settings.rec-system-audio; changed => { Settings.changed(); } }
+                            SwitchRow { text: "Record the microphone"; checked <=> Settings.rec-mic; changed => { Settings.changed(); } }
                             HorizontalLayout {
                                 spacing: Tokens.space-2;
                                 alignment: start;
@@ -223,30 +234,23 @@ export component SettingsPage inherits Rectangle {
                 }
 
                 Section {
-                    title: "Appearance";
-                    HorizontalLayout {
-                        spacing: Tokens.space-2;
-                        alignment: start;
-                        // Theme values: 0 light, 1 dark, 2 system (stored in the prefs; the order here is the display order).
-                        Button { text: "System"; leading-icon: SharedIcons.monitor; variant: Settings.theme == 2 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 2; Settings.changed(); } }
-                        Button { text: "Light"; leading-icon: SharedIcons.sun; variant: Settings.theme == 0 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 0; Settings.changed(); } }
-                        Button { text: "Dark"; leading-icon: SharedIcons.moon; variant: Settings.theme == 1 ? ButtonVariant.secondary : ButtonVariant.ghost; clicked => { Settings.theme = 1; Settings.changed(); } }
-                    }
-                }
-
-                Section {
                     title: "About";
                     Text { text: Settings.about; color: Tokens.text-primary; font-size: Type.body.size; wrap: word-wrap; }
                     // Required by the Slint royalty-free licence (as in rimelight-space's About screen). A small inline badge.
                     HorizontalLayout {
                         alignment: start;
-                        // No fixed height or clip: the badge takes its own size so the logo is never cropped.
+                        // The same card as Space's About screen (rimelight_shell about.slint): theme colours, AboutSlint at 120 px, so its
+                        // version and link text shows in the theme text colour.
                         Rectangle {
-                            background: #FFFFFF;
-                            border-radius: Tokens.radius-r8;
-                            HorizontalLayout {
-                                padding: Tokens.space-2;
-                                AboutSlint { }
+                            width: 320px;
+                            background: Tokens.surface-raised;
+                            border-width: 1px;
+                            border-color: Tokens.border-subtle;
+                            border-radius: Tokens.radius-surface;
+                            VerticalLayout {
+                                padding: Tokens.space-4;
+                                alignment: start;
+                                AboutSlint { height: 120px; }
                             }
                         }
                     }

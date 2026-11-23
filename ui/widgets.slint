@@ -26,6 +26,11 @@ export struct Choice {
     selected: bool,
 }
 
+// The toolbar and status-bar icon button: the shared IconButton, always the ghost variant (no outline), as Media always had.
+export component ToolButton inherits IconButton {
+    variant: ButtonVariant.ghost;
+}
+
 // An icon button on the dark picture and capture stage: the light icon, with the stage's hover and pressed fills. The
 // shared IconButton's colours cannot be changed, so the stage keeps its own. The tooltip is the shared Tooltip.
 export component StageIconButton inherits Rectangle {
@@ -169,7 +174,9 @@ export component StatusBar inherits Rectangle {
         }
     }
     // Rightmost on every page: opens the Ctrl+? shortcut list. Placed at the right edge; the row leaves room for it.
-    IconButton {
+    ToolButton {
+        // A Rectangle does not constrain its children, so the square size is set here (else it fills the whole bar).
+        width: Tokens.size-control-sm;
         x: root.width - self.width - Tokens.space-2;
         y: (root.height - self.height) / 2;
         size: ButtonSize.sm;
