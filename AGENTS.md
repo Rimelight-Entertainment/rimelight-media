@@ -82,6 +82,13 @@ build: every format in `samples/codecs` must decode
   Batch Rename (pattern-based renaming with a preview and undo).
 - **Metadata viewer:** a Details panel for audio, video and text too (tags, codecs, encoding), not only for pictures.
 - **Keyboard cheat sheet:** a Ctrl+? overlay listing the shortcuts for the current tab.
+- **Files tab (new, after Home):** a tab with a yellow folder icon for a simple file explorer. It includes bulk tools
+  such as batch renaming (pattern-based, with a preview and undo). It also replaces WinRAR for archives: open `.zip`,
+  `.rar` and `.7z` (with or without a password, and check whether `.7z` and `.rar` can be read without a proprietary
+  dependency), and compress files into those formats (with an optional password). Archive files get their own icons in
+  the file explorer, like the other file types.
+- **Text file fixes:** `.ts` files are currently shown as video and must show as text. `.jsx` and `.tsx` must be added to
+  the supported text file list.
 
 ## Pending checks (verify on the owner's PC)
 
