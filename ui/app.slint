@@ -5,13 +5,15 @@ import { Type } from "@rimelight_ui/typography.slint";
 import { Icons as SharedIcons } from "@rimelight_ui/icons.slint";
 import { Icons } from "icons.slint";
 import { Choice, ConfirmDialog, StatusBar, EmptyState, ShortcutsCtl, ToolButton } from "widgets.slint";
-import { TooltipPlacement } from "@rimelight_ui/components/tooltip.slint";
+import { TooltipPlacement, TooltipOverlay } from "@rimelight_ui/components/tooltip.slint";
 import { ToolDivider, ToolbarRow } from "@rimelight_ui/components/toolbar.slint";
 import { FileKindTile } from "@rimelight_ui/components/tile.slint";
 import { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, RecentItem, Mark, MdBlock, MdCell, JsonRow, Cast } from "state.slint";
 import { CastPopup } from "cast_popup.slint";
 import { ShortcutsOverlay } from "shortcuts.slint";
 import { HomePage } from "home.slint";
+import { FilesPage, Files, FileRow, SideItem } from "files_page.slint";
+import { TableRow, TableColumn } from "@rimelight_ui/components/table.slint";
 import { ImagePage } from "image_page.slint";
 import { MediaPage } from "media_page.slint";
 import { VoicePage } from "voice_page.slint";
@@ -20,6 +22,7 @@ import { SettingsPage } from "settings_page.slint";
 import { TextPage } from "text_page.slint";
 
 export { Shell, Viewer, Player, Voice, Camera, Settings, TextDoc, Tokens, ThemeChoice, RecentItem, Mark, MdBlock, MdCell, JsonRow, Choice, Cast }
+export { Files, FileRow, SideItem, TableRow, TableColumn }
 export { SnipWindow, RecBar, Tray, WindowBox } from "capture.slint";
 export { SetupWindow } from "setup.slint";
 
@@ -42,7 +45,25 @@ component NavButton inherits Rectangle {
         alignment: center;
         spacing: Tokens.space-2;
         // Each icon is centred vertically in the row (the row stretches its children to its full height).
-        if root.kind != "": Rectangle {
+        if root.kind == "folder": Rectangle {
+            width: 18px;
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                background: #FACC15;
+                y: (parent.height - self.height) / 2;
+                Image {
+                    x: 3px;
+                    y: 3px;
+                    width: 12px;
+                    height: 12px;
+                    source: SharedIcons.folder;
+                    colorize: #FFFFFF;
+                }
+            }
+        }
+        if root.kind != "" && root.kind != "folder": Rectangle {
             width: 18px;
             FileKindTile {
                 kind: root.kind;
@@ -184,6 +205,7 @@ export component AppWindow inherits Window {
                     padding-bottom: 6px;
                     spacing: Tokens.space-1;
                     NavButton { icon: Icons.app-icon; full-colour: true; label: "Home"; active: Shell.page == "home"; clicked => { Shell.go("home"); } }
+                    NavButton { kind: "folder"; label: "Files"; active: Shell.page == "files"; clicked => { Shell.go("files"); } }
                     NavButton { kind: "picture"; label: "Image"; active: Shell.page == "image"; clicked => { Shell.go("image"); } }
                     NavButton { kind: "music"; label: "Audio"; active: Shell.page == "audio"; clicked => { Shell.go("audio"); } }
                     NavButton { kind: "video"; label: "Video"; active: Shell.page == "video"; clicked => { Shell.go("video"); } }
@@ -285,6 +307,7 @@ export component AppWindow inherits Window {
             Rectangle {
                 vertical-stretch: 1;
                 if Shell.page == "home": HomePage { }
+                if Shell.page == "files": FilesPage { }
                 if Shell.page == "image": ImagePage { }
                 if Shell.page == "audio": MediaSlot { want-video: false; }
                 if Shell.page == "video": MediaSlot { want-video: true; }
@@ -333,5 +356,13 @@ export component AppWindow inherits Window {
             page: Shell.page;
             close => { ShortcutsCtl.open = false; }
         }
+    }
+
+    // Tooltips draw here, above everything in the window (the shared TooltipLayer). Without it no tooltip shows.
+    TooltipOverlay {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
     }
 }

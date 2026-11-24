@@ -11,7 +11,7 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 use crate::files::{self, Kind};
 use crate::prefs::{self, Prefs};
 use crate::ui;
-use crate::{cameractl, capturectl, mediactl, settingsctl, textctl, viewer};
+use crate::{cameractl, capturectl, filesctl, mediactl, settingsctl, textctl, viewer};
 
 pub struct App {
     pub ui: ui::AppWindow,
@@ -22,6 +22,7 @@ pub struct App {
     pub text: RefCell<textctl::TextState>,
     pub cap: RefCell<capturectl::CaptureState>,
     pub camera: RefCell<cameractl::CameraState>,
+    pub explorer: RefCell<filesctl::ExplorerState>,
     pub tray: RefCell<Option<ui::Tray>>,
     pub hotkeys: RefCell<Option<crate::hotkeys::Hotkeys>>,
     /// A downloaded update waiting to be applied.
@@ -80,6 +81,7 @@ pub fn build(background: bool) -> Result<Rc<App>, slint::PlatformError> {
         text: RefCell::new(textctl::TextState::default()),
         cap: RefCell::new(capturectl::CaptureState::default()),
         camera: RefCell::new(cameractl::CameraState::default()),
+        explorer: RefCell::new(filesctl::ExplorerState::default()),
         tray: RefCell::new(None),
         hotkeys: RefCell::new(None),
         update: RefCell::new(None),
@@ -97,6 +99,7 @@ pub fn build(background: bool) -> Result<Rc<App>, slint::PlatformError> {
     cameractl::wire(&app);
     settingsctl::wire(&app);
     textctl::wire(&app);
+    filesctl::wire(&app);
     refresh_recents(&app);
     settingsctl::apply_theme(&app);
     Ok(app)
@@ -226,6 +229,9 @@ pub fn go(app: &Rc<App>, page: &str) {
     if page == "settings" {
         settingsctl::refresh(app);
     }
+    if page == "files" {
+        filesctl::enter(app);
+    }
     shell.set_page(page.into());
     update_title(app);
 }
@@ -286,6 +292,7 @@ pub fn update_title(app: &Rc<App>) {
         "voice" => ("Voice recorder".to_string(), String::new()),
         "camera" => ("Camera".to_string(), String::new()),
         "settings" => ("Settings".to_string(), String::new()),
+        "files" => ("Files".to_string(), String::new()),
         _ => ("Home".to_string(), String::new()),
     };
     shell.set_title_name(name.into());
@@ -556,7 +563,7 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
         if app.ui.global::<ui::Shell>().get_field_focus() {
             return true;
         }
-        const ORDER: [&str; 5] = ["home", "image", "audio", "video", "text"];
+        const ORDER: [&str; 6] = ["home", "files", "image", "audio", "video", "text"];
         let back = k(Key::Backtab) || shift;
         let here = ORDER.iter().position(|p| *p == page.as_str());
         let next = match (here, back) {
@@ -573,6 +580,7 @@ fn on_key(app: &Rc<App>, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool
     match page.as_str() {
         "image" => viewer::on_key(app, text, ctrl, shift),
         "audio" | "video" => mediactl::on_key(app, text, ctrl, shift),
+        "files" => filesctl::on_key(app, text, ctrl, shift),
         _ => false,
     }
 }

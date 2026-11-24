@@ -182,6 +182,23 @@ pub fn save_recents(list: &[PathBuf]) {
     write(&data_dir().join("recents.txt"), &text);
 }
 
+/// The folders pinned to the Files tab's sidebar, one per line (pinned.txt).
+pub fn load_pinned() -> Vec<PathBuf> {
+    std::fs::read_to_string(data_dir().join("pinned.txt"))
+        .map(|t| {
+            t.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn save_pinned(list: &[PathBuf]) {
+    let text: String = list.iter().map(|p| format!("{}\n", p.display())).collect();
+    write(&data_dir().join("pinned.txt"), &text);
+}
+
 /// Puts `path` first, without duplicates, keeping at most MAX_RECENTS.
 pub fn push_recent(list: &mut Vec<PathBuf>, path: &Path) {
     list.retain(|p| p != path);

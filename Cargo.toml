@@ -1,6 +1,6 @@
 [package]
 name = "rimelight-media"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -60,6 +60,14 @@ serde = "1"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 # Text tab: the extra syntaxes (TOML, TypeScript, PowerShell, INI, ...) and the One Half themes for syntect.
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
+# Files tab: zip create (AES-256) and open, from the zip crate that is already in the build.
+zip = "9.8"
+# Files tab: 7z open and extract (pure Rust, Apache-2.0).
+sevenz-rust2 = "0.25"
+# Files tab: RAR open and extract. Bundles unrar's C++ source, so it needs a C++ compiler; RAR files can't be created.
+unrar = "0.5"
+# Files tab: modified dates in local time.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [target.'cfg(windows)'.dependencies]
 # File types, default apps and the start-up entry (all per user, no admin).

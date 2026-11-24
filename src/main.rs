@@ -12,11 +12,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod archive;
 mod cameractl;
 mod capture;
 mod capturectl;
 mod cast;
+mod fileops;
 mod files;
+mod filesctl;
 mod highlight;
 mod hotkeys;
 mod install;
