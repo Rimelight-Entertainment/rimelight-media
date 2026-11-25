@@ -70,6 +70,30 @@ powershell -ExecutionPolicy Bypass -File tools/bench.ps1
 
 ---
 
+
+## FFmpeg (video, decision 0046)
+
+- Run `cargo xtask ffmpeg` once per Windows machine (and again when its pin in `xtask/src/ffmpeg.rs` changes). It downloads the pinned trimmed LGPL FFmpeg build into `<target folder>/ffmpeg/current`.
+- FFmpeg and audio output (`cpal`) are Windows only for now; the shared `rimelight_media` has a stub elsewhere, so Linux, macOS, web and Android builds do not need them.
+- 
+## Releases & Distribution
+
+### Publishing on GitHub with Auto-Update
+
+Use **Velopack + GitHub Releases** with releases built by GitHub Actions when a version tag is pushed:
+
+- **Installer:** `RimelightMedia-win-Setup.exe`. Installs per user (no admin, no UAC prompt) to `%LOCALAPPDATA%\RimelightMedia`, adds Start menu shortcut, registers file types (pictures, video, music), and registers with Default Apps.
+- **Updates:** Installed copies check the repository's latest release a few seconds after startup, download delta packages in the background, and prompt to restart.
+- **Making a Release:**
+  1. Bump `version` in `Cargo.toml`.
+  2. Commit and push to main.
+  3. Create and push tag `vX.Y.Z`:
+     ```powershell
+     git tag v0.X.X
+     git push origin v0.X.X
+     ```
+  4. GitHub Actions builds the release and attaches `RimelightMedia-win-Setup.exe` and `.nupkg` assets to the release.
+
 ## 5. License
 
 MIT License. See [LICENSE.md](LICENSE.md). Third-party software notices: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
